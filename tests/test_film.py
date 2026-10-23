@@ -181,6 +181,28 @@ class TestFilm(unittest.TestCase):
         self.assertEqual(av[-1][1], '+3')
         self.assertEqual(len(film.avatars(['a'] * 6)), 6)
 
+    def test_recap(self):
+        self.assertEqual(film.recap(self.plan), (['src/app.py', 'src/lib.py', 'tests/test_app.py'],
+                                                 [('frob', 'src/lib.py', 1)]))
+
+    def test_end_card_regions(self):
+        delete = collect.collect(self.repo, self.sha['delete'])
+        tours = {'change': self.tour, 'delete': film.Tour(plan.plan(delete), delete, log=io.StringIO())}
+        for rev, tour in tours.items():
+            n = next(n for n, label in tour.film.keyframes if label == 'end')
+            for fmt in ('16x9', '9x16', '1x1'):
+                cv = tour.film.frame(n, fmt)
+                marks = dict(cv.marks)
+                names = ['card.header', 'card.visited', 'card.defs'] + (['card.next'] if rev == 'change' else [])
+                if rev == 'delete':
+                    self.assertNotIn('card.next', marks)
+                frame = vb.Box.of(cv)
+                for k, a in enumerate(names):
+                    self.assertIn(a, marks, (rev, fmt))
+                    self.assertTrue(frame.contains(marks[a]), (rev, fmt, a))
+                    for b in names[k + 1:]:
+                        self.assertFalse(marks[a].intersects(marks[b]), (rev, fmt, a, b))
+
     def test_lit_order_follows_files(self):
         (m,) = [s for s in self.plan.shots if s['kind'] == 'map']
         self.assertEqual(m['lit'], ['bin.dat', 'src/app.py', 'src/lib.py', 'tests/test_app.py'])

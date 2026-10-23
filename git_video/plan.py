@@ -32,7 +32,8 @@ TITLE_STILL = 1.85        # the title card's key moment: counters mid-roll, the 
 TITLE_BAR_IN = 0.9        # the author's name bar slides in ...
 TITLE_BAR_OUT = 0.45      # ... and out, this long before the card ends
 TITLE_AVATARS = 1.5       # co-authors spread out beside it
-END_DUR = 2.5
+END_DUR = 3.0
+END_REVEAL = 1.2          # the closing card's panels fade up one after another over this long
 
 # Shot timings, shared by the film (what is seen) and the sounds (what is heard).
 PER_CHAR = 0.055          # mean seconds per typed character
@@ -181,9 +182,9 @@ def plan(change, verbose=0):
     tree_map = repomap.tiles(change.tree, files, root=name)
     tiled = {t['path'] for g in tree_map['groups'] for t in g['tiles'] if 'path' in t}
     shots = [shot('card', 'title', TITLE_DUR)]
-    if tree_map['groups']:
-        # the changed files' tiles light in tour order
-        shots.append(shot('map', 'map', MAP_DUR, lit=[f['path'] for f in files if f['path'] in tiled]))
+    lit = [f['path'] for f in files if f['path'] in tiled]   # the changed files' tiles light in tour order
+    if lit:   # nothing changed on the map (only deletions): nothing to show there
+        shots.append(shot('map', 'map', MAP_DUR, lit=lit))
     hunk_shots = 0
     hunks = []   # (index into shots of the hunk shot, file, candidates)
     for f in change.files:

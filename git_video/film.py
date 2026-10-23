@@ -17,6 +17,7 @@ import videobuilder as vb
 from videobuilder import text as vbtext
 from videobuilder.capabilities.broadcast.click_ripple_indicator import click_ripple
 from videobuilder.capabilities.broadcast.cursor_path_animation import cursor_path
+from videobuilder.capabilities.broadcast.end_card_with_subscribe_slot import end_card_slots, slot_reveal
 from videobuilder.capabilities.broadcast.lower_third_slide_in_bar import lower_third_bar
 from videobuilder.capabilities.broadcast.two_tier_kicker_and_title_stack import kicker_title_progress
 from videobuilder.capabilities.broadcast.zoom_to_location_map import fly_to
@@ -213,7 +214,7 @@ class Tour:
             elif kind == 'title':
                 out.append((f0 + round(s['dur'] / 2 * self.fps), 'title'))
             elif kind == 'end':
-                out.append((f0 + round(s['dur'] / 2 * self.fps), 'end'))
+                out.append((f0 + round((s['dur'] - 0.6) * self.fps), 'end'))
             elif kind == 'open':
                 out.append((f0 + round((self.timings[i][2] + 0.3) * self.fps), f'open {s["path"]}'))
             elif kind == 'hunk' and hunks < 12:
@@ -399,41 +400,163 @@ def _counters(cv, b, plan, t, meta_f, digits, cell_h):
     cv.mark('card.counters', b.cx - sum(widths) / 2, b.y, sum(widths), cell_h)
 
 
+# ---- the closing card ----
+def recap(plan):
+    """(files visited, in order; definitions dived into, as (name, path, line))."""
+    files, defs = [], []
+    for s in plan.shots:
+        if s['kind'] in ('dive', 'travel', 'open'):
+            path = s.get('to', s.get('path'))
+            if path not in files:
+                files.append(path)
+        elif s['kind'] == 'xref-push':
+            d = (s['name'], s['definition']['path'], s['definition']['line'])
+            if d not in defs:
+                defs.append(d)
+    return files, defs
+
+
+def _end_slots(box, portrait, header, bodies, link, gap=16):
+    """The closing card's boxes: header, visited, defs, and next (or None),
+    the whole centred in `box`. Side by side like end_card_slots in landscape
+    and square frames (`bodies` tall at the most); stacked in portrait, each
+    panel its own height."""
+    if portrait:
+        total = header + sum(bodies) + gap + (gap + link if link else 0)
+        b = box.anchor(box.w, min(total, box.h))
+        hb = vb.Box(b.x, b.y, b.w, header - gap)
+        v = vb.Box(b.x, b.y + header, b.w, bodies[0])
+        d = vb.Box(b.x, v.bottom + gap, b.w, bodies[1])
+        return hb, v, d, (vb.Box(b.x, d.bottom + gap, b.w, link) if link else None)
+    body = max(bodies)
+    total = header + body + (gap + link if link else 0)
+    s = end_card_slots(box.anchor(box.w, min(total, box.h)), header=header, gap=gap, link=link, split=0.55)
+    return s['header'], s['video'], s['subscribe'], (s['link'] if link else None)
+
+
+def _panel(cv, b, style):
+    cv.rect(*b, style.bg, radius=14)
+    cv.outline(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, style.border, width=1.5, radius=14)
+
+
+def _rows(cv, b, head, rows, F, style, draw_row, per=1):
+    """A side-bar style panel: a header, then one row (`per` lines tall) per item
+    while they fit, the rest as `+K more`."""
+    _panel(cv, b, style)
+    inner = b.pad(22, 26)
+    vbtext.draw(cv, [head], F['head'], inner.x, inner.y, style.head)
+    y = inner.y + vbtext.line_height(F['head']) + 12
+    rh = vbtext.line_height(F['row'])
+    lines = max(1, int((inner.bottom - y + 1) // rh))
+    if not rows:
+        vbtext.draw(cv, ['(none)'], F['row'], inner.x, y, style.muted)
+        return
+    shown = rows if len(rows) * per <= lines else rows[:max(0, (lines - 1) // per)]
+    with cv.clip(*inner):
+        for r in shown:
+            draw_row(r, inner.x, y, inner.w)
+            y += rh * per
+        if len(shown) < len(rows):
+            vbtext.draw(cv, [f'+{len(rows) - len(shown)} more'], F['row'], inner.x, y, style.muted)
+
+
 def _end_card(tour, cv, box, shot, t):
-    plan = tour.plan
+    """The recap: what the tour visited and dived into, and what comes next."""
+    plan, style = tour.plan, sidebar.Style()
     portrait = cv.height > cv.width
-    big = 64 if not portrait else 60
-    width = box.w * (0.78 if not portrait else 0.84)
-    title = vb.Font(UI, big, weight=700, line_height=1.18)
-    meta = vb.Font(UI, 30)
-    small = vb.Font(UI, 26, weight=700, tracking=0.2)
-    mono = vb.Font(tour.font, 30)
-    c = plan.commit
-    lines = list(vbtext.wrap(c['subject'], title, width, balance=True))[:4]
-    info = ' · '.join(x for x in (c['short'], c['author'], c['date'][:10]) if x)
-    blocks = [('END OF TOUR', small, THEME.cursor), *((ln, title, '#e6e9ef') for ln in lines),
-              ('', meta, None), (info, meta, '#9aa3b2'), (_stats(plan), mono, None)]
-    heights = [vbtext.line_height(f) for _, f, _ in blocks]
-    boxes, _ = box.stack(heights, gap=10, align='center')
-    for (s, f, color), b in zip(blocks, boxes):
-        if not s:
-            continue
-        if color is None:   # the stats line: + and − in colour, glyphs kept
-            _stats_line(cv, b, s, f)
-            continue
-        vbtext.draw(cv, [s], f, b.x, b.y, color, align='center', width=b.w)
-    cv.mark('card.end', *box)
+    files, defs = recap(plan)
+    F = {'head': vb.Font(UI, 19, weight=700, tracking=0.14), 'row': vb.Font(tour.font, 24, line_height=1.5)}
+    rh = vbtext.line_height(F['row'])
+    chrome = 2 * 22 + vbtext.line_height(F['head']) + 12
+    kicker = vb.Font(UI, 24, weight=700, tracking=0.2)
+    title = vb.Font(UI, 52 if not portrait else 46, weight=700, line_height=1.15)
+    lines = list(vbtext.wrap(plan.commit['subject'], title, box.w))
+    if len(lines) > 2:
+        lines = [lines[0], sidebar.ellipsize(' '.join(lines[1:]), title, box.w)]
+    header = vbtext.line_height(kicker) + 8 + len(lines) * vbtext.line_height(title) + 6 + 40 + 16 + 20
+    link = 84 if plan.next else 0
+    body_room = box.h - header - (16 + link if link else 0)
+    cap = (body_room - 16) / 2 if portrait else body_room
+    bodies = [min(chrome + max(1, n) * rh + 8, cap) for n in (len(files), 2 * len(defs))]
+    if not portrait:
+        bodies = [max(bodies)] * 2
+    hb, vbox, dbox, nbox = _end_slots(box, portrait, header, bodies, link)
+    stats = {f['path']: f for f in plan.files}
+    p = t / P.END_REVEAL
+
+    def show(i):
+        a = slot_reveal(p, i, count=4)
+        return a, cv.layer(opacity=a, dy=(1 - a) * 24)
+
+    a, layer = show(0)
+    with layer:
+        vbtext.draw(cv, ['END OF TOUR'], kicker, hb.x, hb.y, THEME.cursor)
+        ty = hb.y + vbtext.line_height(kicker) + 8
+        vbtext.draw(cv, lines, title, hb.x, ty, '#e6e9ef')
+        sb = vb.Box(hb.x, ty + len(lines) * vbtext.line_height(title) + 6, hb.w, 40)
+        _stats_line(cv, sb, _stats(plan), vb.Font(tour.font, 28), align='left')
+    cv.mark('card.header', *hb)
+
+    def file_row(path, x, y, w):
+        f = stats.get(path, {})
+        stat = sidebar.stat_text(f) if f else ''
+        sw = vbtext.measure(stat, F['row'])
+        vbtext.draw(cv, [sidebar.ellipsize_left(path, F['row'], w - sw - 24)], F['row'], x, y, style.fg)
+        sx = x + w - sw
+        if f.get('binary') or not stat:
+            vbtext.draw(cv, [stat], F['row'], sx, y, style.muted)
+            return
+        plus, _, minus = stat.rpartition(' ')
+        if plus:
+            vbtext.draw(cv, [plus], F['row'], sx, y, style.added)
+            sx += vbtext.measure(plus + ' ', F['row'])
+        vbtext.draw(cv, [minus], F['row'], sx, y, style.removed)
+
+    def def_row(d, x, y, w):   # the name, and under it where it is defined
+        name, path, line = d
+        bold = vb.Font(tour.font, 24, weight=700, line_height=1.5)
+        vbtext.draw(cv, [sidebar.ellipsize(name, bold, w)], bold, x, y, style.strong)
+        vbtext.draw(cv, [sidebar.ellipsize_left(f'→ {path}:{line}', F['row'], w - 24)], F['row'], x + 24, y + rh,
+                    style.muted)
+
+    _, layer = show(1)
+    with layer:
+        _rows(cv, vbox, f'VISITED  {len(files)}', files, F, style, file_row)
+    cv.mark('card.visited', *vbox)
+    _, layer = show(2)
+    with layer:
+        _rows(cv, dbox, 'DIVED INTO', defs, F, style, def_row, per=2)
+    cv.mark('card.defs', *dbox)
+    if nbox is not None:
+        _, layer = show(3)
+        with layer:
+            _panel(cv, nbox, style)
+            inner = nbox.pad(0, 30)
+            small = vb.Font(UI, 19, weight=700, tracking=0.14)
+            row = vb.Font(UI, 28, weight=700)
+            kb = vbtext.draw(cv, ['NEXT'], small, inner.x, inner.cy - vbtext.line_height(small) / 2, THEME.cursor)
+            short = vb.Font(tour.font, 26)
+            sx = kb.right + 24
+            s_box = vbtext.draw(cv, [plan.next['short']], short, sx, inner.cy - vbtext.line_height(short) / 2,
+                                style.muted)
+            room = inner.right - 40 - s_box.right - 16
+            vbtext.draw(cv, [sidebar.ellipsize(plan.next['subject'], row, room)], row, s_box.right + 16,
+                        inner.cy - vbtext.line_height(row) / 2, style.strong)
+            ax, ay = inner.right - 8, inner.cy
+            cv.line(ax - 10, ay - 11, ax + 1, ay, THEME.cursor, width=3.5)
+            cv.line(ax + 1, ay, ax - 10, ay + 11, THEME.cursor, width=3.5)
+        cv.mark('card.next', *nbox)
 
 
 CARD_KINDS = {'title': _title_card, 'end': _end_card}
 
 
-def _stats_line(cv, box, s, font):
+def _stats_line(cv, box, s, font, align='center'):
     head, _, rest = s.partition(', ')
     plus, _, minus = rest.partition(' ')
     parts = [(head + ', ', '#9aa3b2'), (plus + ' ', THEME.fringe_added), (minus, THEME.fringe_removed)]
     w = sum(vbtext.measure(p, font) for p, _ in parts)
-    x = box.cx - w / 2
+    x = box.cx - w / 2 if align == 'center' else box.x
     for p, color in parts:
         vbtext.draw(cv, [p], font, x, box.y, color)
         x += vbtext.measure(p, font)
