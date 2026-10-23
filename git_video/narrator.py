@@ -10,9 +10,15 @@ closing, each at most MAX_WORDS words, and speech at most SPEECH_SHARE of the
 voiced film. How a phrase is said (spoken forms, captions) and how the shots
 stretch to it is voice's job, the same for both.
 """
+import hashlib
 import json
 import os
 import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass
 
 from . import edits, plan as planmod
@@ -25,7 +31,10 @@ PER_SHOT = 2               # phrases said over one shot (or edit-shot hunk), at 
 
 
 class NarratorError(RuntimeError):
-    """A narrator could not write a script that passes."""
+    """A narrator could not write a script that passes: `reason` in a line,
+    and fork-sandbox's `run_dir` when it got that far."""
+    reason = ''
+    run_dir = None
 
 
 @dataclass(frozen=True)
@@ -315,3 +324,137 @@ def brief(change, plan, patches):
     with open(BRIEF, encoding='utf-8') as f:
         template = f.read()
     return _SLOT.sub(lambda m: slots[m.group(1)], template)
+
+
+# ---- choosing a narrator ----
+NARRATORS = ('auto', 'fork-sandbox', 'heuristic')
+
+
+def resolve(choice, which=shutil.which):
+    """(narrator, fall back to the heuristic on failure) for --narrator
+    `choice`: auto is fork-sandbox when the command is on PATH (falling
+    back), else the heuristic."""
+    if choice == 'auto':
+        return ('fork-sandbox', True) if which('fork-sandbox') else ('heuristic', False)
+    return choice, False
+
+
+class Narrator:
+    """The script writer for one render: `narrator(plan)` is the script of
+    the unvoiced `plan` of `change` as [voice.Phrase]. fork-sandbox's run
+    dir, when it ran, is `run_dir`; on failure under `fallback`, a one-line
+    warning goes to `log` and the heuristic writes the script."""
+
+    def __init__(self, name, change, patches, mode='tour', series=False, verbose=0, fallback=False, log=None):
+        self.name, self.change, self.patches = name, change, patches
+        self.mode, self.series, self.verbose = mode, series, verbose
+        self.fallback, self.log = fallback, log if log is not None else sys.stderr
+        self.run_dir = None
+
+    def __call__(self, plan):
+        from . import voice
+        if self.name == 'heuristic':
+            return voice.script(plan, self.patches)
+        try:
+            return self.fork_sandbox(plan)
+        except NarratorError as e:
+            if not self.fallback:
+                raise
+            where = f'run dir {e.run_dir}' if e.run_dir else 'no run dir'
+            print(f'git video: warning: fork-sandbox narrator failed ({e.reason or e}; {where}); '
+                  f'using the heuristic narrator', file=self.log)
+            return voice.script(plan, self.patches)
+
+    def fork_sandbox(self, plan):
+        model = os.environ.get('GIT_VIDEO_NARRATOR_MODEL') or DEFAULT_MODEL
+        key = cache_key(self.change, plan, self.patches, self.mode, self.series, self.verbose, model)
+        path = cache_path(key)
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding='utf-8') as f:
+                    return parse(f.read(), plan, self.patches)
+            except (OSError, NarratorError):
+                pass   # a stale or broken entry: narrate again
+        phrases, self.run_dir = run_fork_sandbox(self.change, plan, self.patches, model, key, self.log)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f'{path}.{os.getpid()}.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(dump(phrases, plan, self.patches))
+        os.replace(tmp, path)
+        return phrases
+
+
+# ---- the fork-sandbox narrator ----
+DEFAULT_MODEL = 'opus'
+VERSION = 1   # of the brief and how its answer is read: part of the cache key
+TEMPLATE_ID = 'git-video-narrate-v1'
+_RUN_DIR = re.compile(r'^\s*run dir:\s+(\S.*?)\s*$', re.M)
+
+
+def _error(reason, run_dir=None, output=''):
+    where = f' (run dir {run_dir})' if run_dir else ''
+    e = NarratorError(reason + where + (f':\n{output.strip()}' if output.strip() else ''))
+    e.reason, e.run_dir = reason, run_dir
+    return e
+
+
+def cache_key(change, plan, patches, mode, series, verbose, model):
+    """The narration cache's key: the range filmed, how, by which model and
+    narrator version, and the shots the brief lists."""
+    shots = hashlib.sha256(shot_table(shot_rows(plan, patches)).encode()).hexdigest()
+    doc = {'base': change.base, 'tip': change.target, 'mode': mode, 'series': bool(series), 'verbose': verbose,
+           'model': model, 'version': VERSION, 'shots': shots}
+    return hashlib.sha256(json.dumps(doc, sort_keys=True).encode()).hexdigest()
+
+
+def cache_path(key):
+    """$XDG_CACHE_HOME/git-video/narration/<key>.json (~/.cache by default)."""
+    base = os.environ.get('XDG_CACHE_HOME') or os.path.join(os.path.expanduser('~'), '.cache')
+    return os.path.join(base, 'git-video', 'narration', f'{key[:24]}.json')
+
+
+def command(change, model, key, handoff):
+    """The fork-sandbox argv narrating `change` from the brief at `handoff`;
+    GIT_VIDEO_NARRATOR_ARGS (shell-split) goes before the paths."""
+    meta = json.dumps({'kind': 'investigate', 'prompt_template_id': TEMPLATE_ID}, separators=(',', ':'))
+    extra = shlex.split(os.environ.get('GIT_VIDEO_NARRATOR_ARGS', ''))
+    return ['fork-sandbox', 'run', '--foreground', '--harness', 'claude', '--model', model,
+            '--checkout', change.target, '--branch', f'git-video-narrate-{key[:12]}',
+            '--task-meta', meta, *extra, change.repo, handoff]
+
+
+def run_fork_sandbox(change, plan, patches, model, key, log):
+    """Run fork-sandbox on the brief, blocking, and read the script the
+    session leaves in its outbox: ([voice.Phrase], run dir). NarratorError
+    (with `reason` and `run_dir`) when it fails, prints no run dir, leaves
+    no narration.json, or one that does not pass."""
+    tmp = tempfile.mkdtemp(prefix='git-video-narrate-')
+    try:
+        handoff = os.path.join(tmp, 'narrate.md')
+        with open(handoff, 'w', encoding='utf-8') as f:
+            f.write(brief(change, plan, patches))
+        argv = command(change, model, key, handoff)
+        print('git video: narrating with fork-sandbox, a few minutes…', file=log, flush=True)
+        try:
+            r = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        except OSError as e:
+            raise _error(f'cannot run fork-sandbox: {e.strerror}') from None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    out = r.stdout.decode('utf-8', 'replace')
+    m = _RUN_DIR.search(out)
+    if not m:
+        raise _error(f'fork-sandbox printed no run dir (exit {r.returncode})', None, out[-4000:])
+    run_dir = m.group(1)
+    if r.returncode != 0:
+        raise _error(f'fork-sandbox exited {r.returncode}', run_dir)
+    path = os.path.join(run_dir, 'outbox', 'narration.json')
+    try:
+        with open(path, encoding='utf-8') as f:
+            text = f.read()
+    except OSError:
+        raise _error('the session wrote no outbox/narration.json', run_dir) from None
+    try:
+        return parse(text, plan, patches), run_dir
+    except NarratorError as e:
+        raise _error(f'its narration.json does not pass: {e}', run_dir) from None

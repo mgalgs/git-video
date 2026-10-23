@@ -777,13 +777,13 @@ def place(plan, phrases, seconds, voice, out_dir, lexicon):
     return {'voice': voice, 'speed': SPEED, 'dir': out_dir, 'lexicon': lexicon, 'bed': BED, 'phrases': out}
 
 
-def narrate(change, patches, verbose, mode, engine, name, phrases=None):
-    """The plan of `change` narrated in voice `name`: the script (`phrases`,
-    else the heuristic's) cut to the narrator limits, said (or found in the
-    cache), and placed on its shots."""
+def narrate(change, patches, verbose, mode, engine, name, narrate_with=None):
+    """The plan of `change` narrated in voice `name`: the script (written by
+    `narrate_with(plan)`, a narrator.Narrator, else the heuristic `script`)
+    cut to the narrator limits, said (or found in the cache), and placed on
+    its shots."""
     first = planmod.build(change, verbose, mode, patches)
-    if phrases is None:
-        phrases = script(first, patches)
+    phrases = narrate_with(first) if narrate_with else script(first, patches)
     phrases = narrator.trim(phrases, first, strict=False)
     while True:
         lexicon = lexicon_for(phrases)
