@@ -42,6 +42,14 @@ class TestScript(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
+    def test_develop_slot_is_the_callouts(self):
+        # an unsayable first sentence leaves its slot empty: the phrase waits for the second card
+        hunk = next(k for k in voice.shot_index(self.develop.shots) if k[0] == 'edit')
+        said = {(hunk[2], hunk[3]): ['frob(x) == x[0] * {2}; y = [z]', 'Now frob doubles its input.']}
+        with mock.patch.object(plan, 'develop_sentences', return_value=said):
+            got = [p for p in voice.script(self.develop, [self.change]) if p.key == hunk]
+        self.assertEqual([(p.text, p.slot) for p in got], [('Now frob doubles its input.', 1)])
+
     def test_deterministic(self):
         for p in (self.tour, self.develop):
             a = voice.script(p, [self.change])
@@ -142,6 +150,20 @@ class TestScript(unittest.TestCase):
         self.assertEqual(s, 'One two three four five six seven.')
         self.assertEqual(voice.shorten('Short one. ' + words), 'Short one.')
         self.assertEqual(voice.shorten('draw_card moves'), 'draw_card moves.')   # an identifier keeps its case
+        # a whole sentence keeps its last word; only a hard cut drops a dangling one
+        self.assertEqual(voice.shorten('Keep the file it lives in'), 'Keep the file it lives in.')
+        self.assertEqual(voice.shorten(words + ' to the'), voice.shorten(words))
+        self.assertEqual(voice.shorten(' '.join(f'w{k}' for k in range(19)) + ' to the end'),
+                         'W0 ' + ' '.join(f'w{k}' for k in range(1, 19)) + '.')
+        # an aside goes before the clauses split, so no half of it is left
+        self.assertEqual(voice.clean('Plays at speed with the badge hidden; it lands there (26d4929964, README.md: '
+                                     'speed 1.0 against a peak).'),
+                         'Plays at speed with the badge hidden; it lands there.')
+        # a piece of a quotation is silent
+        for frag in ('Read aloud, it went "A change to wrap_rows.', 'And _edit." for a body: filler.',
+                     'and then it stops.', '...'):
+            self.assertIsNone(voice.say_sentence(frag), frag)
+        self.assertEqual(voice.say_sentence('It says "draw it" now.'), 'It says "draw it" now.')
 
     def test_spoken_forms(self):
         for token, said in (('draw_card', 'draw card'), ('kickerTitle', 'kicker title'),
@@ -162,6 +184,17 @@ class TestScript(unittest.TestCase):
                               ('[docs] carry the plan', 'This change carries the plan.'),
                               ('Land a move, and sweep it', 'This change lands a move, and sweeps it.'),
                               ('Added a thing', 'This change added a thing.'),
+                              ('Ring the next patch', 'This change rings the next patch.'),
+                              ('Bring back the map', 'This change brings back the map.'),
+                              ('Speed up rendering', 'This change speeds up rendering.'),
+                              ('Embed fonts', 'This change embeds fonts.'),
+                              ('Need fewer frames', 'This change needs fewer frames.'),
+                              ('Feed the cache', 'This change feeds the cache.'),
+                              ('Focus the pane', 'This change focuses the pane.'),
+                              ('Alias the flag', 'This change aliases the flag.'),
+                              ('Making it work', 'This change is making it work.'),
+                              ('Counts rows', 'This change counts rows.'),
+                              ('Put the speed-up where the typing is', 'This change puts the speed-up where the typing is.'),
                               ('v0.1.0', 'This change is titled: v0.1.0.')):
             self.assertEqual(voice.sentence_from_subject(subject), want, subject)
         for n, want in ((12, 'twelve'), (47, 'about forty-five'), (213, 'about two hundred ten'),
@@ -327,10 +360,6 @@ class TestVoiceFlag(unittest.TestCase):
         self.assertIn('bf_isabella', entry)
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class TestPacing(unittest.TestCase):
     """Shots stretched to the voice: never overlapping, never crossing a shot's end."""
 
@@ -372,10 +401,17 @@ class TestPacing(unittest.TestCase):
         cls.tmp.cleanup()
 
     def test_voice_off_is_todays_plan(self):
-        for name, (ch, patches, mode) in self.cases.items():
-            plain, _ = self.plans[name]
-            self.assertEqual(plain.to_json(), plan.build(ch, 0, mode, patches).to_json())
+        # the shots and their lengths as the tree before --voice (cff1eeecb1) planned them
+        with open(os.path.join(os.path.dirname(__file__), 'voice_off_plans.json')) as f:
+            before = json.load(f)
+        for name, (plain, _) in self.plans.items():
             self.assertIsNone(plain.voice)
+            if ' '.join(name) in before:
+                want = before[' '.join(name)]
+                self.assertEqual({'total': round(plain.total, 6),
+                                  'shots': [[s['kind'], s.get('path'), round(s['dur'], 6)] for s in plain.shots]},
+                                 want, name)
+        self.assertEqual(len(before), 7)
 
     def test_phrases_fit_their_shots(self):
         for name, (plain, p) in self.plans.items():
@@ -498,3 +534,7 @@ class TestPacing(unittest.TestCase):
                 ks = [max((k for k in ks if at[k] <= t + 1e-3), key=lambda k: at[k])]
             out.append(ks[0])
         return out
+
+
+if __name__ == '__main__':
+    unittest.main()

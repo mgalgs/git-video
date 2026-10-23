@@ -113,6 +113,24 @@ def third_person(word):
     return low + 's'
 
 
+_CONJUGATED = {'is', 'was', 'has', 'does', 'goes'}
+# Verbs whose stem ends like a past tense ("embed", "speed up").
+_ED_STEMS = {'bed', 'embed', 'imbed', 'shed', 'shred', 'wed', 'sled'}
+
+
+def conjugated(word):
+    """Whether a subject's first verb is already past, progressive or third
+    person ("counted", "counting", "counts") rather than imperative ("ring",
+    "speed", "focus")."""
+    if word in _CONJUGATED:
+        return True
+    if word.endswith('ing'):   # a progressive keeps a vowel before it: "making", not "ring"
+        return bool(re.search('[aeiouy]', word[:-3]))
+    if word.endswith('ed'):
+        return not (word.endswith('eed') or word in _ED_STEMS)
+    return word.endswith('s') and not re.search(r'(ss|us|is|as)$', word) and word not in IRREGULAR
+
+
 _PREFIX = re.compile(r'^(?:\[[^\]]*\]\s*|[\w-]+(?:\([^)]*\))?!?:\s+)')
 
 
@@ -135,8 +153,7 @@ def sentence_from_subject(subject, lead='This change'):
     head = [w.lower() if not w.isupper() or len(w) == 1 else w for w in words[:k]]
     verb = words[k]
     low = verb.lower()
-    if low.endswith('ed') or low.endswith('ing') or (low.endswith('s') and not low.endswith('ss')
-                                                    and low not in IRREGULAR):
+    if conjugated(low):
         conj = low if not verb.isupper() else verb   # already past, progressive or third person
         if low.endswith('ing'):
             head = ['is'] + head
@@ -181,11 +198,11 @@ def clean(text):
         return None
     # A clause pointing at a URL or a hash ("see https://...") goes with it;
     # in the sentence's first clause, just the link does.
-    parts = re.split(r'(?<=[,;:])\s+', text.strip())
+    s = _ASIDE.sub('', text.strip())   # first, so a split never opens an aside
+    parts = re.split(r'(?<=[,;:])\s+', s)
     s = ' '.join(p for k, p in enumerate(parts) if k == 0 or not (_URL.search(p) or _HASH.search(p)))
     s = _URL.sub(' ', s)
     s = _HASH.sub(' ', s)
-    s = _ASIDE.sub('', s)
     s = s.replace('`', '')
     s = _DASH.sub(', ', s)
     s = re.sub(r'(?<=\w)\(\)', '\0', s)   # keep a call's () through the symbol pass
@@ -210,11 +227,12 @@ _DANGLING = {'and', 'but', 'or', 'so', 'with', 'the', 'a', 'an', 'to', 'of', 'in
 _END = re.compile(r'(?<=[.!?])\s+(?=[A-Za-z_`])')
 
 
-def finish(s):
-    """`s` as a phrase: no dangling comma or conjunction at its end, a full
-    stop, a capital first letter (unless it starts with an identifier)."""
+def finish(s, cut=False):
+    """`s` as a phrase: no dangling comma (nor, when `cut` short, a dangling
+    conjunction or preposition) at its end, a full stop, a capital first
+    letter (unless it starts with an identifier)."""
     words = s.strip().rstrip(',;: ').split()
-    while len(words) > 1 and words[-1].lower().strip(',;:') in _DANGLING:
+    while cut and len(words) > 1 and words[-1].lower().strip(',;:') in _DANGLING:
         words.pop()
     s = ' '.join(words).rstrip(',;: ')
     if not s:
@@ -245,11 +263,26 @@ def shorten(text, most=MAX_WORDS, least=MIN_WORDS):
     for k in range(least, most + 1):   # cut before words[k]
         if k < len(words) and (_CLAUSE_AFTER.search(words[k - 1]) or words[k].lower() in _CLAUSE_BEFORE):
             cut = k
-    return finish(' '.join(words[:cut or most]))
+    # a clause boundary ends a whole clause; only a hard cut can leave "... to the."
+    return finish(' '.join(words[:cut or most]), cut=cut is None and len(words) > most)
+
+
+_FRAGMENT = re.compile(r'^\s*(?:(?:and|but|or|so|for|then|which|while)\b|["\u201d]|\.\.\.|\u2026)')
+
+
+def fragment(text):
+    """Whether a unit is a piece of a sentence split inside a quotation
+    ('And _edit." for a body ...'): unbalanced quotes, or a start no sentence
+    has (a lower-case conjunction, a closing quote, an ellipsis)."""
+    t = text or ''
+    return bool(t.count('"') % 2 or t.count('\u201c') != t.count('\u201d') or _FRAGMENT.match(t))
 
 
 def say_sentence(text):
-    """A commit sentence ready to be said: cleaned and shortened, or None."""
+    """A commit sentence ready to be said: cleaned and shortened, or None (a
+    fragment is better silent)."""
+    if fragment(text):
+        return None
     s = clean(text)
     return shorten(s) if s else None
 
@@ -497,9 +530,9 @@ def script(plan, patches):
             out.append(Phrase(dive_line(s), key))
         elif kind == 'edit' and s.get('status') != 'D':
             for hi in hunks_in(s['steps']):
-                texts = [t for t in (say_sentence(x) for x in develop[k].get((s['path'], hi), ())) if t]
-                texts = texts or ([here[hi]] if hi in here else [])
-                out += [Phrase(t, ('edit', k, s['path'], hi), n) for n, t in enumerate(texts)]
+                lines = [(n, say_sentence(x)) for n, x in enumerate(develop[k].get((s['path'], hi), ()))]
+                lines = [(n, t) for n, t in lines if t] or ([(0, here[hi])] if hi in here else [])
+                out += [Phrase(t, ('edit', k, s['path'], hi), n) for n, t in lines]
         elif kind == 'end':
             out.append(Phrase("That's the series." if len(plan.patches or ()) > 1 else "That's the change.", key))
             if plan.next:

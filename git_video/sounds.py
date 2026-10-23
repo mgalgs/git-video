@@ -145,8 +145,11 @@ def sounds_for(shots, shot_frames, fps, log=None, spoken=()):
     out = []
     for frame, name in cues(shots, shot_frames, fps):
         sid, gain, align = chosen[name]
-        if name in ('key', 'typing-run') and any(a <= frame <= b for a, b in spoken):
-            gain += voice.TYPING_UNDER_VOICE
-        if sid is not None:
-            out.append(vb.sfx.sound(sid, at=frame, fps=fps, gain_db=gain, align=align))
+        if sid is None:
+            continue
+        snd = vb.sfx.sound(sid, at=frame, fps=fps, gain_db=gain, align=align)
+        # quieter if any of it is heard under a phrase, not just its first frame
+        if name in ('key', 'typing-run') and any(snd.at <= b and a < snd.at + snd.frames for a, b in spoken):
+            snd = vb.sfx.sound(sid, at=frame, fps=fps, gain_db=gain + voice.TYPING_UNDER_VOICE, align=align)
+        out.append(snd)
     return tuple(out)

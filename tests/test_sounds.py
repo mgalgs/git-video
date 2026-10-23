@@ -43,7 +43,7 @@ class TestSounds(unittest.TestCase):
         self.assertEqual(len(said), len(p.voice['phrases']))
         self.assertTrue(all(x.ducks for x in said))
         spans = [(x.at, x.at + x.frames - 1) for x in said]
-        under = lambda x: any(a <= x.at <= b for a, b in spans)
+        under = lambda x: any(x.at <= b and a < x.at + x.frames for a, b in spans)   # heard under one at all
         gains = {}
         for x in f.sounds:
             if x.ducks:
