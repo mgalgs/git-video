@@ -14,7 +14,6 @@ from dataclasses import dataclass
 import videobuilder as vb
 from videobuilder import text as vbtext
 from videobuilder.capabilities.shapes.connector_network import draw_node
-from videobuilder.capabilities.shapes.map_route_draw import draw_route, route_legs
 
 from . import xref
 from .sidebar import ellipsize
@@ -265,6 +264,9 @@ class Layout:
     r: float
     labels: dict       # node id -> (text, x, y): left edge and top of its name, beside it
     heads: tuple       # (text, x, y, width, node ids) per column
+    chan: dict = None  # node id -> x of the clear lane down its (sub)column's left edge
+    lanes: tuple = ()  # y of the clear lanes between label rows, top to bottom
+    gap: float = 0.0   # how far an edge may stray from a lane's middle and stay clear
 
 
 def fonts(scale=1.0):
@@ -292,7 +294,7 @@ def layout(graph, box, scale=1.0):
     rows = max(1, min(max(counts or [1]), fit))
     step = min(STEP * scale, room / rows)
     r = max(3.0, min(10 * scale, step * 0.3))
-    pos, labels, heads = {}, {}, []
+    pos, labels, heads, chan = {}, {}, [], {}
     for c in range(cols):
         members = [n for n in graph['nodes'] if col_of[n['path']] == c]
         names = [p for p in paths if col_of[p] == c]
@@ -307,6 +309,7 @@ def layout(graph, box, scale=1.0):
             nx = x0 + (j // fit) * sw + r * HUB + 2 * scale
             cy = box.y + hh + step * (j % fit + 0.5)
             pos[n['id']] = (nx, cy)
+            chan[n['id']] = x0 + (j // fit) * sw + 1.5 * scale
             # Cut to the room left in its (sub)column, measured in the bold the
             # node on screen uses, so neither weight runs into the next column.
             lx = nx + r * HUB + 4 * scale
@@ -315,7 +318,9 @@ def layout(graph, box, scale=1.0):
             if vbtext.measure(text, bold) > room:
                 text = ''   # no room even for a letter and its ellipsis: the node goes unlabelled
             labels[n['id']] = (text, lx, cy - lh / 2)
-    return Layout(box, pos, r, labels, tuple(heads))
+    top = box.y + hh
+    lanes = tuple(top + step * j for j in range(rows + 1))
+    return Layout(box, pos, r, labels, tuple(heads), chan, lanes, max(0.0, (step - lh) / 2 - 1.5 * scale))
 
 
 @dataclass(frozen=True)
@@ -367,11 +372,46 @@ def state_at(graph, shots, i, t, current, trail):
     return State(nodes, edges, current, tuple(trail), route)
 
 
-def _path(a, b, r):
-    """An edge's points from node `a` to node `b`: a gentle arc (route_legs),
-    bowed further when both sit in one column, so it clears the nodes between."""
-    bow = 0.18 if abs(a[0] - b[0]) > 1 else -0.35
-    return route_legs([a, b], bow=bow)[0], bow
+def edge_path(lay, a, b, k=0, scale=1.0):
+    """The points of the edge from node id `a` to node id `b` (the k-th edge),
+    routed round every label: out of `a` to the lane down its column's left
+    edge (clear of the names, which sit right of their nodes), along it to
+    the lane between label rows nearest the middle, across to `b`'s column,
+    down its lane and into `b`. Corners are rounded; parallel edges are
+    nudged apart within the lanes."""
+    (ax, ay), (bx, by) = lay.pos[a], lay.pos[b]
+    xa, xb = lay.chan[a], lay.chan[b]
+    nudge = ((k % 3) - 1) * min(1.5 * scale, lay.gap)
+    if abs(xa - xb) < 1e-6:
+        x = xa + nudge * 0.5
+        corners = [(ax, ay), (x, ay), (x, by), (bx, by)]
+    else:
+        mid = (ay + by) / 2
+        y = min(lay.lanes, key=lambda ly: (abs(ly - mid), ly)) + nudge
+        corners = [(ax, ay), (xa, ay), (xa, y), (xb, y), (xb, by), (bx, by)]
+    return _rounded(corners, 6 * scale)
+
+
+def _rounded(corners, radius):
+    """A polyline through `corners` with each inner corner turned on a quarter
+    circle of up to `radius` (less where the legs are short)."""
+    pts = [corners[0]]
+    for p0, p1, p2 in zip(corners, corners[1:], corners[2:]):
+        d0, d1 = math.dist(p0, p1), math.dist(p1, p2)
+        rr = min(radius, d0 / 2, d1 / 2)
+        if rr < 0.5:
+            pts.append(p1)
+            continue
+        u = ((p0[0] - p1[0]) / d0, (p0[1] - p1[1]) / d0)
+        v = ((p2[0] - p1[0]) / d1, (p2[1] - p1[1]) / d1)
+        for j in range(7):   # a quadratic curve from the corner's in-point to its out-point
+            q = j / 6
+            s0 = (p1[0] + u[0] * rr, p1[1] + u[1] * rr)
+            s1 = (p1[0] + v[0] * rr, p1[1] + v[1] * rr)
+            pts.append(((1 - q) ** 2 * s0[0] + 2 * q * (1 - q) * p1[0] + q * q * s1[0],
+                        (1 - q) ** 2 * s0[1] + 2 * q * (1 - q) * p1[1] + q * q * s1[1]))
+    pts.append(corners[-1])
+    return pts
 
 
 def draw(cv, lay, graph, state, *, color='#51afef', call='#5b6270', ink='#bbc2cf', muted='#7a8291',
@@ -394,7 +434,7 @@ def draw(cv, lay, graph, state, *, color='#51afef', call='#5b6270', ink='#bbc2cf
             a, b = lay.pos.get(e['a']), lay.pos.get(e['b'])
             if a is None or b is None or a == b:
                 continue
-            pts, _ = _path(a, b, lay.r)
+            pts = edge_path(lay, e['a'], e['b'], k, scale)
             vb.paths.draw(cv, vb.paths.reveal(pts, f), color if e['kind'] == 'xref' else call,
                           width=(2.5 if e['kind'] == 'xref' else 1.8) * scale, alpha=0.95)
             if f >= 1:   # an arrowhead says which way it goes
@@ -403,9 +443,11 @@ def draw(cv, lay, graph, state, *, color='#51afef', call='#5b6270', ink='#bbc2cf
             k, p = state.route
             e = graph['edges'][k]
             a, b = lay.pos.get(e['a']), lay.pos.get(e['b'])
-            if a is not None and b is not None and a != b:
-                draw_route(cv, [a, b], p, color=accent, width=3 * scale, bow=_path(a, b, lay.r)[1], ghost=None,
-                           ring=bg, marker=True)
+            if a is not None and b is not None and a != b:   # the dive running along the edge's route
+                done = vb.paths.reveal(edge_path(lay, e['a'], e['b'], k, scale), p)
+                vb.paths.draw(cv, done, accent, width=3 * scale)
+                if done:
+                    draw_node(cv, *done[-1], 4.5 * scale, accent, 1.0, hub=True)
         for n in graph['nodes']:
             amount = state.nodes.get(n['id'], 0.0)
             if amount <= 0 or n['id'] not in lay.pos:
@@ -433,7 +475,7 @@ def draw(cv, lay, graph, state, *, color='#51afef', call='#5b6270', ink='#bbc2cf
 
 
 def _arrow(cv, pts, r, color, scale):
-    (x0, y0), (x1, y1) = pts[-3], pts[-1]
+    (x0, y0), (x1, y1) = pts[-2], pts[-1]
     ang = math.atan2(y1 - y0, x1 - x0)
     tx, ty = x1 - math.cos(ang) * (r + 3), y1 - math.sin(ang) * (r + 3)
     s = 7 * scale

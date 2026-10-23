@@ -145,6 +145,37 @@ class TestGraph(unittest.TestCase):
                 cut = [lay.labels[n['id']][0] for n in nodes[:30]]
                 self.assertTrue(all(t == '' or t.endswith('…') or t in {n['name'] for n in nodes} for t in cut))
 
+    def test_edges_clear_every_label(self):
+        import itertools
+        files = {'film.py': ['draw', 'stage', '_hunk', 'draw_graph', 'callout_box'],
+                 'graph.py': ['layout', 'state_at', 'draw', 'edge_path'], 'plan.py': ['build', 'scroll_top'],
+                 'sidebar.py': ['free_area']}
+        nodes = [{'id': f'{p}:{n}', 'path': p, 'name': n, 'line': k + 1, 'touched': True, 'first': 0}
+                 for p, names in files.items() for k, n in enumerate(names)]
+        edges = [{'a': a['id'], 'b': b['id'], 'kind': 'call' if k % 2 else 'xref', 'first': 0}
+                 for k, (a, b) in enumerate(itertools.permutations(nodes, 2)) if k % 3 == 0]
+        g = {'nodes': nodes, 'edges': edges}
+        for gr in (g, self.plan.graph):
+            for box, scale in ((vb.Box(40, 40, 468, 240), 1.0), (vb.Box(40, 40, 380, 580), 1.15),
+                               (vb.Box(40, 40, 548, 300), 1.0)):
+                lay = graph.layout(gr, box, scale)
+                label_f = graph.fonts(scale)[0]
+                bold = vb.Font(label_f.family, label_f.size, weight=700)
+                boxes = [(nid, vb.Box(lx, ly, vb.text.measure(t, bold), vb.text.line_height(bold)))
+                         for nid, (t, lx, ly) in lay.labels.items() if t]
+                boxes += [(f'head {t}', vb.Box(x, y, vb.text.measure(t, graph.fonts(scale)[1]),
+                                               vb.text.line_height(graph.fonts(scale)[1]))) for t, x, y, w, _ in lay.heads]
+                half = 1.25 * scale   # half the widest edge's stroke
+                for k, e in enumerate(gr['edges']):
+                    pts = graph.edge_path(lay, e['a'], e['b'], k, scale)
+                    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+                        steps = max(1, int(max(abs(x1 - x0), abs(y1 - y0)) / 0.5))
+                        for j in range(steps + 1):
+                            x, y = x0 + (x1 - x0) * j / steps, y0 + (y1 - y0) * j / steps
+                            for name, b in boxes:
+                                inside = b.x - half < x < b.right + half and b.y - half < y < b.bottom + half
+                                self.assertFalse(inside, (box, e['a'], e['b'], name, (x, y), b))
+
     def test_graph_grows_with_the_tour(self):
         tour = film.Tour(self.plan, self.change, log=io.StringIO())
         labels = dict((label, n) for n, label in tour.film.keyframes)
