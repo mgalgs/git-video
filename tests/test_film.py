@@ -221,7 +221,7 @@ class TestFilm(unittest.TestCase):
             st = film.stage(cv)
             ed = [b for name, b in cv.marks if name.startswith('editor.')]
             sb = [b for name, b in cv.marks if name.startswith('sidebar.')]
-            self.assertEqual(len(ed), 3)
+            self.assertEqual(len(ed), 5)   # text, mode line, echo, minimap, viewport
             self.assertEqual(len(sb), 3, fmt)
             for b in ed:
                 self.assertTrue(st.main.contains(b), (fmt, b))
@@ -235,6 +235,54 @@ class TestFilm(unittest.TestCase):
             cv = self.tour.film.frame(0, format=fmt)
             st = film.stage(cv)
             self.assertGreaterEqual(film.editor.layout(st.main, st.mono).rows, plan.PLAN_ROWS, fmt)
+
+    def test_planned_cols_fit_every_format(self):
+        for fmt in ('16x9', '9x16', '1x1'):
+            cv = self.tour.film.frame(0, format=fmt)
+            st = film.stage(cv)
+            lay = film.editor.layout(st.main, st.mono, digits=6, minimap=True)
+            self.assertGreaterEqual(int(lay.text_box.w // lay.cell_w), plan.PLAN_COLS, fmt)
+
+    def test_minimap_in_every_format(self):
+        _, n = self.frame_of('hunk', 1.0)
+        for fmt in ('16x9', '9x16', '1x1'):
+            cv = self.tour.film.frame(n, fmt)
+            st = film.stage(cv)
+            marks = dict(cv.marks)
+            mm, view, text = marks['editor.minimap'], marks['editor.viewport'], marks['editor.text']
+            self.assertTrue(st.main.contains(mm), fmt)
+            self.assertTrue(mm.contains(view), fmt)
+            self.assertGreaterEqual(mm.x, text.right - 0.5, fmt)
+            self.assertLessEqual(mm.y, text.y)
+            for name, b in cv.marks:
+                if name.startswith('sidebar.'):
+                    self.assertFalse(mm.intersects(b), (fmt, name))
+
+    def test_fringe_marks_come_from_plan(self):
+        _, n = self.frame_of('hunk', 1.0)
+        p = plan.Plan.from_json(self.plan.to_json())
+        for f in p.files:
+            f['marks'] = {'added': [], 'removed_at': []}
+        bare = film.Tour(p, self.change, formats=('16x9',), log=io.StringIO())
+
+        def fringe_ink(tour):
+            cv = tour.film.frame(n, '16x9')
+            text = dict(cv.marks)['editor.text']
+            st = film.stage(cv)
+            green = vb.rgba(film.THEME.fringe_added)
+            want = tuple(round(c * 255) for c in green[:3])
+            cv.surface.flush()
+            data, stride = cv.surface.get_data(), cv.surface.get_stride()
+            count = 0
+            for y in range(int(text.y), int(text.bottom), 2):
+                for x in range(int(st.main.x), int(st.main.x + 12)):
+                    i = y * stride + x * 4
+                    b, g, r = data[i:i + 3]
+                    count += (r, g, b) == want
+            return count
+
+        self.assertGreater(fringe_ink(self.tour), 0)
+        self.assertEqual(fringe_ink(bare), 0)
 
     def test_definition_cursor_lands_on_the_name(self):
         ch = collect.collect(fixtures.make_edge_repo(self.tmp.name + '/go'), 'HEAD')

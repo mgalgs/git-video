@@ -20,8 +20,9 @@ PLAN_ROWS = 26            # rows the planner assumes are on screen: the fewest a
 # (film.fit_top), so an xref is only picked from the rows above it.
 XREF_ROWS = PLAN_ROWS - 1
 # The film never scrolls sideways, so an xref is only picked from the columns
-# every format shows: the fewest is 9x16 with a six-digit gutter (default font).
-PLAN_COLS = 64
+# every format shows: the fewest is 9x16 with a six-digit gutter and the
+# minimap strip (default font).
+PLAN_COLS = 60
 MAX_HUNK_SHOTS = 60
 XREF_CAP_PER_HUNK = 3     # --verbose=3
 XREF_CAP_TOTAL = 24       # --verbose=3
@@ -177,7 +178,9 @@ def _hunk_candidates(change, f, top, visible):
 def plan(change, verbose=0):
     """The tour of `change` as a Plan."""
     files = [{'path': f.path, 'old_path': f.old_path, 'status': f.status, 'added': f.added,
-              'deleted': f.deleted, 'binary': f.binary, 'lines': f.lines} for f in change.files]
+              'deleted': f.deleted, 'binary': f.binary, 'lines': f.lines,
+              'marks': {'added': [list(r) for h in f.hunks for r in h.added],
+                        'removed_at': [r for h in f.hunks for r in h.removed_at]}} for f in change.files]
     name = repo_name(change.repo)
     tree_map = repomap.tiles(change.tree, files, root=name)
     tiled = {t['path'] for g in tree_map['groups'] for t in g['tiles'] if 'path' in t}

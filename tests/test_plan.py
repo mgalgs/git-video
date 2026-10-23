@@ -187,6 +187,11 @@ class TestPlan(unittest.TestCase):
                                                                    'xref-push')}
         self.assertEqual(pushes, {'use.sh': 'lib.sh', 'use.el': 'lib.el'})
 
+    def test_file_marks(self):
+        files = {f['path']: f for f in self.plans[0].files}
+        self.assertEqual(files['src/lib.py']['marks'], {'added': [[2, 2]], 'removed_at': [1]})
+        self.assertEqual(files['src/app.py']['marks'], {'added': [[1, 5]], 'removed_at': []})
+
     def test_total_duration(self):
         for p in self.plans.values():
             self.assertAlmostEqual(p.total, sum(s['dur'] for s in p.shots), places=6)

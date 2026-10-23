@@ -31,6 +31,45 @@ class TestEditor(unittest.TestCase):
             for name, b in cv.marks:
                 self.assertTrue(box.contains(b), (box, name, b))
 
+    def test_minimap(self):
+        box = vb.Box(0, 0, 1000, 700)
+        plain = editor.layout(box, FONT)
+        lay = editor.layout(box, FONT, minimap=True)
+        strip = round(lay.cell_w * editor.MINIMAP_CELLS)
+        self.assertEqual(lay.minimap_box.w, strip)
+        self.assertAlmostEqual(plain.text_box.w - lay.text_box.w, strip)
+        self.assertEqual(lay.minimap_box.right, box.right)
+        theme = editor.Theme()
+        buf = buffer()
+        mm = editor.Minimap(editor.minimap_bars(buf.lines), added=[(30, 33)], removed_at=[60])
+        ys = []
+        for top in (0, 20, 50):
+            cv = vb.Canvas(1000, 700, '#000')
+            editor.draw(cv, lay, buf, top, minimap=mm, theme=theme)
+            marks = dict(cv.marks)
+            self.assertTrue(marks['editor.minimap'].contains(marks['editor.viewport']))
+            ys.append(marks['editor.viewport'].y)
+        self.assertEqual(ys, sorted(ys))
+        self.assertLess(ys[0], ys[-1])
+
+        def ink(color, mm):
+            cv = vb.Canvas(1000, 700, '#000')
+            editor.draw(cv, lay, buf, 0, minimap=mm, theme=theme)
+            want = tuple(round(c * 255) for c in vb.rgba(color)[:3])
+            strip = lay.minimap_box
+            count = 0
+            for y in range(int(strip.y), int(strip.bottom)):
+                for x in range(int(strip.x), int(strip.x + 8)):
+                    b, g, r, _ = pixel(cv, x, y)
+                    count += (r, g, b) == want
+            return count
+
+        self.assertGreater(ink(theme.fringe_added, mm), 0)
+        self.assertGreater(ink(theme.fringe_removed, mm), 0)
+        bare = editor.Minimap(mm.bars)
+        self.assertEqual(ink(theme.fringe_added, bare), 0)
+        self.assertEqual(ink(theme.fringe_removed, bare), 0)
+
     def test_layout_geometry(self):
         box = vb.Box(300, 200, 700, 500)
         lay = editor.layout(box, FONT)

@@ -21,6 +21,10 @@ import videobuilder as vb
 from videobuilder import text as vbtext
 from videobuilder.capabilities.typography.blinking_cursor import cursor_on
 from videobuilder.capabilities.ui.highlighter_swipe import highlighter_swipe
+from videobuilder.capabilities.ui.scroll_progress_bar import scroll_progress
+
+MINIMAP_CELLS = 3.5       # the minimap strip's width, in cells
+MINIMAP_MAX_SCALE = 3.0   # px per line at the most (a short file stays a short strip)
 
 
 @dataclass(frozen=True)
@@ -43,6 +47,10 @@ class Theme:
     sweep_alpha: float = 0.30
     cursor: str = '#51afef'
     xref_box: str = '#ecbe7b'
+    minimap_bg: str = '#21242b'
+    minimap_bar: str = '#4b5263'
+    minimap_bar_changed: str = '#98be65'
+    minimap_view: str = '#51afef'
 
 
 @dataclass
@@ -65,6 +73,7 @@ class Layout:
     text_box: vb.Box
     modeline_box: vb.Box
     echo_box: vb.Box
+    minimap_box: vb.Box | None = None   # the strip at the text area's right edge, when asked for
 
     def line_y(self, line, scroll_top):
         """Top of `line` when the view starts at `scroll_top`."""
@@ -94,8 +103,9 @@ class Layout:
         return math.floor((y - tb.y) / self.line_h + scroll_top), math.floor((x - tb.x) / self.cell_w)
 
 
-def layout(box, font, digits=3):
-    """The pane's layout in `box` with `font`; `digits` sets the line-number gutter's width."""
+def layout(box, font, digits=3, minimap=False):
+    """The pane's layout in `box` with `font`; `digits` sets the line-number gutter's
+    width; `minimap` reserves a MINIMAP_CELLS-wide strip at the right edge."""
     box = vb.Box(*box)
     cell = vbtext.measure('M', font)
     lh = vbtext.line_height(font)
@@ -106,11 +116,34 @@ def layout(box, font, digits=3):
     pad = round(cell * 0.6)
     text_top = box.y + round(lh * 0.25)
     mode_y = box.bottom - echo_h - mode_h
+    strip = round(cell * MINIMAP_CELLS) if minimap else 0
     text_box = vb.Box(box.x + fringe + gutter + pad, text_top,
-                      max(0.0, box.w - fringe - gutter - pad), max(0.0, mode_y - text_top))
+                      max(0.0, box.w - fringe - gutter - pad - strip), max(0.0, mode_y - text_top))
     rows = max(1, int(text_box.h // lh))
+    mini = vb.Box(box.right - strip, box.y, strip, mode_y - box.y) if minimap else None
     return Layout(box, font, cell, lh, rows, fringe, gutter, text_box,
-                  vb.Box(box.x, mode_y, box.w, mode_h), vb.Box(box.x, mode_y + mode_h, box.w, echo_h))
+                  vb.Box(box.x, mode_y, box.w, mode_h), vb.Box(box.x, mode_y + mode_h, box.w, echo_h), mini)
+
+
+@dataclass(frozen=True)
+class Minimap:
+    """The whole buffer in miniature. `bars`: per line, (start, end) of its text
+    as fractions 0..1 of the strip's width; `added`: 0-based inclusive (first,
+    last) line ranges marked `+`; `removed_at`: 0-based lines before which
+    removed lines sat, marked `−`."""
+    bars: Sequence
+    added: Sequence = ()
+    removed_at: Sequence = ()
+
+
+def minimap_bars(lines, width=80):
+    """Minimap bars for highlighted lines: each line's text from its first
+    non-space column to its end, over `width` columns."""
+    out = []
+    for runs in lines:
+        first, end = _text_extent(runs)
+        out.append((min(1.0, first / width), min(1.0, end / width)) if end > first else (0.0, 0.0))
+    return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -142,7 +175,7 @@ def modeline_text(buf, cursor):
 
 
 def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), marks_removed_at=(),
-         tints=(), sweeps=(), boxes=(), modeline=None, echo='', echo_cursor=False, theme=Theme()):
+         tints=(), sweeps=(), boxes=(), modeline=None, echo='', echo_cursor=False, minimap=None, theme=Theme()):
     """Draw the pane and return its Placement.
 
     `cursor`: (line, col) of point, a block; `blink`: seconds since point last
@@ -153,7 +186,9 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
     line's text, `strength` (default 1) scaling the band's alpha.
     `boxes`: (line, col, length) words outlined. `modeline`: (left, right)
     strings, default buffer name and position. `echo`: the echo-area text,
-    with a cursor after it when `echo_cursor`.
+    with a cursor after it when `echo_cursor`. `minimap`: a Minimap drawn in
+    the layout's strip (laid out with `minimap=True`), its viewport box
+    following `scroll_top`.
     """
     box, tb, lh, cw = lay.box, lay.text_box, lay.line_h, lay.cell_w
     n = len(buf.lines)
@@ -229,6 +264,8 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                     if ch.strip():
                         vbtext.draw(cv, [ch], font, cursor_box.x, cursor_box.y, theme.bg, alpha=a)
         cv.mark('editor.text', *tb.pad(0, 0, max(0.0, tb.h - lay.rows * lh), 0))
+        if lay.minimap_box is not None:
+            _minimap(cv, lay, minimap, n, scroll_top, theme)
         mb = lay.modeline_box
         cv.rect(*mb, theme.modeline_bg)
         cv.rect(mb.x, mb.y, mb.w, 1.5, theme.line_no)
@@ -247,6 +284,47 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
             cv.rect(eb.x + cw * (0.5 + len(echo)), ey, cw, lh, theme.cursor)
         cv.mark('editor.echo', *eb)
     return Placement(lay, scroll_top, lay.visible_range(scroll_top, n), cursor_box)
+
+
+def _minimap(cv, lay, mm, n, scroll_top, theme):
+    """The strip: one bar per line (bucketed to whole px rows when lines are
+    thinner than a pixel), `+` ticks beside added lines and `−` dashes where
+    lines were removed, and a box over the lines on screen."""
+    strip = lay.minimap_box
+    cv.rect(*strip, theme.minimap_bg)
+    cv.rect(strip.x, strip.y, 1, strip.h, theme.line_no, alpha=0.6)
+    cv.mark('editor.minimap', *strip)
+    inner = strip.pad(lay.cell_w * 0.55, lay.line_h * 0.25)
+    if inner.w <= 0 or inner.h <= 0 or n <= 0:
+        return
+    scale = min(MINIMAP_MAX_SCALE, inner.h / n)
+    bars = mm.bars if mm is not None else ()
+    added = [(a, b) for a, b in (mm.added if mm is not None else ())]
+    changed = set(ln for a, b in added for ln in range(a, b + 1))
+    rows = {}   # px row -> (length, start, end, changed)
+    for ln, (a, b) in enumerate(bars[:n]):
+        if b <= a:
+            continue
+        y = int(ln * scale)
+        cur = rows.get(y)
+        if cur is None or b - a > cur[0] or (ln in changed and not cur[3]):
+            rows[y] = (b - a, a, b, ln in changed or bool(cur and cur[3]))
+    bh = max(1.0, 0.7 * scale)
+    for y, (_, a, b, ch) in rows.items():
+        cv.rect(inner.x + a * inner.w, inner.y + y, max(1.0, (b - a) * inner.w), bh,
+                theme.minimap_bar_changed if ch else theme.minimap_bar, alpha=0.9 if ch else 0.8)
+    tick_x = strip.x + 2
+    for a, b in added:
+        cv.rect(tick_x, inner.y + a * scale, 3, max(2.0, (b - a + 1) * scale), theme.fringe_added)
+    for ln in (mm.removed_at if mm is not None else ()):
+        cv.rect(tick_x - 1, inner.y + ln * scale - 1, 7, 2, theme.fringe_removed)
+    view_h = max(6.0, min(lay.rows, n) * scale)
+    y = inner.y + scroll_progress(scroll_top, n, lay.rows) * max(0.0, n - lay.rows) * scale
+    y = min(y, inner.bottom - view_h)
+    vbox = vb.Box(strip.x + 1.5, y, strip.w - 3, view_h)
+    cv.rect(*vbox, theme.minimap_view, alpha=0.15)
+    cv.outline(*vbox, theme.minimap_view, width=1.5, radius=2)
+    cv.mark('editor.viewport', *vbox)
 
 
 def _char_at(runs, col):

@@ -121,11 +121,11 @@ class Tour:
         self.shot_frames = starts
         self.frames = max(1, round(acc * self.fps))
         self.buffers, self.marks = {}, {}
-        for f in change.files:
-            if f.text is not None:
-                self.marks[f.path] = (sorted({n - 1 for h in f.hunks for a, b in h.added for n in range(a, b + 1)}),
-                                      sorted({r for h in f.hunks for r in h.removed_at}),
-                                      [(a - 1, b - 1) for h in f.hunks for a, b in h.added])
+        for f in plan.files:   # the fringe's +/− marks and tints, from the plan
+            m = f.get('marks') or {}
+            added = [(a - 1, b - 1) for a, b in m.get('added', ())]
+            self.marks[f['path']] = (sorted({n for a, b in added for n in range(a, b + 1)}),
+                                     sorted(set(m.get('removed_at', ()))), added)
         for s in self.shots:
             for path in (s.get('path'), s.get('to'), (s.get('definition') or {}).get('path')):
                 if path and path not in self.buffers:
@@ -134,6 +134,10 @@ class Tour:
                         raise ValueError(f'{path} has no text at {change.target[:12]} to show')
                     self.buffers[path] = editor.Buffer(path, highlight.highlight_lines(text, path), _mode(path))
         self.views = self._views()
+        self.minimaps = {}   # the minimap per buffer: bars and marks, computed once
+        for path, buf in self.buffers.items():
+            added, removed, ranges = self.marks.get(path, ((), (), ()))
+            self.minimaps[path] = editor.Minimap(editor.minimap_bars(buf.lines), tuple(ranges), tuple(removed))
         self.maps = {}   # the treemap per main box, laid out once
         if plan.map:
             for f in formats:
@@ -254,7 +258,7 @@ class Tour:
 
 
 def _layout(st, buf):
-    return editor.layout(st.main, st.mono, digits=max(3, len(str(len(buf.lines)))))
+    return editor.layout(st.main, st.mono, digits=max(3, len(str(len(buf.lines)))), minimap=True)
 
 
 def _stats(plan):
@@ -583,7 +587,7 @@ def _pane(tour, cv, st, view, top=None, **kw):
     added, removed, tints = tour.marks.get(view.path, ((), (), ()))
     kw.setdefault('cursor', view.cursor)
     return editor.draw(cv, lay, buf, top, marks_added=added, marks_removed_at=removed, tints=tints,
-                       theme=THEME, **kw)
+                       minimap=tour.minimaps.get(view.path), theme=THEME, **kw)
 
 
 def _fitted(tour, st, view):
