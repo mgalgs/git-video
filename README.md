@@ -180,6 +180,9 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
 - A closing card: a recap of the files visited and the definitions dived
   into, and the next commit's subject when the target has one on the
   current branch.
+- On every card a long subject wraps at spaces onto as many lines as the
+  card has room for, then the type shrinks, and only then is it cut, with
+  an ellipsis after a whole word: never inside a word or at a hyphen.
 - `--voice`: a narration with captions, paced into the film (see below).
 - Colour is never the only cue: added lines carry a `+` in the fringe,
   removed lines a `−` marker between lines, removed words a strike-through,

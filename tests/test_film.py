@@ -212,6 +212,60 @@ class TestFilm(unittest.TestCase):
         for name_w, sub_w, room in bars:
             self.assertLessEqual(max(name_w, sub_w), room)
 
+    def test_card_titles_never_break_inside_a_word(self):
+        """A long subject on the title, patch and end cards, in every format: each
+        line drawn is a run of its whole words, an ellipsis only after one."""
+        subject = ('Show co-authors as initials on the title card, keep the end card readable, and '
+                   'wrap long subjects at word boundaries only ') * 3
+        words = subject.split()
+        repo, sha = fixtures.make_rewrite_repo(self.tmp.name + '/titles')
+        combined, patches = collect.series(repo, f'{sha["a"]}..{sha["c"]}')
+        p = plan.build(combined, 0, 'tour', patches)
+        p.commit['subject'] = subject
+        for q in p.patches:
+            q['commit']['subject'] = subject
+        import copy
+        one = copy.deepcopy(self.plan)   # a range's title card says "N commits"
+        one.commit['subject'] = subject
+        shots = []
+        for t in (film.Tour(p, combined, patches=patches, log=io.StringIO()), film.Tour(one, self.change, log=io.StringIO())):
+            shots += [(t, label, n) for n, label in t.film.keyframes if label in ('title', 'interstitial 1', 'end')]
+        self.assertEqual(sorted(label for _, label, _ in shots), ['end', 'end', 'interstitial 1', 'title', 'title'])
+        shots = [(t, label, n) for t, label, n in shots if not (label == 'title' and t.plan is p)]
+        real = film.vbtext.draw
+
+        def draw(cv, lines, *a, **kw):
+            drawn.extend([lines] if isinstance(lines, str) else lines)
+            return real(cv, lines, *a, **kw)
+
+        for fmt in ('16x9', '9x16', '1x1'):
+            for tour, label, n in shots:
+                drawn = []
+                with mock.patch.object(film.vbtext, 'draw', draw):
+                    tour.film.frame(n, fmt)
+                title = [ln for ln in drawn if any(w in ln for w in ('Show', 'co-', 'initials', 'card', 'wrap', 'word'))]
+                self.assertTrue(title, (fmt, label))
+                for ln in title:
+                    toks = ln.removesuffix('…').split()
+                    k = next((k for k in range(len(words)) if words[k:k + len(toks)] == toks), None)
+                    self.assertIsNotNone(k, (fmt, label, ln))
+
+    def test_fit_words(self):
+        f = vb.Font(film.UI, 40, weight=700)
+        w = sidebar.vbtext.measure('Show co-authors as', f)
+        self.assertEqual(sidebar.wrap_words('Show co-authors as initials', f, w), ('Show co-authors as', 'initials'))
+        self.assertIsNone(sidebar.wrap_words('Show co-authors', f, sidebar.vbtext.measure('co-autho', f)))
+        # the type shrinks before the text is cut; cut, it ends after a whole word
+        small = vb.Font(film.UI, 20, weight=700)
+        font, lines = sidebar.fit_words('Show co-authors as initials', [f, small], w, lambda _, n: n <= 1)
+        self.assertEqual((font, lines), (small, ['Show co-authors as initials']))
+        font, lines = sidebar.fit_words('Show co-authors as initials on cards', [f],
+                                        sidebar.vbtext.measure('Show co-authors as…', f), lambda _, n: n <= 1)
+        self.assertEqual(lines, ['Show co-authors as…'])
+        font, lines = sidebar.fit_words('Show co-authors on cards', [f], sidebar.vbtext.measure('Show co-au', f),
+                                        lambda _, n: n <= 1)
+        self.assertEqual(lines, ['Show…'])   # never "Show co-…" or "Show co-au…"
+
     def test_portrait_title_card_fills_the_column(self):
         cv = self.tour.film.frame(round(plan.TITLE_STILL * self.plan.fps), '9x16')
         marks = dict(cv.marks)

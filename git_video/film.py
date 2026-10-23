@@ -640,25 +640,22 @@ def counter_value(t, n):
     return n * (1 - (1 - p) ** 3)
 
 
-def _title_lines(text, box_w, sizes, most, line_height=1.18):
-    """(font, lines) of the title: the largest of `sizes` whose wrap fits in
-    `most` lines, else the smallest with its last line ellipsized."""
-    for size in sizes:
-        font = vb.Font(UI, size, weight=700, line_height=line_height)
-        lines = list(vbtext.wrap(text, font, box_w, balance=True))
-        if len(lines) <= most and all(vbtext.measure(ln, font) <= box_w for ln in lines):
-            return font, lines
-    lines = lines[:most]
-    lines[-1] = sidebar.ellipsize(' '.join(lines[most - 1:]) + ' …', font, box_w)
-    return font, [ln if vbtext.measure(ln, font) <= box_w else sidebar.ellipsize(ln, font, box_w) for ln in lines]
+def _title_lines(text, box_w, sizes, most, line_height=1.18, fits=None):
+    """(font, lines) of a card's title, wrapped only at spaces: onto up to
+    `most` lines (and as many as `fits(font, n)` allows) in the largest of
+    `sizes` that takes it whole, else in the smallest, ellipsized after a
+    whole word (`sidebar.fit_words`)."""
+    fonts = [vb.Font(UI, size, weight=700, line_height=line_height) for size in sizes]
+    return sidebar.fit_words(text, fonts, box_w, lambda f, n: n <= most and (fits is None or fits(f, n)),
+                             balance=True)
 
 
 def _name_bar(cv, text, t, shot, x, bottom, width, title_f, sub_f, pad=28):
     """The author's name bar (lower_third_slide_in_bar), its two lines cut to
     fit the bar so a long name never runs past its end."""
     room = width - 8 - 2 * pad
-    return lower_third_bar(cv, sidebar.ellipsize(text['name'], title_f, room),
-                           sidebar.ellipsize(text['subtitle'], sub_f, room), (t - P.TITLE_BAR_IN) / 0.5,
+    return lower_third_bar(cv, sidebar.ellipsize_words(text['name'], title_f, room),
+                           sidebar.ellipsize_words(text['subtitle'], sub_f, room), (t - P.TITLE_BAR_IN) / 0.5,
                            (t - (shot['dur'] - P.TITLE_BAR_OUT)) / 0.3, x=x, bottom=bottom, width=width,
                            title_font=title_f, subtitle_font=sub_f, color='#1c1f24', accent=THEME.cursor,
                            ink='#e6e9ef', muted='#9aa3b2', pad=pad)
@@ -705,8 +702,12 @@ def _title_card(tour, cv, box, shot, t):
     if names:
         _coauthors(cv, names, t, 0, bar.y - 4, 26, right=box.right)
     room = vb.Box(box.x, box.y, box.w, max(0.0, bar.y - box.y - 24))
-    title_f, lines = _title_lines(text['title'], box.w * 0.8, (66, 58, 50), 3)
     cell_h = vbtext.line_height(digits) * 1.15
+    fixed = vbtext.line_height(kicker_f) + 10 + cell_h
+
+    def fits(f, n):   # the stack, with its gaps, in the room above the bar
+        return fixed + n * vbtext.line_height(f) + 12 * (n + 2) <= room.h
+    title_f, lines = _title_lines(text['title'], box.w * 0.8, (66, 58, 50, 44), 4, fits=fits)
     heights = [vbtext.line_height(kicker_f), *[vbtext.line_height(title_f)] * len(lines), 10, cell_h]
     boxes, _ = room.stack(heights, gap=12, align='center')
     _title_stack(cv, box, t, text, kicker_f, title_f, lines, boxes[0], boxes[1:1 + len(lines)])
@@ -734,13 +735,9 @@ def _title_card_portrait(tour, cv, box, shot, t):
     r = 34
     co_h = (56 + vbtext.line_height(vb.Font(UI, 20)) + 14 + 2 * r) if names else 0
     rest = vbtext.line_height(kicker_f) + 24 + 64 + cell_h + 64 + _bar_height(bar_f, sub_f) + co_h
-    for size in PORTRAIT_TITLE_SIZES:   # the largest that wraps to five lines and leaves the rest its room
-        title_f, lines = _title_lines(text['title'], box.w, (size,), 5)
-        fits = len(vbtext.wrap(text['title'], title_f, box.w, balance=True)) <= 5
-        if fits and rest + len(lines) * vbtext.line_height(title_f) <= box.h * 0.82:
-            break
-    else:
-        title_f, lines = _title_lines(text['title'], box.w, PORTRAIT_TITLE_SIZES, 5)
+    # the largest size that wraps to five lines and leaves the rest its room
+    title_f, lines = _title_lines(text['title'], box.w, PORTRAIT_TITLE_SIZES, 5,
+                                  fits=lambda f, n: rest + n * vbtext.line_height(f) <= box.h * 0.82)
     th = vbtext.line_height(title_f)
     free = max(0.0, box.h - rest - len(lines) * th)
     a, b, c, _ = (free * f for f in PORTRAIT_SPREAD)
@@ -912,20 +909,27 @@ def _end_card(tour, cv, box, shot, t):
         rh = vbtext.line_height(F['row'])
         chrome = 2 * 22 + vbtext.line_height(F['head']) + 12
         kicker = vb.Font(UI, 24 * k, weight=700, tracking=0.2)
-        title = vb.Font(UI, (52 if not portrait else 46) * k, weight=700, line_height=1.15)
-        lines = list(vbtext.wrap(plan.commit['subject'], title, box.w))
-        if len(lines) > 2:
-            lines = [lines[0], sidebar.ellipsize(' '.join(lines[1:]), title, box.w)]
-        lines = [ln if vbtext.measure(ln, title) <= box.w else sidebar.ellipsize(ln, title, box.w) for ln in lines]
-        header = vbtext.line_height(kicker) + 8 + len(lines) * vbtext.line_height(title) + 6 + 40 * k + 16 + 20
         link = 84 * k if plan.next else 0
-        body_room = box.h - header - (16 + link if link else 0)
-        cap = (body_room - 16) / 2 if portrait else body_room
         want = [chrome + max(1, n) * rh + 8 for n in (len(files), 2 * len(defs))]
-        bodies = [min(w, cap) for w in want]
-        if not portrait:
-            bodies = [max(bodies)] * 2
-        total = header + sum(bodies) + 16 + (16 + link if link else 0)
+
+        def layout(title, n):
+            header = vbtext.line_height(kicker) + 8 + n * vbtext.line_height(title) + 6 + 40 * k + 16 + 20
+            body_room = box.h - header - (16 + link if link else 0)
+            cap = (body_room - 16) / 2 if portrait else body_room
+            bodies = [min(w, cap) for w in want]
+            if not portrait:
+                bodies = [max(bodies)] * 2
+            total = header + sum(bodies) + 16 + (16 + link if link else 0)
+            return header, bodies, total
+
+        def fits(title, n):   # the lists keep the rows they need (or three), the card the frame
+            header, bodies, total = layout(title, n)
+            need = [min(w, chrome + 3 * rh + 8) for w in want]
+            return total <= box.h and all(b >= w for b, w in zip(bodies, need))
+        base = (52 if not portrait else 46) * k
+        titles = [vb.Font(UI, base * f, weight=700, line_height=1.15) for f in (1, 0.9, 0.8, 0.7)]
+        title, lines = sidebar.fit_words(plan.commit['subject'], titles, box.w, fits)
+        header, bodies, total = layout(title, len(lines))
         return F, rh, kicker, title, lines, header, link, bodies, total, bodies == want
 
     # A tall frame scales the whole card up until it fills most of the column
@@ -999,7 +1003,7 @@ def _end_card(tour, cv, box, shot, t):
             s_box = vbtext.draw(cv, [plan.next['short']], short, sx, inner.cy - vbtext.line_height(short) / 2,
                                 style.muted)
             room = inner.right - 40 - s_box.right - 16
-            vbtext.draw(cv, [sidebar.ellipsize(plan.next['subject'], row, room)], row, s_box.right + 16,
+            vbtext.draw(cv, [sidebar.ellipsize_words(plan.next['subject'], row, room)], row, s_box.right + 16,
                         inner.cy - vbtext.line_height(row) / 2, style.strong)
             ax, ay = inner.right - 8, inner.cy
             cv.line(ax - 10, ay - 11, ax + 1, ay, THEME.cursor, width=3.5)
@@ -1036,14 +1040,8 @@ def _patch_face(tour, cv, k):
     files = len(info.get('files') or ())
     stats = f'{files} file{"s" if files != 1 else ""}  +{info.get("added", 0)} {sidebar.MINUS}{info.get("deleted", 0)}'
     fixed = vbtext.line_height(kicker) + 18 + 24 + 2 * vbtext.line_height(meta)
-    for size in range(92 if portrait else 84, 47, -4):
-        title = vb.Font(UI, size, weight=700, line_height=1.16)
-        lines = list(vbtext.wrap(c['subject'], title, box.w, balance=True))
-        if fixed + len(lines) * vbtext.line_height(title) <= box.h:
-            break
-    rows = max(1, int((box.h - fixed) // vbtext.line_height(title)))
-    if len(lines) > rows:
-        lines = lines[:rows - 1] + [sidebar.ellipsize(' '.join(lines[rows - 1:]), title, box.w)]
+    title, lines = _title_lines(c['subject'], box.w, range(92 if portrait else 84, 47, -4), 64, line_height=1.16,
+                                fits=lambda f, n: fixed + n * vbtext.line_height(f) <= box.h)
     heights = [vbtext.line_height(kicker), 18, *[vbtext.line_height(title)] * len(lines), 24,
                vbtext.line_height(meta), vbtext.line_height(meta)]
     boxes, _ = box.stack(heights, gap=0, align='center')

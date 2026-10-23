@@ -2,6 +2,8 @@
 the call graph and the xref stack, for orientation. The current file is marked with `▶` and
 weight, not only colour."""
 from dataclasses import dataclass
+import functools
+import itertools
 
 import videobuilder as vb
 from videobuilder import text as vbtext
@@ -60,6 +62,76 @@ def ellipsize_words(s, font, width):
         if vbtext.measure(out, font) <= width:
             return out
     return ellipsize(s, font, width)
+
+
+def _greedy(words, font, width):
+    lines, cur = [], ''
+    for w in words:
+        t = f'{cur} {w}' if cur else w
+        if cur and vbtext.measure(t, font) > width:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = t
+    return lines + [cur] if cur else lines
+
+
+@functools.lru_cache(maxsize=512)
+def wrap_words(text, font, width, balance=False):
+    """Lines of `text` no wider than `width`, broken only at spaces: never
+    inside a word, so never at a hyphen and never with one added. None when a
+    word alone is wider. `balance`: as many lines as greedy wrapping, at the
+    narrowest width that keeps them (CSS text-wrap: balance)."""
+    words = text.split()
+    if not words:
+        return ()
+    if max(vbtext.measure(w, font) for w in words) > width:
+        return None
+    lines = _greedy(words, font, width)
+    if balance and len(lines) > 1:
+        lo, hi = 0.0, float(width)
+        while hi - lo > 0.5:
+            mid = (lo + hi) / 2
+            if any(vbtext.measure(w, font) > mid for w in words) or len(_greedy(words, font, mid)) > len(lines):
+                lo = mid
+            else:
+                hi = mid
+        lines = _greedy(words, font, hi)
+    return tuple(lines)
+
+
+def fit_words(text, fonts, width, fits, balance=False):
+    """(font, lines) for a card's title: `text` wrapped at spaces onto as many
+    lines as `fits(font, n)` allows, in the first (largest) of `fonts` where it
+    fits whole. Failing that, in the last font, cut to the most lines that fit
+    (at least one), the last ending with an ellipsis after a whole word. A word
+    wider than `width` ends the text before it; only a first word that wide is
+    cut inside, there being no word boundary before it."""
+    for font in fonts:
+        lines = wrap_words(text, font, width, balance)
+        if lines is not None and fits(font, len(lines)):
+            return font, list(lines)
+    font = fonts[-1]
+    most = 1
+    while most < 64 and fits(font, most + 1):
+        most += 1
+    words = text.split()
+    kept = list(itertools.takewhile(lambda w: vbtext.measure(w, font) <= width, words))
+    if not kept:
+        return font, [ellipsize(text, font, width)]
+    lines = _greedy(kept, font, width)
+    if len(lines) <= most and len(kept) == len(words):
+        return font, lines
+    lines = lines[:most - 1] + [' '.join(lines[most - 1:])]
+    while True:   # the ellipsis after the last whole word that leaves it room, on the last line it fits
+        tail = lines[-1].split()
+        while tail and vbtext.measure(' '.join(tail).rstrip(',;:—-') + '…', font) > width:
+            tail.pop()
+        if tail:
+            return font, lines[:-1] + [' '.join(tail).rstrip(',;:—-') + '…']
+        if len(lines) == 1:
+            return font, [ellipsize(lines[0], font, width)]
+        lines = lines[:-1]
 
 
 def _window(n, current, rows):
