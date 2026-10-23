@@ -26,6 +26,9 @@ Options:
            the commit message. auto (default) uses fork-sandbox when
            it is on PATH, else heuristic.
 --format   16x9, 9x16, 1x1, all (default 16x9)
+--quality  high, medium, small (default high): the encoder's
+           quality, x264 CRF 18, 23 or 28. small is about a third
+           the size of high.
 -o, --out  Output MP4 (default git-video-<short-sha>.mp4, or
            git-video-<a>-<b>.mp4 for a range; with --format all,
            -<format> goes before the extension).
@@ -193,6 +196,9 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
   card has room for, then the type shrinks, and only then is it cut, with
   an ellipsis after a whole word: never inside a word or at a hyphen.
 - `--voice`: a narration with captions, paced into the film (see below).
+- `--quality high|medium|small`: the encoder's quality (x264 CRF 18, 23
+  or 28), set on videobuilder's own render; `small` is about a third the
+  size of the default `high`.
 - Colour is never the only cue: added lines carry a `+` in the fringe,
   removed lines a `−` marker between lines, removed words a strike-through,
   added words an underline, the current file in the side bar a `▶`, the

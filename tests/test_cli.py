@@ -58,7 +58,7 @@ class TestCli(unittest.TestCase):
     def test_help_lists_options(self):
         h = cli.parser().format_help()
         for opt in ('--format', '-o', '--out', '--jobs', '--plan-json', '-C', '--font', '--stills',
-                    '--mode', '--series', '--verbose', '--voice'):
+                    '--mode', '--series', '--verbose', '--voice', '--quality'):
             self.assertIn(opt, h)
 
     def test_module_entry(self):
@@ -92,14 +92,29 @@ class TestOutputPath(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def run_main(self, out):
-        """cli.main with -o out, the film and the render stubbed: (code, err, rendered paths, films built)."""
+    def run_main(self, out, *extra, calls=None):
+        """cli.main with -o out, the film and the render stubbed: (code, err, rendered paths, films built).
+        `calls` collects each render's keyword arguments."""
         from unittest import mock
         rendered, built = [], []
+
+        def render(film, path, **k):
+            rendered.append(path)
+            if calls is not None:
+                calls.append(k)
         with mock.patch('git_video.film.Tour', side_effect=lambda *a, **k: built.append(1) or mock.Mock()), \
-                mock.patch('videobuilder.render.render', side_effect=lambda film, path, **k: rendered.append(path)):
-            code, _, err = quiet(cli.main, ['-C', self.repo, '-o', out, self.sha['change']])
+                mock.patch('videobuilder.render.render', side_effect=render):
+            code, _, err = quiet(cli.main, ['-C', self.repo, '-o', out, *extra, self.sha['change']])
         return code, err, rendered, built
+
+    def test_quality_sets_the_encoder_crf(self):
+        out = os.path.join(self.tmp, 'v.mp4')
+        for flag, crf in ((None, 18), ('high', 18), ('medium', 23), ('small', 28)):
+            with self.subTest(flag=flag):
+                calls = []
+                code, err, _, _ = self.run_main(out, *(['--quality', flag] if flag else []), calls=calls)
+                self.assertEqual(code, 0, err)
+                self.assertEqual([k['crf'] for k in calls], [crf])
 
     def test_missing_directory_is_created(self):
         out = os.path.join(self.tmp, 'new', 'deeper', 'v.mp4')

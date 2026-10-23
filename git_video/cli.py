@@ -5,6 +5,7 @@ import sys
 
 DEFAULT_VOICE = 'bf_isabella'
 FORMATS = ('16x9', '9x16', '1x1')
+QUALITY_CRF = {'high': 18, 'medium': 23, 'small': 28}   # --quality -> x264's CRF (videobuilder's render `crf`)
 
 DESCRIPTION = 'Create a video walk-through of a change set.'
 
@@ -83,6 +84,9 @@ def parser():
                         'GIT_VIDEO_NARRATOR_ARGS adds fork-sandbox options. A script is cached in '
                         '$XDG_CACHE_HOME/git-video/narration')
     p.add_argument('--format', choices=(*FORMATS, 'all'), default='16x9', help='output shape (default 16x9)')
+    p.add_argument('--quality', choices=tuple(QUALITY_CRF), default='high',
+                   help='encoder quality: high (x264 CRF 18, the default), medium (CRF 23), small (CRF 28, about '
+                        'a third the size)')
     p.add_argument('-o', '--out', metavar='FILE',
                    help='output MP4 (default git-video-<short-sha>.mp4, or git-video-<a>-<b>.mp4 for a range; with '
                         '--format all, -<format> goes before the extension); a missing directory is created')
@@ -199,7 +203,7 @@ def main(argv=None):
         return _ran(writer)
     from videobuilder.render import render
     for fmt, out in outputs:
-        render(tour.film, out, format=fmt, jobs=args.jobs)
+        render(tour.film, out, format=fmt, jobs=args.jobs, crf=QUALITY_CRF[args.quality])
         print(out)
     return _ran(writer)
 

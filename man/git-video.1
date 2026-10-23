@@ -33,6 +33,9 @@ with \-\-voice, who writes the narration: fork\-sandbox (an agent session in a s
 \fB\-\-format\fR\ \fI{16x9,9x16,1x1,all}\fR
 output shape (default 16x9).
 .TP
+\fB\-\-quality\fR\ \fI{high,medium,small}\fR
+encoder quality: high (x264 CRF 18, the default), medium (CRF 23), small (CRF 28, about a third the size).
+.TP
 \fB\-o\fR\ \fIFILE\fR, \fB\-\-out\fR\ \fIFILE\fR
 output MP4 (default git\-video\-<short\-sha>.mp4, or git\-video\-<a>\-<b>.mp4 for a range; with \-\-format all, \-<format> goes before the extension); a missing directory is created.
 .TP
