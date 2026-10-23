@@ -556,8 +556,35 @@ def _pace(scripts, budget, verbose):
         short = [k for k, (a, b) in spans.items() if not edits.ramp_fits(b - a, s0, peak, r)]
         if not short:
             return s0, peak, spans
+        if spans is avail:   # whole spans: the longest few, at a peak they all have room to ramp to
+            return _longest_spans(avail, natural, budget, s0, r)
         avail = {k: v for k, v in avail.items() if k not in short}
     return s0, None, {}
+
+
+def _longest_spans(avail, natural, budget, s0, r):
+    """When not every file's span has room to ramp to the peak the budget
+    needs: of the files with the m longest spans, for each m, the peak that
+    meets the budget held to what the shortest of them can ramp to; the
+    choice that plays shortest. (Dropping every file short at the needed peak
+    and solving again raises the peak, so more drop, until few are left.)"""
+    order = sorted(avail, key=lambda k: (-(avail[k][1] - avail[k][0]), k))
+    best = None
+    for m in range(1, len(order) + 1):
+        ks = order[:m]
+        F, R = m, sum(avail[k][1] - avail[k][0] for k in ks)
+        room = budget - (natural - R) / s0 - F * r
+        need = (R - F * r * s0) / room if room > 0 else FAST_PEAK_MAX
+        fit = (min(avail[k][1] - avail[k][0] for k in ks) / r - s0) * 0.99   # some plateau left
+        peak = min(FAST_PEAK_MAX, need, fit)
+        if peak < FAST_PEAK_MIN:
+            continue
+        perf = (natural - R) / s0 + F * r + (R - F * r * s0) / peak
+        if best is None or perf < best[0] - 1e-9:
+            best = (perf, peak, {k: avail[k] for k in ks})
+    if best is None:
+        return s0, None, {}
+    return s0, best[1], best[2]
 
 
 def _develop_body(change, verbose, patch):

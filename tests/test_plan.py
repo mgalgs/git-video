@@ -409,6 +409,22 @@ class TestDevelopPlan(unittest.TestCase):
         for s in kinds(plan.build(collect.collect(self.repo, self.sha['root']), 0, 'develop'), 'edit'):
             self.assertEqual(s['fast'], [])
 
+    def test_speedup_many_modest_files(self):
+        """A change over many files of modest length (72fe5a7059 of this repo):
+        a file whose span is too short to ramp to the peak the rest need
+        does not push the peak up until only a few files are sped up."""
+        from git_video import edits
+        ends = [18.36, 13.54, 19.34, 15.73, 21.18, 42.21, 65.36, 70.8]
+        scripts = [{'natural': e + 0.6, 'steps': [{'at': 0.0, 'dur': e}]} for e in ends]
+        s0, peak, spans = plan._pace(scripts, plan.PERF_FLOOR, 0)
+        self.assertTrue(plan.FAST_PEAK_MIN <= peak <= plan.FAST_PEAK_MAX, peak)
+        for a, b in spans.values():
+            self.assertTrue(edits.ramp_fits(b - a, s0, peak, plan.FAST_RAMP))
+        perf = sum(edits.clock(sc['natural'], s0, (*spans[k], peak) if k in spans else None, plan.FAST_RAMP)[1]
+                   for k, sc in enumerate(scripts))
+        self.assertGreaterEqual(perf, plan.PERF_FLOOR - 1)
+        self.assertLess(perf, plan.PERF_FLOOR + 3.5)   # the ramps' own time is what is left over (was 28.6 s)
+
     def test_elision_thresholds(self):
         def filled(v):
             p = self.plan_of('develop', v)
