@@ -30,6 +30,19 @@ class TestEditor(unittest.TestCase):
             self.assertEqual(names, {'editor.text', 'editor.modeline', 'editor.echo'})
             for name, b in cv.marks:
                 self.assertTrue(box.contains(b), (box, name, b))
+            cv = vb.Canvas(1920, 1080, '#000')
+            lay = editor.layout(box, FONT, minimap=True)
+            buf = buffer()
+            seg = editor.Segment(5, highlight.highlight_lines('x = 1\ny = 2\n', 'a.py'), 1,
+                                 [['delete', 0, 0, -1, -1, 'x'], ['insert', -1, -1, 0, 4, 'return']])
+            editor.draw(cv, lay, buf, 3.5, cursor=(5, 2), marks_added=[5], marks_removed_at=[5], tints=[(5, 5)],
+                        minimap=editor.Minimap(editor.minimap_bars(buf.lines), [(4, 4)], [5]), morphs=[seg],
+                        morph_p=0.5)
+            names = {n for n, _ in cv.marks}
+            self.assertLessEqual({'editor.text', 'editor.modeline', 'editor.echo', 'editor.minimap',
+                                  'editor.viewport'}, names)
+            for name, b in cv.marks:
+                self.assertTrue(box.contains(b), (box, name, b))
 
     def test_minimap(self):
         box = vb.Box(0, 0, 1000, 700)
@@ -69,6 +82,83 @@ class TestEditor(unittest.TestCase):
         bare = editor.Minimap(mm.bars)
         self.assertEqual(ink(theme.fringe_added, bare), 0)
         self.assertEqual(ink(theme.fringe_removed, bare), 0)
+
+    def morph(self, p, seg, **kw):
+        cv = vb.Canvas(1000, 700, '#000')
+        lay = editor.layout(vb.Box(0, 0, 1000, 700), FONT)
+        editor.draw(cv, lay, buffer(), 0, morphs=[seg], morph_p=p, **kw)
+        return cv, lay
+
+    def ghost(self):
+        old = highlight.highlight_lines('def gone():\n    pass\n', 'a.py')
+        ops = [['delete', 0, 0, -1, -1, 'def'], ['delete', 0, 4, -1, -1, 'gone'], ['delete', 1, 4, -1, -1, 'pass']]
+        return editor.Segment(3, old, 0, ops)
+
+    def replace(self):
+        # buffer line 3 is '\treturn x + 1' (tabs expanded); it replaced two old lines
+        old = highlight.highlight_lines('    return x - 7\n    # old\n', 'a.py')
+        ops = [['equal', 0, 4, 0, 4, 'return'], ['equal', 0, 11, 0, 11, 'x'], ['delete', 0, 13, -1, -1, '-'],
+               ['delete', 0, 15, -1, -1, '7'], ['delete', 1, 4, -1, -1, '#'], ['delete', 1, 6, -1, -1, 'old'],
+               ['insert', -1, -1, 0, 13, '+'], ['insert', -1, -1, 0, 15, '1']]
+        return editor.Segment(3, old, 1, ops)
+
+    def test_morph_rows_collapse(self):
+        for seg, start, end in ((self.ghost(), 2, 0), (self.replace(), 2, 1)):
+            for p, rows in ((0, start), (1 - 1e-9, end)):
+                cv, lay = self.morph(p, seg)
+                marks = dict(cv.marks)
+                if rows:
+                    self.assertAlmostEqual(marks['editor.segment 0'].h, rows * lay.line_h, places=3)
+                    self.assertAlmostEqual(marks['editor.segment 0'].y, lay.line_y(3, 0))
+                else:
+                    self.assertLess(marks.get('editor.segment 0', vb.Box(0, 0, 0, 0)).h, 1e-3)
+            self.assertNotIn('editor.segment 0', dict(self.morph(1, seg)[0].marks))
+        self.assertEqual(editor.segment_rows(self.ghost(), 0.5), 2 + (0 - 2) * vb.ease_in_out_quart(
+            (0.5 - editor.GLIDE[0]) / (editor.GLIDE[1] - editor.GLIDE[0])))
+
+    def test_lines_below_move_with_the_segment(self):
+        seg = self.ghost()
+        theme = editor.Theme()
+        lay = editor.layout(vb.Box(0, 0, 1000, 700), FONT)
+        # the cursor's current-line band on line 5 sits 2 rows lower at p=0 than at p=1
+        def band_y(p):
+            cv = vb.Canvas(1000, 700, '#000')
+            editor.draw(cv, lay, buffer(), 0, morphs=[seg], morph_p=p, cursor=(5, 0), theme=theme)
+            want = tuple(round(c * 255) for c in vb.rgba(theme.current_line)[:3])
+            x = int(lay.text_box.right - 5)
+            for y in range(int(lay.text_box.y), int(lay.text_box.bottom)):
+                b, g, r, _ = pixel(cv, x, y)
+                if (r, g, b) == want:
+                    return y
+        self.assertAlmostEqual(band_y(0) - band_y(1), 2 * lay.line_h, delta=1.5)
+
+    def test_strike_and_underline_ink(self):
+        theme = editor.Theme()
+
+        def ink(p, color, row_y, seg=None):
+            cv, lay = (self.morph(p, seg or self.replace(), theme=theme) if p is not None else
+                       (vb.Canvas(1000, 700, '#000'), editor.layout(vb.Box(0, 0, 1000, 700), FONT)))
+            if p is None:
+                editor.draw(cv, lay, buffer(), 0, theme=theme)
+            want = tuple(round(c * 255) for c in vb.rgba(color)[:3])
+            y0 = lay.line_y(3, 0)
+            count = 0
+            for y in range(int(y0 + lay.line_h * row_y) - 2, int(y0 + lay.line_h * row_y) + 3):
+                for x in range(int(lay.col_x(13)), int(lay.col_x(17))):
+                    b, g, r, _ = pixel(cv, x, y)
+                    count += (r, g, b) == want
+            return count
+
+        self.assertGreater(ink(0, theme.strike, 0.52), 0)
+        self.assertEqual(ink(None, theme.strike, 0.52), 0)
+        self.assertGreater(ink(1, theme.underline, 0.86), 0)
+        self.assertEqual(ink(None, theme.underline, 0.86), 0)
+
+    def test_morph_midway_differs(self):
+        frames = [self.morph(p, self.replace())[0].bgra() for p in (0, 0.5, 1)]
+        self.assertNotEqual(frames[0], frames[1])
+        self.assertNotEqual(frames[1], frames[2])
+        self.assertNotEqual(frames[0], frames[2])
 
     def test_layout_geometry(self):
         box = vb.Box(300, 200, 700, 500)

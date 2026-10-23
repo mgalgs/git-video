@@ -64,7 +64,9 @@ class TestFilm(unittest.TestCase):
                 self.assertEqual((cv.surface.get_width(), cv.surface.get_height()), (f.width, f.height))
 
     def test_draw_is_pure(self):
-        frames = [self.frame_of('xref-push', plan.XREF_CLICK + 0.1)[1], self.frame_of('dive', 0.5)[1],
+        i = next(k for k, s in enumerate(self.plan.shots) if s['kind'] == 'hunk' and s['morph'])
+        s = self.plan.shots[i]
+        frames = [self.tour.shot_frames[i] + round((s['morph']['at'] + 0.6) * self.plan.fps),self.frame_of('xref-push', plan.XREF_CLICK + 0.1)[1], self.frame_of('dive', 0.5)[1],
                   self.frame_of('travel', 0.7)[1], self.frame_of('map', 1.0)[1], self.frame_of('title', 1.5)[1]]
         for n in frames:
             for fmt in ('16x9', '1x1'):
@@ -283,6 +285,61 @@ class TestFilm(unittest.TestCase):
 
         self.assertGreater(fringe_ink(self.tour), 0)
         self.assertEqual(fringe_ink(bare), 0)
+
+    def test_new_keyframes_all_formats(self):
+        tours = [self.tour]
+        ch = collect.collect(fixtures.make_morph_repo(self.tmp.name + '/kf'), 'HEAD')
+        tours.append(film.Tour(plan.plan(ch), ch, log=io.StringIO()))
+        delete = self.tmp.name + '/kfdel'
+        fixtures.init(delete)
+        fixtures.write(delete, 'a.py', 'def keep():\n    return 1\n\n\ndef gone():\n    return 2\n')
+        fixtures.commit(delete, 'Start')
+        fixtures.write(delete, 'a.py', 'def keep():\n    return 1\n')
+        fixtures.commit(delete, 'Drop gone()')
+        ch = collect.collect(delete, 'HEAD')
+        tours.append(film.Tour(plan.plan(ch), ch, log=io.StringIO()))
+        labels = [label for t in tours for _, label in t.film.keyframes]
+        self.assertIn('morph src/lib.py#1', labels)
+        self.assertIn('morph m.py#2', labels)
+        self.assertIn('ghost a.py#1', labels)
+        for tour in tours:
+            for n, label in tour.film.keyframes:
+                if label.split()[0] not in ('morph', 'ghost'):
+                    continue
+                i, t = tour.at(n)
+                self.assertTrue(0 < film.morph_progress(tour.shots[i], t) < 1, label)
+                for fmt in ('16x9', '9x16', '1x1'):
+                    cv = tour.film.frame(n, fmt)
+                    st = film.stage(cv)
+                    names = [name for name, _ in cv.marks]
+                    self.assertIn('editor.segment 0', names, (label, fmt))
+                    for name, b in cv.marks:
+                        if name.startswith('editor.'):
+                            self.assertTrue(st.main.contains(b), (label, fmt, name, b))
+                        if name.startswith('sidebar.'):
+                            self.assertTrue(st.side.contains(b), (label, fmt, name, b))
+
+    def test_ghost_at_end_of_file_is_shown(self):
+        # Deleting the last lines of a long file: the window must not be
+        # clamped to the new, shorter file, or the ghost lines fall below it.
+        repo = self.tmp.name + '/tail'
+        fixtures.init(repo)
+        body = ''.join(f'def f{i}():\n    return {i}\n' for i in range(40))
+        fixtures.write(repo, 'lib.py', body)
+        fixtures.commit(repo, 'Start')
+        fixtures.write(repo, 'lib.py', ''.join(body.splitlines(True)[:-6]))
+        fixtures.commit(repo, 'Drop the last three functions')
+        ch = collect.collect(repo, 'HEAD')
+        tour = film.Tour(plan.plan(ch), ch, log=io.StringIO())
+        i = next(k for k, s in enumerate(tour.shots) if s['kind'] == 'hunk')
+        n = tour.shot_frames[i] + round((tour.shots[i]['morph']['at'] - 0.05) * tour.fps)
+        for fmt in ('16x9', '9x16', '1x1'):
+            cv = tour.film.frame(n, fmt)
+            marks = dict(cv.marks)
+            seg, text = marks['editor.segment 0'], marks['editor.text']
+            lay = film._layout(film.stage(cv), tour.buffers['lib.py'])
+            self.assertAlmostEqual(seg.h, 6 * lay.line_h, places=3, msg=fmt)
+            self.assertLessEqual(seg.bottom, text.bottom + 1e-6, fmt)
 
     def test_definition_cursor_lands_on_the_name(self):
         ch = collect.collect(fixtures.make_edge_repo(self.tmp.name + '/go'), 'HEAD')

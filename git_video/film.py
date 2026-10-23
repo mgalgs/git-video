@@ -76,6 +76,7 @@ class View:
     focus: int                  # 0-based line that must stay on screen
     cursor: tuple               # (line, col), 0-based
     stack: tuple                # ((name, path, line), ...), oldest first
+    extra: int = 0              # rows a morph's old lines add past the file's end before they go
 
 
 SCRATCH_TEXT = (';; This buffer is for text that is not saved, and for Lisp evaluation.\n'
@@ -85,7 +86,8 @@ SCRATCH = editor.Buffer('*scratch*', highlight.highlight_lines(SCRATCH_TEXT, 'sc
 
 def fit_top(top, focus, rows, n):
     """`top`, moved as little as needed so line `focus` is on screen in a window
-    of `rows` and the window doesn't run past the end of the file."""
+    of `rows` and the window doesn't run past the end of the file (`n` rows,
+    counting the old lines a morph shows before they collapse)."""
     top = max(0.0, min(float(top), max(0, n - rows)))
     if top <= focus <= top + rows - 2:
         return top
@@ -134,6 +136,13 @@ class Tour:
                         raise ValueError(f'{path} has no text at {change.target[:12]} to show')
                     self.buffers[path] = editor.Buffer(path, highlight.highlight_lines(text, path), _mode(path))
         self.views = self._views()
+        self.segments = {}   # hunk shot index -> its morph's editor.Segments (old lines highlighted once)
+        for i, s in enumerate(self.shots):
+            if s['kind'] == 'hunk' and s.get('morph'):
+                self.segments[i] = tuple(
+                    editor.Segment(g['at'], highlight.highlight_lines('\n'.join(g['old']) + '\n', s['path']),
+                                   g['new'], tuple(tuple(o) for o in g['ops']))
+                    for g in s['morph']['segments'])
         self.minimaps = {}   # the minimap per buffer: bars and marks, computed once
         for path, buf in self.buffers.items():
             added, removed, ranges = self.marks.get(path, ((), (), ()))
@@ -174,7 +183,8 @@ class Tour:
                 focus = s['focus_line'] - 1
                 runs = self.buffers[s['path']].lines
                 col = _first_col(runs[focus]) if focus < len(runs) else 0
-                cur = View(s['path'], s['top'], focus, (focus, col), cur.stack)
+                grow = sum(max(0, len(g['old']) - g['new']) for g in (s.get('morph') or {}).get('segments', ()))
+                cur = View(s['path'], s['top'], focus, (focus, col), cur.stack, grow)
             elif kind == 'xref-push':
                 d = s['definition']
                 dl = d['line'] - 1
@@ -205,7 +215,7 @@ class Tour:
         return v.path, v.stack
 
     def keyframes(self):
-        out, hunks, travels = [], 0, 0
+        out, hunks, travels, seen = [], 0, 0, set()
         for i, s in enumerate(self.shots):
             f0, kind = self.shot_frames[i], s['kind']
             if kind == 'map':
@@ -221,10 +231,19 @@ class Tour:
                 out.append((f0 + round((s['dur'] - 0.6) * self.fps), 'end'))
             elif kind == 'open':
                 out.append((f0 + round((self.timings[i][2] + 0.3) * self.fps), f'open {s["path"]}'))
-            elif kind == 'hunk' and hunks < 12:
-                hunks += 1
-                t = P.HUNK_SCROLL + P.HUNK_SWEEP * 0.6
-                out.append((f0 + round(t * self.fps), f'hunk {s["path"]}#{s["index"] + 1}'))
+            elif kind == 'hunk':
+                name = f'{s["path"]}#{s["index"] + 1}'
+                if hunks < 12:
+                    hunks += 1
+                    t = P.HUNK_SCROLL + P.HUNK_SWEEP * 0.6
+                    out.append((f0 + round(t * self.fps), f'hunk {name}'))
+                m = s.get('morph')
+                if m and 'morph' not in seen and any(g['new'] for g in m['segments']):
+                    seen.add('morph')
+                    out.append((f0 + round((m['at'] + 0.6 * m['dur']) * self.fps), f'morph {name}'))
+                if m and 'ghost' not in seen and not any(g['new'] for g in m['segments']):
+                    seen.add('ghost')
+                    out.append((f0 + round((m['at'] + 0.3 * m['dur']) * self.fps), f'ghost {name}'))
             elif kind == 'xref-push':
                 out.append((f0 + round((P.XREF_CLICK + 0.12) * self.fps), f'xref {s["name"]} click'))
                 out.append((f0 + round((P.XREF_SWITCH + P.XREF_REVEAL * 0.4) * self.fps), f'xref {s["name"]} dive'))
@@ -583,7 +602,7 @@ def _pane(tour, cv, st, view, top=None, **kw):
     buf = tour.buffers[view.path] if view.path else SCRATCH
     lay = _layout(st, buf)
     if top is None:
-        top = fit_top(view.top, view.focus, lay.rows, len(buf.lines))
+        top = fit_top(view.top, view.focus, lay.rows, len(buf.lines) + view.extra)
     added, removed, tints = tour.marks.get(view.path, ((), (), ()))
     kw.setdefault('cursor', view.cursor)
     return editor.draw(cv, lay, buf, top, marks_added=added, marks_removed_at=removed, tints=tints,
@@ -593,7 +612,7 @@ def _pane(tour, cv, st, view, top=None, **kw):
 def _fitted(tour, st, view):
     buf = tour.buffers[view.path] if view.path else SCRATCH
     lay = _layout(st, buf)
-    return fit_top(view.top, view.focus, lay.rows, len(buf.lines))
+    return fit_top(view.top, view.focus, lay.rows, len(buf.lines) + view.extra)
 
 
 def _open(tour, cv, st, shot, t, i, before, after):
@@ -613,18 +632,33 @@ def _open(tour, cv, st, shot, t, i, before, after):
     _pane(tour, cv, st, before, echo=echo, echo_cursor=t >= P.OPEN_PROMPT)
 
 
+def morph_progress(shot, t):
+    """The hunk's morph progress at `t`: 0 (the old text) until the morph
+    starts, 1 once it is over or when there is none."""
+    m = shot.get('morph')
+    if not m:
+        return 1.0
+    return vb.clamp01((t - m['at']) / m['dur'])
+
+
 def _hunk(tour, cv, st, shot, t, i, before, after):
+    """Scroll to the hunk; morph its replaced and removed lines from old to new;
+    sweep a highlighter over the lines that are only added."""
     buf = tour.buffers[after.path]
     rows = _layout(st, buf).rows
     a = _fitted(tour, st, before) if before.path == after.path else 0.0
     b = _fitted(tour, st, after)
     top = vb.interpolate(t, [0, P.HUNK_SCROLL], [a, b], vb.ease_in_out_quart)
-    shown = [n - 1 for x, y in shot['added'] for n in range(x, y + 1) if b <= n - 1 < b + rows]
+    segs = tour.segments.get(i, ())
+    morphed = {seg.line + r for seg in segs for r in range(seg.new)}
+    shown = [n - 1 for x, y in shot['added'] for n in range(x, y + 1)
+             if b <= n - 1 < b + rows and n - 1 not in morphed]
     p = vb.clamp01((t - P.HUNK_SCROLL) / P.HUNK_SWEEP)
     k = len(shown)
     sweeps = [(ln, vb.ease_in_out_quart(vb.clamp01(p * k - j)), settle(t - P.HUNK_SCROLL - P.HUNK_SWEEP))
               for j, ln in enumerate(shown)]
-    _pane(tour, cv, st, after, top=top, sweeps=sweeps, blink=max(0.0, t - P.HUNK_SCROLL))
+    _pane(tour, cv, st, after, top=top, sweeps=sweeps, blink=max(0.0, t - P.HUNK_SCROLL), morphs=segs,
+          morph_p=morph_progress(shot, t))
 
 
 def settle(t):
@@ -658,7 +692,7 @@ def _xref_source(tour, cv, st, shot, t, before):
     use_line, col, name = shot['line'] - 1, shot['col'], shot['name']
     moved = t >= P.XREF_CLICK
     cursor = (use_line, col) if moved else before.cursor
-    view = View(before.path, before.top, use_line, cursor, before.stack)
+    view = View(before.path, before.top, use_line, cursor, before.stack, before.extra)
     boxes = [(use_line, col, len(name))] if moved else []
     echo = 'M-.' if t >= P.XREF_KEYS[0] else ''
     return _pane(tour, cv, st, view, boxes=boxes, echo=echo, blink=None if moved else t + 1.0)
@@ -689,7 +723,7 @@ def _xref_push(tour, cv, st, shot, t, i, before, after):
     if q >= 1:
         definition(cv)
         return
-    wb = _word_box(tour, st, View(before.path, before.top, use_line, (use_line, col), before.stack),
+    wb = _word_box(tour, st, View(before.path, before.top, use_line, (use_line, col), before.stack, before.extra),
                    use_line, col, len(name))
     _reveal(cv, st.main, lambda c: _xref_source(tour, c, st, shot, t, before), definition, q, (wb.cx, wb.cy),
             wb.h * 0.4)

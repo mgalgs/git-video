@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field
 
 from videobuilder.type.typewriter import schedule
 
-from . import repomap, xref
+from . import highlight, repomap, worddiff, xref
 
 VERSION = 1
 FPS = 30
@@ -47,6 +47,9 @@ OPEN_HOLD = 0.6           # the new buffer on screen before the next shot
 HUNK_SCROLL = 0.6         # the scroll to the hunk; the sweep starts as it lands
 HUNK_SWEEP = 0.5
 HUNK_READ_BASE, HUNK_READ_PER_LINE, HUNK_READ_MAX = 1.5, 0.08, 6.0
+MORPH_HOLD = 0.9          # the old text on screen, removed words struck through, before it morphs
+MORPH_DUR = 1.4           # removed words dissolve, kept ones glide, added ones decode in
+MORPH_MAX_ROWS = PLAN_ROWS   # a hunk taller than a screenful is swept, not morphed
 
 XREF_TRAVEL = 0.7         # the pointer glides to the word
 XREF_CLICK = 0.7          # ... and clicks it
@@ -91,8 +94,27 @@ def open_timing(path):
     return OPEN_KEYS, letters, ret, max(1.6, round(ret + OPEN_HOLD, 3))
 
 
-def hunk_dwell(visible_added):
-    return HUNK_SCROLL + min(HUNK_READ_MAX, HUNK_READ_BASE + HUNK_READ_PER_LINE * visible_added)
+def hunk_dwell(visible_added, *, morph=False):
+    """A hunk shot's length: the scroll, the morph when there is one, the read."""
+    read = min(HUNK_READ_MAX, HUNK_READ_BASE + HUNK_READ_PER_LINE * visible_added)
+    return HUNK_SCROLL + (MORPH_HOLD + MORPH_DUR if morph else 0) + read
+
+
+def morph_segments(f, h):
+    """The hunk's segments as plan data, {'at', 'old', 'new', 'ops'} each, or
+    None when it has nothing to morph (no removed lines), is taller than a
+    screenful, or a segment is too big to diff by words."""
+    if not h.segments or max(h.old_count, h.new_count) > MORPH_MAX_ROWS:
+        return None
+    lines = f.text.split('\n')
+    out = []
+    for at, old, new in h.segments:
+        old = [x.expandtabs(highlight.TAB) for x in old]
+        ops = worddiff.ops(old, [x.expandtabs(highlight.TAB) for x in lines[at:at + new]])
+        if ops is None:
+            return None
+        out.append({'at': at, 'old': old, 'new': new, 'ops': ops})
+    return out
 
 
 def scroll_top(focus, lines, rows=PLAN_ROWS):
@@ -200,6 +222,10 @@ def plan(change, verbose=0):
             hunk_shots += 1
             focus = h.added[0][0] if h.added else max(1, h.removed_at[0] if h.removed_at else h.new_start)
             top = scroll_top(focus, f.lines)
+            segments = morph_segments(f, h)
+            if segments:   # raise the window so the hunk fits both before and after
+                need = h.new_start - 1 + max(h.old_count, h.new_count) - PLAN_ROWS
+                top = max(0, top, min(need, focus - 2))
             visible = [n for a, b in h.added for n in range(a, b + 1) if top < n <= top + PLAN_ROWS]
             shown = []
             for n in visible:
@@ -207,8 +233,14 @@ def plan(change, verbose=0):
                     shown[-1][1] = n
                 else:
                     shown.append([n, n])
-            shots.append(shot('editor', 'hunk', hunk_dwell(len(visible)), path=f.path, index=i, top=top,
-                              added=shown, removed_at=list(h.removed_at), focus_line=focus))
+            first = min([a for a, _ in h.added] + [s[0] + 1 for s in h.segments] or [focus])
+            last = max([b for _, b in h.added] + [s[0] for s in h.segments] or [focus])
+            span = [max(first, top + 1), max(min(last, top + PLAN_ROWS), first - 1)]
+            morph = {'at': round(HUNK_SCROLL + MORPH_HOLD, 3), 'dur': MORPH_DUR, 'segments': segments} \
+                if segments else None
+            shots.append(shot('editor', 'hunk', hunk_dwell(len(visible), morph=bool(morph)), path=f.path, index=i,
+                              top=top, added=shown, removed_at=list(h.removed_at), focus_line=focus, focus=span,
+                              morph=morph))
             pickable = [n for n in visible if n <= top + XREF_ROWS]
             hunks.append((len(shots) - 1, f, top, _hunk_candidates(change, f, top, pickable)))
     shots.append(shot('card', 'end', END_DUR))

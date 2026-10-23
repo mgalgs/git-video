@@ -113,6 +113,24 @@ def make_range_repo(tmp):
     return repo, {'a': a, 'b': b, 'c': c}
 
 
+MORPH_LINES = 60
+
+
+def make_morph_repo(tmp):
+    """A repo whose HEAD, in one 60-line file, replaces lines 5-34 (one hunk
+    taller than a screen) and lines 55-57 (a short replace near the end)."""
+    repo = os.path.join(tmp, 'morph')
+    init(repo)
+    rows = [f'value_{i} = {i}\n' for i in range(MORPH_LINES)]
+    write(repo, 'm.py', ''.join(rows))
+    commit(repo, 'Add m.py')
+    for i in list(range(4, 34)) + [54, 55, 56]:
+        rows[i] = f'value_{i} = {i} * 10\n'
+    write(repo, 'm.py', ''.join(rows))
+    commit(repo, 'Scale the values')
+    return repo
+
+
 BIG_LINES = 560
 BIG_EVERY = 8
 

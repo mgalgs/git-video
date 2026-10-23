@@ -102,6 +102,41 @@ class TestPlan(unittest.TestCase):
                 if s['kind'] == 'xref-push':
                     self.assertEqual(p.shots[i + 1]['kind'], 'xref-pop')
 
+    def test_morph_in_plan(self):
+        hunks = {s['path']: s for s in kinds(self.plans[0], 'hunk')}
+        m = hunks['src/lib.py']['morph']
+        (seg,) = m['segments']
+        self.assertEqual((seg['at'], seg['old'], seg['new']), (1, ['    return x + 1'], 1))
+        self.assertEqual([o[5] for o in seg['ops'] if o[0] == 'delete'], ['+', '1'])
+        self.assertEqual([o[5] for o in seg['ops'] if o[0] == 'insert'], ['*', '2'])
+        self.assertIn(['equal', 0, 4, 0, 4, 'return'], seg['ops'])
+        self.assertEqual(m['at'], plan.HUNK_SCROLL + plan.MORPH_HOLD)
+        self.assertIsNone(hunks['src/app.py']['morph'])
+        self.assertEqual(hunks['src/lib.py']['focus'], [2, 2])
+        self.assertEqual(hunks['src/app.py']['focus'], [1, 5])
+
+    def test_large_hunk_skips_morph(self):
+        p = plan.plan(collect.collect(fixtures.make_morph_repo(self.tmp.name + '/m1'), 'HEAD'))
+        big, small = kinds(p, 'hunk')
+        self.assertIsNone(big['morph'])
+        self.assertEqual([g['new'] for g in small['morph']['segments']], [3])
+
+    def test_morph_dwell(self):
+        hunks = {s['path']: s for s in kinds(self.plans[0], 'hunk')}
+        self.assertEqual(hunks['src/lib.py']['dur'], round(plan.hunk_dwell(1, morph=True), 3))
+        self.assertEqual(hunks['src/app.py']['dur'], round(plan.hunk_dwell(5), 3))
+        self.assertAlmostEqual(plan.hunk_dwell(1, morph=True) - plan.hunk_dwell(1), plan.MORPH_HOLD + plan.MORPH_DUR)
+
+    def test_morph_window_fits_segment(self):
+        ch = collect.collect(fixtures.make_morph_repo(self.tmp.name + '/m2'), 'HEAD')
+        p = plan.plan(ch)
+        _, small = kinds(p, 'hunk')
+        h = ch.files[0].hunks[1]
+        top = small['top']
+        self.assertLessEqual(top, h.new_start - 1)
+        self.assertLessEqual(h.new_start - 1 + max(h.old_count, h.new_count), top + plan.PLAN_ROWS)
+        self.assertLessEqual(top, small['focus_line'] - 1)
+
     def test_large_hunk_dwell(self):
         repo = fixtures.make_big_repo(self.tmp.name + '/large')
         p = plan.plan(collect.collect(repo, 'HEAD'))
