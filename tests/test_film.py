@@ -245,6 +245,14 @@ class TestFilm(unittest.TestCase):
                 strokes = self.washed(tour, n, fmt)
                 self.assertTrue(strokes, (fmt, n, tour.at(n)))
                 self.assertTrue(any(abs(a - settled) < 1e-6 and p >= 1 for _, a, p in strokes), (fmt, n, strokes))
+            # the travel lands on the next hunk's lines, which sweep at once
+            nxt = travel + 1
+            self.assertEqual(shots[nxt]['kind'], 'hunk')
+            self.assertFalse(shots[nxt].get('morph'))
+            self.assertEqual(tour.views[travel][1], tour.views[nxt][0])
+            self.assertTrue(self.washed(tour, starts[nxt] + 2, fmt), fmt)
+            n = starts[nxt] + round(plan.HUNK_SWEEP * fps) + 1
+            self.assertTrue(all(p >= 1 for _, _, p in self.washed(tour, n, fmt)), fmt)
 
     def test_card_text(self):
         c = film.card_text(self.plan)

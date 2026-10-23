@@ -296,6 +296,16 @@ class Tour:
             if h is not None and cur.path == h['path'] and cur.patch == h.get('patch', 0) and cur.edit is None:
                 cur = replace(cur, wash=hunk)   # the hunk is current until the next one: its wash stays
             out.append((before, cur))
+        # A camera move into a file lands on its first hunk when that hunk has no
+        # morph to open on: the pane arrives showing the lines the hunk sweeps,
+        # rather than the file's top only to scroll away from it.
+        for i, s in enumerate(self.shots[:-1]):
+            nxt = self.shots[i + 1]
+            if (s['kind'] in ('dive', 'travel') and not self.develop and nxt['kind'] == 'hunk'
+                    and nxt['path'] == out[i][1].path and not nxt.get('morph')):
+                land = replace(out[i + 1][1], wash=None, stack=out[i][1].stack)
+                out[i] = (out[i][0], land)
+                out[i + 1] = (land, out[i + 1][1])
         return out
 
     # ---- time ----
@@ -1110,14 +1120,14 @@ def _hunk(tour, cv, st, shot, t, i, before, after):
     rows = lay.rows
     a = _fitted(tour, st, before) if before.path == after.path else 0.0
     b = _fitted(tour, st, after)
-    landed = P.scroll_time(shot)
+    landed = P.scroll_time(shot) if abs(a - b) > 1e-6 else 0.0   # already there: sweep at once
     motion = None
     if shot.get('scroll') == 'far':
         top = scroll_at(t, a, b, landed)
         if 0 < t < landed:
             motion = scroll_motion(a, b, t, landed, lay.line_h)
     else:
-        top = vb.interpolate(t, [0, landed], [a, b], vb.ease_in_out_quart)
+        top = vb.interpolate(t, [0, landed], [a, b], vb.ease_in_out_quart) if landed else b
     segs = tour.segments.get(i, ())
     shown = swept_lines(tour, st, i)
     p = vb.clamp01((t - landed) / P.HUNK_SWEEP)
