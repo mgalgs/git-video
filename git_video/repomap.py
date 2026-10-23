@@ -80,7 +80,8 @@ def tiles(tree, files, root):
     out = []
     for n in kept:
         entries = groups[n]
-        ts = [{'path': f['path'], 'size': sizes[f['path']], 'added': f['added'], 'deleted': f['deleted']}
+        ts = [{'path': f['path'], 'size': sizes[f['path']], 'added': f['added'], 'deleted': f['deleted'],
+               'binary': bool(f.get('binary'))}
               for f in changed if group_of(f['path'])[0] == n]
         q = sorted(((s, p) for p, s in entries if p not in order), key=lambda x: (-x[0], x[1]))
         ts += [{'path': p, 'size': s} for s, p in q if p in shown]
@@ -257,11 +258,17 @@ def _quiet_label(cv, t, b, alpha, mono):
                 return
 
 
+def label_parts(info):
+    """A changed tile's label as (text, role) pairs: `+a −d`, or `binary`
+    for a file git has no line counts for (as the side bar says)."""
+    return [('binary', 'muted')] if info.get('binary') else stat_parts(info)
+
+
 def _changed_label(cv, t, b, alpha, mono, added, removed):
     """`+a −d` on a dark pill, and the file name above it when there is room.
     Too small a tile still gets its numbers, at the smallest size, on a pill
     that may reach past the tile (it stays inside the map)."""
-    parts = stat_parts(t.info) if not t.info.get('binary') else [('binary', 'muted')]
+    parts = label_parts(t.info)
     colors = {'added': added, 'removed': removed, 'muted': '#9aa3b2'}
     for size in (19, 17, 15, 13):
         stat = vb.Font(mono, size, weight=700)

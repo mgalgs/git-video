@@ -58,6 +58,11 @@ class TestRepoMap(unittest.TestCase):
         self.assertEqual(repomap.group_of('src/app.py'), ('src', 'app.py'))
         self.assertEqual(repomap.group_of('bin.dat'), ('', 'bin.dat'))
 
+    def test_binary_tile_says_binary(self):
+        tiles = {t['path']: t for _, t in all_tiles(self.small)}
+        self.assertEqual([s for s, _ in repomap.label_parts(tiles['bin.dat'])], ['binary'])
+        self.assertEqual([s for s, _ in repomap.label_parts(tiles['src/app.py'])][0][0], '+')
+
     def test_top_level_files_stay_apart_from_a_same_named_directory(self):
         tree = [('README.md', 10), ('setup.py', 20), ('django/__init__.py', 30)]
         m = repomap.tiles(tree, [], root='django')
