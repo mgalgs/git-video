@@ -17,7 +17,11 @@ import videobuilder as vb
 from videobuilder import text as vbtext
 from videobuilder.capabilities.broadcast.click_ripple_indicator import click_ripple
 from videobuilder.capabilities.broadcast.cursor_path_animation import cursor_path
+from videobuilder.capabilities.broadcast.lower_third_slide_in_bar import lower_third_bar
+from videobuilder.capabilities.broadcast.two_tier_kicker_and_title_stack import kicker_title_progress
 from videobuilder.capabilities.broadcast.zoom_to_location_map import fly_to
+from videobuilder.capabilities.typography.odometer_roll import draw_odometer
+from videobuilder.capabilities.ui.avatar_stack_spread import draw_avatar_stack
 from videobuilder.capabilities.ui.circular_clip_reveal import GROW, circular_reveal, reach
 from videobuilder.capabilities.ui.cursor_state_change import draw_cursor as draw_state_cursor, hover_amount
 
@@ -260,9 +264,143 @@ def _stats(plan):
 
 
 def draw_card(tour, cv, box, shot, t, i, st):
-    """The title and end cards."""
-    plan = tour.plan
+    """The title and end cards, each fading in and out over 0.4 s."""
     alpha = min(vb.clamp01(t / 0.4), vb.clamp01((shot['dur'] - t) / 0.4))
+    with cv.layer(opacity=alpha):
+        CARD_KINDS[shot['kind']](tour, cv, box.pad(60), shot, t)
+
+
+# ---- the title card ----
+AVATAR_COLORS = ('#51afef', '#c678dd', '#98be65', '#da8548', '#46d9ff', '#ff6c6b')
+MAX_AVATARS = 6
+
+
+def initials(name):
+    """Two letters for an avatar: the first letters of the first two words, or
+    a one-word name's first two letters."""
+    words = [w for w in name.split() if w[:1].isalnum()] or [name or '?']
+    s = words[0][0] + words[1][0] if len(words) > 1 else words[0][:2]
+    return s.upper()
+
+
+def avatars(names):
+    """(colour, initials) per co-author, at most MAX_AVATARS; past that the last
+    circle counts the rest (`+N`)."""
+    out = [(AVATAR_COLORS[k % len(AVATAR_COLORS)], initials(n)) for k, n in enumerate(names)]
+    if len(out) > MAX_AVATARS:
+        out = out[:MAX_AVATARS - 1] + [('#3f444a', f'+{len(names) - MAX_AVATARS + 1}')]
+    return out
+
+
+def card_text(plan):
+    """What the title card says: {kicker, title, name, subtitle}."""
+    c = plan.commit
+    out = {'kicker': plan.repo.upper(), 'title': c['subject'], 'name': c['author'],
+           'subtitle': ' · '.join(x for x in (c['short'], c['date'][:10]) if x)}
+    if plan.is_range:
+        commits = c.get('commits', [])
+        a, b = plan.label.split('-', 1)
+        n = len(commits)
+        dates = [x['date'][:10] for x in commits if x.get('date')]
+        span = dates[0] if dates and dates[0] == dates[-1] else (f'{dates[0]} → {dates[-1]}' if dates else '')
+        authors = list(dict.fromkeys(x.get('author', '') for x in commits))
+        out.update(title=f'{n} commit{"s" if n != 1 else ""}',
+                   name=authors[0] if len(authors) == 1 else f'{len(authors)} authors',
+                   subtitle=' · '.join(x for x in (f'{a}..{b}', span) if x))
+    return out
+
+
+def counter_value(t, n):
+    """A counter rolling from 0 up to n over TITLE_ROLL, slowing as it lands."""
+    p = vb.clamp01((t - P.TITLE_ROLL[0]) / (P.TITLE_ROLL[1] - P.TITLE_ROLL[0]))
+    return n * (1 - (1 - p) ** 3)
+
+
+def _title_card(tour, cv, box, shot, t):
+    """Repo name over the subject (a two-tier kicker and title), `+a −d` rolling
+    up on odometers, the author on a name bar sliding in, co-authors beside it."""
+    plan, text = tour.plan, card_text(tour.plan)
+    portrait = cv.height > cv.width
+    title_f = vb.Font(UI, 60 if portrait else 66, weight=700, line_height=1.18)
+    kicker_f = vb.Font(UI, 26, weight=700, tracking=0.2)
+    meta_f = vb.Font(UI, 30)
+    digits = vb.Font(tour.font, 44, weight=700)
+    # The name bar first: the title stack is centred in the room above it.
+    bar_w = min(640, box.w * 0.55)
+    bar = lower_third_bar(cv, text['name'], text['subtitle'], (t - P.TITLE_BAR_IN) / 0.5,
+                          (t - (shot['dur'] - P.TITLE_BAR_OUT)) / 0.3, x=box.x, bottom=box.bottom, width=bar_w,
+                          title_font=vb.Font(UI, 36, weight=700), subtitle_font=vb.Font(UI, 22), color='#1c1f24',
+                          accent=THEME.cursor, ink='#e6e9ef', muted='#9aa3b2')
+    names = plan.commit.get('coauthors') or []
+    if names:
+        a = vb.clamp01((t - P.TITLE_AVATARS) / 0.25)
+        spread = vb.ease_out_back(vb.clamp01((t - P.TITLE_AVATARS) / 0.4))
+        av = avatars(names)
+        r = 26
+        row_w = 2 * r * 1.12 + (len(av) - 1) * 2 * r * 1.3
+        with cv.layer(opacity=a):
+            caption = vb.Font(UI, 17, weight=700, tracking=0.16)
+            cw = vbtext.measure('CO-AUTHORS', caption)
+            vbtext.draw(cv, ['CO-AUTHORS'], caption, box.right - max(row_w, cw), bar.y - 4, '#9aa3b2')
+            draw_avatar_stack(cv, av, box.right - row_w / 2, bar.y + bar.h / 2 + 10, spread, r=r, ring=THEME.bg)
+    room = vb.Box(box.x, box.y, box.w, max(0.0, bar.y - box.y - 24))
+    lines = list(vbtext.wrap(text['title'], title_f, box.w * (0.84 if portrait else 0.8), balance=True))
+    if len(lines) > 3:
+        lines = lines[:3]
+        lines[-1] = sidebar.ellipsize(lines[-1] + ' …', title_f, box.w * 0.84)
+    k, rise = kicker_title_progress(t / 1.2)
+    th = vbtext.line_height(title_f)
+    cell_h = vbtext.line_height(digits) * 1.15
+    heights = [vbtext.line_height(kicker_f), *[th] * len(lines), 10, cell_h]
+    boxes, _ = room.stack(heights, gap=12, align='center')
+    kb, tbs, cb = boxes[0], boxes[1:1 + len(lines)], boxes[-1]
+    with cv.layer(opacity=k):
+        vbtext.draw(cv, [text['kicker']], kicker_f, kb.x - 24 * (1 - k), kb.y, THEME.cursor, align='center',
+                    width=kb.w)
+    kw = vbtext.measure(text['kicker'], kicker_f)
+    cv.mark('card.kicker', kb.cx - kw / 2, kb.y, kw, kb.h)
+    for ln, b in zip(lines, tbs):
+        if rise > 0:
+            with cv.clip(b.x, b.y, b.w, b.h + 8):
+                vbtext.draw(cv, [ln], title_f, b.x, b.y + b.h * (1 - rise), '#e6e9ef', align='center', width=b.w)
+    if tbs:
+        tw = max(vbtext.measure(ln, title_f) for ln in lines)
+        cv.mark('card.title', box.cx - tw / 2, tbs[0].y, tw, tbs[-1].bottom - tbs[0].y)
+    _counters(cv, cb, plan, t, meta_f, digits, cell_h)
+
+
+def _counters(cv, b, plan, t, meta_f, digits, cell_h):
+    """`N files  + 0024  − 0003`, the numbers rolling up on odometer wheels."""
+    added = sum(f['added'] for f in plan.files)
+    deleted = sum(f['deleted'] for f in plan.files)
+    n = len(plan.files)
+    head = f'{n} file{"s" if n != 1 else ""}'
+    cw = vbtext.measure('0', digits) * 1.5
+    gap = cw * 0.12
+    sign_f = vb.Font(digits.family, digits.size, weight=700)
+
+    def wheels(v):
+        p = len(str(v))
+        return p * cw + (p - 1) * gap
+
+    parts = [(head, meta_f, '#9aa3b2', None), ('  +', sign_f, THEME.fringe_added, None),
+             (None, None, THEME.fringe_added, added), ('  ' + sidebar.MINUS, sign_f, THEME.fringe_removed, None),
+             (None, None, THEME.fringe_removed, deleted)]
+    widths = [vbtext.measure(s, f) + 8 if s else wheels(v) for s, f, _, v in parts]
+    x = b.cx - sum(widths) / 2
+    a = vb.clamp01((t - P.TITLE_ROLL[0] + 0.3) / 0.3)
+    with cv.layer(opacity=a):
+        for (s, f, color, v), w in zip(parts, widths):
+            if s:
+                vbtext.draw(cv, [s], f, x, b.y + (cell_h - vbtext.line_height(f)) / 2, color)
+            else:
+                draw_odometer(cv, counter_value(t, v), len(str(v)), digits, x, b.y, color, face='#1c1f24')
+            x += w
+    cv.mark('card.counters', b.cx - sum(widths) / 2, b.y, sum(widths), cell_h)
+
+
+def _end_card(tour, cv, box, shot, t):
+    plan = tour.plan
     portrait = cv.height > cv.width
     big = 64 if not portrait else 60
     width = box.w * (0.78 if not portrait else 0.84)
@@ -271,22 +409,23 @@ def draw_card(tour, cv, box, shot, t, i, st):
     small = vb.Font(UI, 26, weight=700, tracking=0.2)
     mono = vb.Font(tour.font, 30)
     c = plan.commit
-    with cv.layer(opacity=alpha):
-        lines = list(vbtext.wrap(c['subject'], title, width, balance=True))[:4]
-        info = ' · '.join(x for x in (c['short'], c['author'], c['date'][:10]) if x)
-        kicker = 'git video · tour' if shot['kind'] == 'title' else 'end of tour'
-        blocks = [(kicker.upper(), small, THEME.cursor), *((ln, title, '#e6e9ef') for ln in lines),
-                  ('', meta, None), (info, meta, '#9aa3b2'), (_stats(plan), mono, None)]
-        heights = [vbtext.line_height(f) for _, f, _ in blocks]
-        boxes, _ = box.pad(60).stack(heights, gap=10, align='center')
-        for (s, f, color), b in zip(blocks, boxes):
-            if not s:
-                continue
-            if color is None:   # the stats line: + and − in colour, glyphs kept
-                _stats_line(cv, b, s, f)
-                continue
-            vbtext.draw(cv, [s], f, b.x, b.y, color, align='center', width=b.w)
-        cv.mark(f'card.{shot["kind"]}', *box.pad(60))
+    lines = list(vbtext.wrap(c['subject'], title, width, balance=True))[:4]
+    info = ' · '.join(x for x in (c['short'], c['author'], c['date'][:10]) if x)
+    blocks = [('END OF TOUR', small, THEME.cursor), *((ln, title, '#e6e9ef') for ln in lines),
+              ('', meta, None), (info, meta, '#9aa3b2'), (_stats(plan), mono, None)]
+    heights = [vbtext.line_height(f) for _, f, _ in blocks]
+    boxes, _ = box.stack(heights, gap=10, align='center')
+    for (s, f, color), b in zip(blocks, boxes):
+        if not s:
+            continue
+        if color is None:   # the stats line: + and − in colour, glyphs kept
+            _stats_line(cv, b, s, f)
+            continue
+        vbtext.draw(cv, [s], f, b.x, b.y, color, align='center', width=b.w)
+    cv.mark('card.end', *box)
+
+
+CARD_KINDS = {'title': _title_card, 'end': _end_card}
 
 
 def _stats_line(cv, box, s, font):

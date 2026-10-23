@@ -26,7 +26,12 @@ MAX_HUNK_SHOTS = 60
 XREF_CAP_PER_HUNK = 3     # --verbose=3
 XREF_CAP_TOTAL = 24       # --verbose=3
 
-TITLE_DUR = 3.0
+TITLE_DUR = 3.4
+TITLE_ROLL = (1.0, 2.4)   # the +a and −d counters roll up
+TITLE_STILL = 1.85        # the title card's key moment: counters mid-roll, the name bar in
+TITLE_BAR_IN = 0.9        # the author's name bar slides in ...
+TITLE_BAR_OUT = 0.45      # ... and out, this long before the card ends
+TITLE_AVATARS = 1.5       # co-authors spread out beside it
 END_DUR = 2.5
 
 # Shot timings, shared by the film (what is seen) and the sounds (what is heard).

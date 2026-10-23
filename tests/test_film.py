@@ -138,6 +138,49 @@ class TestFilm(unittest.TestCase):
             if kind == 'xref-push':
                 self.assertIn('xref.word', dict(mid.marks))
 
+    def test_counter_rolls(self):
+        self.assertEqual(film.counter_value(plan.TITLE_ROLL[0], 11), 0)
+        self.assertEqual(film.counter_value(plan.TITLE_ROLL[1], 11), 11)
+        self.assertTrue(0 < film.counter_value(plan.TITLE_STILL, 11) < 11)
+        self.assertTrue(plan.TITLE_ROLL[0] < plan.TITLE_STILL < plan.TITLE_ROLL[1] < plan.TITLE_DUR)
+
+    def test_title_card_regions(self):
+        delete = collect.collect(self.repo, self.sha['delete'])
+        tours = {'change': self.tour, 'delete': film.Tour(plan.plan(delete), delete, log=io.StringIO())}
+        for rev, tour in tours.items():
+            for fmt in ('16x9', '9x16', '1x1'):
+                cv = tour.film.frame(round(2.2 * self.plan.fps), fmt)
+                marks = dict(cv.marks)
+                names = ['card.kicker', 'card.title', 'card.counters', 'lower-third']
+                if rev == 'delete':
+                    names.append('avatars')
+                else:
+                    self.assertNotIn('avatars', marks)
+                frame = vb.Box.of(cv)
+                for k, a in enumerate(names):
+                    self.assertIn(a, marks, (rev, fmt))
+                    self.assertTrue(frame.contains(marks[a]), (rev, fmt, a))
+                    for b in names[k + 1:]:
+                        self.assertFalse(marks[a].intersects(marks[b]), (rev, fmt, a, b))
+
+    def test_card_text(self):
+        c = film.card_text(self.plan)
+        self.assertEqual((c['kicker'], c['title'], c['name']), ('REPO', 'Use the library from an app', 'Test Person'))
+        self.assertEqual(c['subtitle'], f'{self.plan.commit["short"]} · 2026-01-02')
+        r = film.card_text(plan.plan(collect.collect(self.repo, f'{self.sha["root"]}..HEAD')))
+        self.assertEqual(r['title'], '2 commits')
+        self.assertIn('2026-01-02', r['subtitle'])
+        self.assertIn('..', r['subtitle'])
+        self.assertEqual(r['name'], 'Test Person')
+
+    def test_initials(self):
+        self.assertEqual(film.initials('Claude Opus 5.5'), 'CO')
+        self.assertEqual(film.initials('Ada'), 'AD')
+        av = film.avatars(['a'] * 8)
+        self.assertEqual(len(av), film.MAX_AVATARS)
+        self.assertEqual(av[-1][1], '+3')
+        self.assertEqual(len(film.avatars(['a'] * 6)), 6)
+
     def test_lit_order_follows_files(self):
         (m,) = [s for s in self.plan.shots if s['kind'] == 'map']
         self.assertEqual(m['lit'], ['bin.dat', 'src/app.py', 'src/lib.py', 'tests/test_app.py'])
