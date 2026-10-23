@@ -17,6 +17,10 @@ class Hunk:
     new_count: int
     added: list          # [[a, b], ...] inclusive ranges of new line numbers
     removed_at: list     # new line numbers after which removed lines sat (0: before line 1)
+    # One [at, [old line texts], new_count] per run of removed lines: `at` as in
+    # removed_at, new_count the added lines right after the run (0: a pure deletion).
+    segments: list = field(default_factory=list)
+    commit: str | None = None   # the sha that owns most of the added lines (a range); the target (one rev)
 
 
 @dataclass
@@ -126,7 +130,9 @@ def resolve(repo, spec):
 
 
 _TRAILERS = '%(trailers:key=Co-Authored-By,valueonly,separator=%x1e)'
-_RANGE_FORMAT = f'%H%x1f%h%x1f%an%x1f%aI%x1f%s%x1f{_TRAILERS}'
+# Every field \x1f-separated: the trailer block and the body are multi-line.
+_FORMAT = f'%H%x1f%h%x1f%an%x1f%aI%x1f%s%x1f{_TRAILERS}%x1f%(trailers)%x1f%b'
+_TRAILER_LINE = re.compile(r'^[A-Za-z0-9][\w-]*:\s')
 _EMAIL = re.compile(r'^(.*?)\s*<[^>]*>\s*$')
 
 
@@ -142,27 +148,41 @@ def coauthor_names(values):
     return out
 
 
+def strip_trailers(body, trailers):
+    """`body` without its trailer block (Co-Authored-By:, Signed-off-by:, any
+    `Token: value` lines at the end), which git reports as `trailers`."""
+    body = body.strip()
+    block = trailers.strip()
+    if not block:
+        return body
+    if body.endswith(block):
+        return body[:-len(block)].strip()
+    head, _, last = body.rpartition('\n\n')   # git reformatted the block: drop a last paragraph of trailers
+    if all(_TRAILER_LINE.match(ln) or ln[:1].isspace() for ln in last.split('\n')):
+        return head.strip()
+    return body
+
+
+def _parse(rec):
+    sha, sh, author, date, subject, coauthors, trailers, body = rec.strip('\n').split('\x1f', 7)
+    return Commit(sha, sh, subject, strip_trailers(body, trailers), author, date,
+                  coauthor_names(coauthors.split('\x1e')))
+
+
 def _one(repo, rev):
-    """The Commit of one rev, with its body."""
-    out = git(repo, 'log', '-1', f'--format=%H%n%h%n%an%n%aI%n%s%n{_TRAILERS}%n%b', rev)
-    sha, sh, author, date, subject, trailers, *body = out.split('\n')
-    return Commit(sha, sh, subject, '\n'.join(body).strip(), author, date, coauthor_names(trailers.split('\x1e')))
-
-
-def _ranged(rec):
-    sha, sh, author, date, subject, trailers = rec.strip('\n').split('\x1f')
-    return Commit(sha, sh, subject, '', author, date, coauthor_names(trailers.split('\x1e')))
+    """The Commit of one rev, with its body (trailers stripped)."""
+    return _parse(git(repo, 'log', '-1', f'--format={_FORMAT}', rev))
 
 
 def commit_meta(repo, base, target, is_range):
-    """The commits of the change, oldest first. A single rev's carries its body;
-    a range's commits carry their subjects only."""
+    """The commits of the change, oldest first, each with its body (trailers
+    stripped)."""
     if not is_range:
         return [_one(repo, target)]
-    out = git(repo, 'log', '--reverse', '-z', f'--format={_RANGE_FORMAT}', f'{base}..{target}')
-    commits = [_ranged(rec) for rec in filter(None, out.split('\0'))]
+    out = git(repo, 'log', '--reverse', '-z', f'--format={_FORMAT}', f'{base}..{target}')
+    commits = [_parse(rec) for rec in filter(None, out.split('\0'))]
     if not commits:   # B is not ahead of A: still describe B
-        commits.append(_ranged(git(repo, 'log', '-1', f'--format={_RANGE_FORMAT}', target)))
+        commits.append(_one(repo, target))
     return commits
 
 
@@ -214,7 +234,7 @@ _HEADER = re.compile(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@')
 
 def parse_hunks(patch):
     """The hunks of one file's patch text."""
-    hunks, h, n, prev = [], None, 0, ''
+    hunks, h, n, prev, seg = [], None, 0, '', None
     for line in patch.split('\n'):
         m = _HEADER.match(line)
         if m:
@@ -222,7 +242,7 @@ def parse_hunks(patch):
             h = Hunk(a, b, c, d, [], [])
             hunks.append(h)
             n = c - 1 if d > 0 else c   # the last new line before the hunk's first line
-            prev = ''
+            prev, seg = '', None
             continue
         if h is None or not line or line[0] not in '+- ':
             continue
@@ -232,11 +252,17 @@ def parse_hunks(patch):
                 h.added[-1][1] = n
             else:
                 h.added.append([n, n])
+            if seg is not None:
+                seg[2] += 1
         elif line[0] == '-':
             if prev != '-':
                 h.removed_at.append(n)
+                seg = [n, [], 0]
+                h.segments.append(seg)
+            seg[1].append(line[1:])
         else:
             n += 1
+            seg = None
         prev = line[0]
     return hunks
 
@@ -246,6 +272,48 @@ def _patches(repo, base, target):
     out = git(repo, 'diff', '-U3', *_DIFF, base, target)
     sections = re.split(r'^(?=diff --git )', out, flags=re.M)
     return [s for s in sections if s.startswith('diff --git ')]
+
+
+_BLAME_HEADER = re.compile(r'^([0-9a-f]{40}|[0-9a-f]{64}) \d+ (\d+)')
+
+
+def blame_owners(porcelain):
+    """{final line: sha} from `git blame --porcelain`, boundary commits (older
+    than the range) left out."""
+    owners, boundary, sha = {}, set(), None
+    for line in porcelain.split('\n'):
+        m = _BLAME_HEADER.match(line)
+        if m:
+            sha = m.group(1)
+            owners[int(m.group(2))] = sha
+        elif line == 'boundary' and sha:
+            boundary.add(sha)
+    return {ln: s for ln, s in owners.items() if s not in boundary}
+
+
+def attribute(repo, base, target, files, commits):
+    """Set each hunk's `commit` to the range commit that last touched most of
+    its added lines (ties: the later commit), by one `git blame` per file
+    restricted to those lines. A hunk with no added line, or only lines older
+    than the range, gets None; a failing blame leaves its file unattributed."""
+    order = {c.sha: k for k, c in enumerate(commits)}
+    for f in files:
+        ranges = [r for h in f.hunks for r in h.added]
+        if f.text is None or not ranges:
+            continue
+        args = [x for a, b in ranges for x in ('-L', f'{a},{b}')]
+        try:
+            owners = blame_owners(git(repo, 'blame', '--porcelain', *args, f'{base}..{target}', '--', f.path))
+        except GitError:
+            continue
+        for h in f.hunks:
+            votes = {}
+            for a, b in h.added:
+                for ln in range(a, b + 1):
+                    if ln in owners:
+                        votes[owners[ln]] = votes.get(owners[ln], 0) + 1
+            if votes:
+                h.commit = max(votes, key=lambda s: (votes[s], order.get(s, -1)))
 
 
 def blob_text(repo, rev, path):
@@ -296,6 +364,12 @@ def collect(repo, spec):
         lines = text.count('\n') + (0 if text.endswith('\n') or not text else 1) if text else 0
         files.append(FileChange(path, old, status, a, d, binary, parse_hunks(patch), text, lines))
     files = [f for f in files if not is_test(f.path)] + [f for f in files if is_test(f.path)]
+    if is_range:
+        attribute(repo, base, target, files, commits)
+    else:
+        for f in files:
+            for h in f.hunks:
+                h.commit = target
     return Change(repo, base, target, label, is_range, commits, files,
                   sum(f.added for f in files), sum(f.deleted for f in files),
                   tree=ls_tree(repo, target), next=next_commit(repo, target))

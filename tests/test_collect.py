@@ -2,6 +2,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from git_video import collect
 from tests import fixtures
@@ -119,6 +120,63 @@ class TestCollect(unittest.TestCase):
         fixtures.commit(side, 'Go another way')
         self.assertIsNone(collect.next_commit(side, self.sha['change']))
         self.assertIsNotNone(collect.next_commit(side, self.sha['root']))
+
+    def test_range_commits_carry_stripped_bodies(self):
+        commits = collect.commit_meta(self.repo, self.sha['root'], self.sha['delete'], True)
+        self.assertEqual([c.body for c in commits], ['The app doubles instead of incrementing.', ''])
+        self.assertEqual(collect.strip_trailers('Why.\n\nToken: v\nOther-Key: w', 'Token: v\nOther-Key: w'), 'Why.')
+        self.assertEqual(collect.strip_trailers('Just prose: here.', ''), 'Just prose: here.')
+
+    def test_parse_hunks_segments(self):
+        h, = collect.parse_hunks('@@ -3,2 +2,0 @@\n-a\n-b\n')
+        self.assertEqual(h.segments, [[2, ['a', 'b'], 0]])
+        h, = collect.parse_hunks('@@ -1,3 +1,3 @@\n x\n-old\n+new\n y\n')
+        self.assertEqual(h.segments, [[1, ['old'], 1]])
+        h, = collect.parse_hunks('@@ -1,2 +1,3 @@\n x\n+new\n y\n')
+        self.assertEqual(h.segments, [])
+        h, = collect.parse_hunks('@@ -1,6 +1,5 @@\n-a\n+A\n+B\n x\n-c\n-\td\n y\n')
+        self.assertEqual(h.segments, [[0, ['a'], 2], [3, ['c', '\td'], 0]])
+
+    def test_range_attribution(self):
+        repo, sha = fixtures.make_range_repo(self.tmp.name)
+        ch = collect.collect(repo, f'{sha["a"]}..{sha["c"]}')
+        hunks = [h for f in ch.files for h in f.hunks]
+        self.assertEqual(len(hunks), 2)
+        self.assertEqual([h.commit for h in hunks], [sha['b'], sha['c']])
+        self.assertEqual([c.body for c in ch.commits], ['frob() now doubles its input.', 'The helper other() now triples.'])
+        ch = collect.collect(repo, sha['b'])
+        self.assertEqual({h.commit for f in ch.files for h in f.hunks}, {sha['b']})
+        # a hunk with no added line in the range gets no commit
+        self.assertEqual(collect.blame_owners(f'{sha["a"]} 1 1 1\nboundary\n\tx\n'), {})
+
+    def test_attribution_survives_blame_failure(self):
+        repo, sha = fixtures.make_range_repo(self.tmp.name + '/fail')
+        real = collect.git
+
+        def git(repo, *args, **kw):
+            if args[0] == 'blame':
+                raise collect.GitError('blame broke')
+            return real(repo, *args, **kw)
+
+        with mock.patch.object(collect, 'git', git):
+            ch = collect.collect(repo, f'{sha["a"]}..{sha["c"]}')
+        self.assertEqual([h.commit for f in ch.files for h in f.hunks], [None, None])
+
+    def test_attribution_is_synchronous(self):
+        # One blame per changed text file, through collect.git (subprocess.run),
+        # done before collect returns: nothing is left running.
+        repo, sha = fixtures.make_range_repo(self.tmp.name + '/sync')
+        calls = []
+        real = collect.git
+
+        def git(repo, *args, **kw):
+            calls.append(args[0])
+            return real(repo, *args, **kw)
+
+        with mock.patch.object(collect, 'git', git):
+            collect.collect(repo, f'{sha["a"]}..{sha["c"]}')
+        self.assertEqual(calls.count('blame'), 1)
+        self.assertLess(calls.index('blame'), calls.index('ls-tree'))
 
     def test_parse_hunks_pure_deletion(self):
         patch = '@@ -3,2 +2,0 @@\n-a\n-b\n'

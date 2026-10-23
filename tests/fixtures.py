@@ -70,12 +70,47 @@ def make_repo(tmp):
     write(repo, 'src/app.py', APP)
     write(repo, 'tests/test_app.py', TEST_APP)
     write(repo, 'bin.dat', b'\x00\x01\x02binary\x00')
-    change = commit(repo, 'Use the library from an app\n\nThe app doubles instead of incrementing.')
+    change = commit(repo, 'Use the library from an app\n\nThe app doubles instead of incrementing.\n\n'
+                          'Signed-off-by: Test Person <test@example.com>\nReviewed-on: https://example.com/r/1')
     os.remove(os.path.join(repo, 'bin.dat'))
     delete = commit(repo, 'Drop the binary\n\nCo-Authored-By: Ada Lovelace <ada@example.com>\n'
                           'Co-Authored-By: Grace Hopper <grace@example.com>\n'
                           'co-authored-by: Ada Lovelace <ada@example.org>')
     return repo, {'root': root, 'change': change, 'delete': delete}
+
+
+RANGE_LIB_A = '''def frob(x):
+    return x + 1
+
+
+SPACER = [
+    1,
+    2,
+    3,
+]
+
+
+def other(x):
+    return x - 1
+'''
+
+
+def make_range_repo(tmp):
+    """A, B, C on one line; returns (repo, {'a', 'b', 'c'}).
+
+    A: lib.py defines frob() and other().
+    B: frob() changes ("frob() now doubles.").
+    C: other() changes ("other() now triples.").
+    """
+    repo = os.path.join(tmp, 'range')
+    init(repo)
+    write(repo, 'lib.py', RANGE_LIB_A)
+    a = commit(repo, 'Add the library')
+    write(repo, 'lib.py', RANGE_LIB_A.replace('x + 1', 'x * 2'))
+    b = commit(repo, 'Double in frob\n\nfrob() now doubles its input.\n\nSigned-off-by: Test Person <t@example.com>')
+    write(repo, 'lib.py', RANGE_LIB_A.replace('x + 1', 'x * 2').replace('x - 1', 'x * 3'))
+    c = commit(repo, 'Triple in other\n\nThe helper other() now triples.')
+    return repo, {'a': a, 'b': b, 'c': c}
 
 
 BIG_LINES = 560
