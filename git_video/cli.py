@@ -186,7 +186,8 @@ def main(argv=None):
             change, patches = collect.series(repo_path(args.C), args.rev)
             if args.duration is not None and len(patches) > 1:   # few enough beats for the target
                 from . import condense
-                patches = condense.fit_series(change, patches, args.duration, args.mode, args.verbose)
+                patches = condense.fit_series(change, patches, args.duration, args.mode, args.verbose,
+                                              voice=args.voice is not None)
         else:
             change = collect.collect(repo_path(args.C), args.rev)
             patches = [change]
@@ -203,9 +204,11 @@ def main(argv=None):
     writer = None
     if args.voice is not None:
         name, fallback = narrator.resolve(args.narrator or 'auto')
-        writer = narrator.Narrator(name, change, patches, args.mode, args.series, args.verbose, fallback)
+        writer = narrator.Narrator(name, change, patches, args.mode, args.series, args.verbose, fallback,
+                                   duration=args.duration)
         try:
-            tour = voice.narrate(change, patches, args.verbose, args.mode, engine, args.voice, writer)
+            tour = voice.narrate(change, patches, args.verbose, args.mode, engine, args.voice, writer,
+                                 duration=args.duration)
         except voice.VoiceError as e:
             return _fail(str(e), 2)
         except narrator.NarratorError as e:

@@ -38,8 +38,10 @@ Speak when a shot shows something your explanation is about, so that
 words and picture line up. Aim for an opening of one or two sentences
 that frames the whole change, a few phrases at the moments that carry
 the approach, and a short closing. The limits are hard: at most
-{max_phrases} phrases, each at most 35 words, and about {max_speech_s}
-seconds of speech in total (about 2.5 words per second).
+{max_phrases} phrases, each at most {max_words} words, and about {max_speech_s}
+seconds of speech in total (about 2.5 words per second). The finished
+video is about {length} long, narration included, and the shot table
+below is everything it shows: fit your explanation to that.
 
 Write for the ear: short sentences, plain words. Name code only when the
 name helps, and say it as a person would ("the draw function"). Never

@@ -239,8 +239,8 @@ can be read. `GIT_VIDEO_NARRATOR_MODEL` sets the model (default `opus`) and
 `GIT_VIDEO_NARRATOR_ARGS` adds fork-sandbox options (shell-split), say
 `--claude-credentials <file>`. The script is cached in
 `$XDG_CACHE_HOME/git-video/narration/`, keyed by the range, the mode,
-`--series`, `--verbose`, the model and the shots, so a second render runs no
-session. Under `--narrator=auto` a session that fails, or writes nothing
+`--series`, `--verbose`, `--duration`, the model and the shots, so a second
+render runs no session. Under `--narrator=auto` a session that fails, or writes nothing
 usable, costs a one-line warning and the heuristic narrates instead.
 
 Either way the script is held to the same limits: about one phrase per 8 s
@@ -252,6 +252,14 @@ Shots stretch to the voice: a card or a hunk is held until its phrases and
 a breath are done, and in develop mode a narrated hunk is typed no faster
 than its phrase (down to natural pace), then point rests until the sentence
 ends. Phrases never overlap and never run into the next shot.
+
+With `--duration` the voice stays inside the target. A phrase is at most a
+third of the target in words (12 to 35), the phrase count follows the
+target's length, and the fork-sandbox brief says how long the video is and
+lists only the shots kept. A narrated shot takes its time from the
+unnarrated ones; if that is not enough to land within the target's
+tolerance, phrases go from the end of the middle, never the opening or
+the closing.
 
 The voice is said by videobuilder's `say` (Kokoro, voice `bf_isabella` by
 default) once per script, into `$XDG_CACHE_HOME/git-video/voice/`; a second

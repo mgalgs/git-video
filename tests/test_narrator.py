@@ -105,6 +105,24 @@ class TestLimits(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
+    def test_limits_scale_with_the_duration(self):
+        for d, n in ((None, 35), (120, 35), (60, 20), (30, 12), (15, 12)):
+            self.assertEqual(narrator.max_words(d), n, d)
+        fifteen = [P('Opening.', ('title',)), P(' '.join(['word'] * 15) + '.', self.hunks[0]), P('Closing.', ('end',))]
+        self.assertEqual(narrator.check(fifteen, self.plan), [])
+        short = plan.build(self.change, 0, 'tour', duration=30)
+        self.assertTrue(any('more than 12' in x for x in narrator.check(fifteen, short)))
+        self.assertNotIn(fifteen[1], narrator.trim(fifteen, short))
+        self.assertEqual(narrator.limits(plan.build(self.change, 0, 'tour', duration=60)), (60 // 8 + 2, 27))
+
+    def test_drop_to_fit(self):
+        s = self.script(3)
+        secs = [2.0, 1.0, 1.0, 1.0, 1.0]
+        self.assertEqual(narrator.drop_to_fit(s, secs, 0.1), s[:3] + s[4:])   # one, from the end of the middle
+        self.assertEqual(narrator.drop_to_fit(s, secs, 2.5), [s[0], s[1], s[4]])
+        self.assertEqual(narrator.drop_to_fit(s, secs, 99), [s[0], s[4]])     # never the opening or the closing
+        self.assertEqual(narrator.drop_to_fit([s[0], s[4]], [2.0, 1.0], 99), [s[0], s[4]])
+
     def test_limits(self):
         most, speech = narrator.limits(self.plan)
         self.assertEqual(most, int(self.plan.total // 8) + 2)
@@ -160,6 +178,22 @@ class TestLimits(unittest.TestCase):
 
 
 class TestBrief(unittest.TestCase):
+    def test_duration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            big = collect.collect(fixtures.make_big_repo(tmp), 'HEAD')
+            for mode in ('tour', 'develop'):
+                p = plan.build(big, 0, mode, duration=30)
+                text = narrator.brief(big, p, [big])
+                self.assertIn('about 30 seconds long', text, mode)
+                self.assertIn(f'each at most {narrator.max_words(30)} words', text, mode)
+                most, _ = narrator.limits(p)
+                self.assertEqual(most, 30 // 8 + 2)
+                self.assertIn(f'at most\n{most} phrases', text)
+                kept = {(path, h['index']) for e in p.patches for path, hs in e['kept'].items() for h in hs}
+                rows = [r for r in narrator.shot_rows(p, [big]) if r.key[0] in ('hunk', 'edit')]
+                self.assertEqual({(r.key[2], r.key[3]) for r in rows}, kept, mode)
+                self.assertNotRegex(text, r'\{(length|max_words)\}')
+
     def test_filled_in(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, sha = fixtures.make_callout_repo(tmp)   # its body ends in a Signed-off-by: trailer
@@ -175,7 +209,9 @@ class TestBrief(unittest.TestCase):
         self.assertIn(f'at most\n{most} phrases', text)
         self.assertIn(f'about {speech}\nseconds', text)
         self.assertIn(narrator.shot_table(narrator.shot_rows(p, [ch])), text)
-        self.assertNotRegex(text, r'\{(range|commits|base|tip|max_phrases|max_speech_s|shot_table)\}')
+        self.assertNotRegex(text, r'\{(range|commits|base|tip|max_phrases|max_speech_s|max_words|length|shot_table)\}')
+        self.assertIn(f'about {round(p.total)} seconds long', text)
+        self.assertIn('each at most 35 words', text)
         self.assertIn('{"phrases": [{"shot": "<shot id>", "text": "<what to say>"}]}', text)
         self.assertIn('Do not change or\ncommit anything', text)
 

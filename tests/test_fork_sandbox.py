@@ -173,6 +173,21 @@ class TestForkSandbox(unittest.TestCase):
             narrator.Narrator('fork-sandbox', self.change, [self.change], 'develop', False, 0, False, io.StringIO())(dev)
         self.assertEqual(len(self.fake.calls()), 3)
 
+    def test_cache_key_includes_duration(self):
+        key = lambda d: narrator.cache_key(self.change, self.plan, [self.change], 'tour', False, 0, 'opus', d)
+        self.assertEqual(key(None), key(None))
+        self.assertEqual(key(60.0), key(60.0))
+        self.assertEqual(len({key(None), key(60.0), key(30.0)}), 3)
+        for target in (60.0, 30.0):   # the same change at two targets: two narrations
+            p = plan.build(self.change, 0, 'tour', duration=target)
+            narrator.Narrator('fork-sandbox', self.change, [self.change], 'tour', False, 0, False, io.StringIO(),
+                              duration=target)(p)
+        self.assertEqual(len(self.fake.calls()), 2)
+        p = plan.build(self.change, 0, 'tour', duration=60.0)
+        narrator.Narrator('fork-sandbox', self.change, [self.change], 'tour', False, 0, False, io.StringIO(),
+                          duration=60.0)(p)
+        self.assertEqual(len(self.fake.calls()), 2)   # found in the cache
+
     def test_over_the_limits_is_trimmed(self):
         most, _ = narrator.limits(self.plan)
         rows = narrator.shot_rows(self.plan, [self.change])

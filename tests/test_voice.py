@@ -521,6 +521,54 @@ class TestPacing(unittest.TestCase):
         cls.env.stop()
         cls.tmp.cleanup()
 
+    def test_voice_trims_to_the_target(self):
+        repo, shas = fixtures.make_series_repo(self.tmp.name)
+        ch = collect.collect(repo, f'{shas[0]}..{shas[-1]}')
+        unvoiced = plan.build(ch, 0, 'tour', duration=30)
+        hunks = [k for s in unvoiced.shots for k in voice.keys_of(s) if k[0] == 'hunk']
+        self.assertGreaterEqual(len(hunks), 2)
+        long = ' '.join(['said'] * 19) + '.'
+        script = ([voice.Phrase('This change builds a pipeline.', ('title',))]
+                  + [voice.Phrase(long, k, n) for k in hunks for n in range(2)]
+                  + [voice.Phrase("That's the change.", ('end',))])
+        p = voice.narrate(ch, [ch], 0, 'tour', fixtures.FakeEngine(), 'bf_isabella', lambda _: script, duration=30)
+        from git_video import condense
+        self.assertLessEqual(abs(p.total - 30), condense.tolerance(30), p.total)
+        said = [q['text'] for q in p.voice['phrases']]
+        self.assertLess(len(said), len(script))
+        self.assertEqual(said[0], script[0].text)
+        self.assertEqual(p.shots[p.voice['phrases'][0]['shot']]['kind'], 'title')
+        self.assertEqual(said[-1], script[-1].text)
+        self.assertEqual(p.shots[p.voice['phrases'][-1]['shot']]['kind'], 'end')
+
+    def test_on_target_narration_is_not_trimmed(self):
+        from git_video import condense
+        repo, sha = fixtures.make_repo(os.path.join(self.tmp.name, 'ontarget'))
+        ch = collect.collect(repo, sha['change'])
+        full = voice.script(plan.build(ch, 0, 'develop', duration=15), [ch])
+        p = voice.narrate(ch, [ch], 0, 'develop', fixtures.FakeEngine(), 'bf_isabella', duration=15)
+        self.assertLessEqual(abs(p.total - 15), condense.tolerance(15), p.total)
+        self.assertEqual([q['text'] for q in p.voice['phrases']], [x.text for x in full])
+
+    def test_narrated_shots_take_time_from_the_rest(self):
+        from git_video import condense
+        repo, sha = fixtures.make_repo(os.path.join(self.tmp.name, 'take'))
+        ch = collect.collect(repo, sha['change'])
+        for mode in ('tour', 'develop'):
+            plain = plan.build(ch, 0, mode, duration=30)
+            p = voice.narrate(ch, [ch], 0, mode, fixtures.FakeEngine(), 'bf_isabella', duration=30)
+            self.assertLessEqual(abs(p.total - 30), condense.tolerance(30), (mode, p.total))
+            self.assertEqual([s['kind'] for s in plain.shots], [s['kind'] for s in p.shots])
+            spoken = {q['shot'] for q in p.voice['phrases']}
+            self.assertTrue(spoken)
+            for i, (a, b) in enumerate(zip(plain.shots, p.shots)):
+                mine = [q for q in p.voice['phrases'] if q['shot'] == i]
+                if mine:
+                    starts = plan.frame_starts(p.shots, p.fps)[0]
+                    self.assertGreaterEqual(starts[i] / p.fps + b['dur'] + 0.05, mine[-1]['end'], (mode, i))
+                else:
+                    self.assertLessEqual(b['dur'], a['dur'] + 1e-3, (mode, i, b['kind']))
+
     def test_voice_off_is_todays_plan(self):
         # the shots and their lengths as the tree before --voice (cff1eeecb1) planned them
         with open(os.path.join(os.path.dirname(__file__), 'voice_off_plans.json')) as f:

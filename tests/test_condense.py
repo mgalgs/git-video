@@ -268,7 +268,7 @@ class TestTolerance(unittest.TestCase):
             if not series and target <= 30:
                 return self.repo, self.sha['change']
             return self.series, whole
-        self.matrix(cases, (False,), (False, True))
+        self.matrix(cases, (False, True), (False, True))
 
     def test_this_repos_history(self):
         # straight through plan.build, one collected change for every target (the scores are computed once)
@@ -282,7 +282,7 @@ class TestTolerance(unittest.TestCase):
         combined, patches = collect.series(ROOT, 'HEAD~12..HEAD')
         for mode in ('tour', 'develop'):
             for series in (False, True):
-                for voice in (False,):
+                for voice in (False, True):
                     ch, ps = (combined, patches) if series else (whole, [whole])
                     for target in TARGETS:
                         with self.subTest(mode=mode, series=series, voice=voice, target=target):
@@ -290,8 +290,11 @@ class TestTolerance(unittest.TestCase):
                             self.assertLessEqual(abs(p.total - target), condense.tolerance(target), p.total)
 
     def build(self, change, patches, mode, voice, target):
+        from git_video import voice as voicemod
         if len(patches) > 1:
-            patches = condense.fit_series(change, patches, target, mode)
+            patches = condense.fit_series(change, patches, target, mode, voice=voice)
+        if voice:
+            return voicemod.narrate(change, patches, 0, mode, fixtures.FakeEngine(), 'bf_isabella', duration=target)
         return plan.build(change, 0, mode, patches, duration=target)
 
 

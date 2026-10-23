@@ -392,12 +392,13 @@ def say_sentence(text, most=MAX_WORDS):
     return None if s is None or jargon(s) else s
 
 
-def say_reason(text):
+def say_reason(text, longest=None):
     """A commit sentence ready to be said when it gives a reason, else None:
-    shortened to MAX_WORDS, or as far as narrator.MAX_WORDS when the reason
-    is in a clause the shorter cut would drop ("..., but keeping the list
-    keeps 1:1 consistent")."""
-    for most in (MAX_WORDS, narrator.MAX_WORDS):
+    shortened to MAX_WORDS, or as far as `longest` (narrator.MAX_WORDS by
+    default) when the reason is in a clause the shorter cut would drop
+    ("..., but keeping the list keeps 1:1 consistent")."""
+    longest = narrator.MAX_WORDS if longest is None else longest
+    for most in (min(MAX_WORDS, longest), longest):
         s = say_sentence(text, most)
         if s and reason(s):
             return s
@@ -487,7 +488,9 @@ def _opening(plan):
     out = []
     if n_patches > 1:
         out.append(f'This is a series of {number_words(n_patches)} patches.')
-        out.append(sentence_from_subject(plan.patches[0]['commit']['subject'], 'The first patch'))
+        first = plan.patches[0]['commit']
+        if not re.fullmatch(r'\d+ small commits', first['subject']):   # not a --duration beat of several
+            out.append(sentence_from_subject(first['subject'], 'The first patch'))
     elif plan.is_range:
         n = len(c.get('commits') or ())
         out.append(f'This is a range of {number_words(n)} commit{"s" if n != 1 else ""}.')
@@ -497,6 +500,12 @@ def _opening(plan):
     lines = sum(f['added'] + f['deleted'] for f in plan.files)
     if files:
         out.append(size_sentence(files, lines))
+    if plan.duration is not None:   # a short target's opening keeps to its phrase length
+        most, kept = narrator.max_words(plan.duration), out[:1]
+        for s in out[1:]:
+            if len(' '.join(kept + [s]).split()) <= most:
+                kept.append(s)
+        out = kept
     return out
 
 
@@ -515,7 +524,7 @@ def _was(s):
     return bool(m) and not _NOT_MAIN.search(first[:m.start()]) and not re.search(r'\bnow\b', first, re.I)
 
 
-def _why(plan, patches, used):
+def _why(plan, patches, used, longest=None):
     """What the change is for: the first sentence of the commit body's first
     paragraph, when no hunk's callout says it and the paragraph is prose
     rather than a list; one that tells how things were starts "Before,".
@@ -524,9 +533,9 @@ def _why(plan, patches, used):
     if plan.is_range or len(patches) != 1:
         return None
     body = plan.commit.get('body') or ''
-    short = why_line(body, used)
+    short = why_line(body, used, min(MAX_WORDS, longest or MAX_WORDS))
     if short and not reason(short):
-        long = why_line(body, used, narrator.MAX_WORDS)
+        long = why_line(body, used, narrator.MAX_WORDS if longest is None else longest)
         return long if long and reason(long) else short
     return short
 
@@ -580,29 +589,33 @@ def script(plan, patches):
     says what the editor shows. Long silences are expected. Deterministic:
     the same plan gives the same script, however long its shots are."""
     out = [Phrase(' '.join(_opening(plan)), ('title',))]
+    longest = narrator.max_words(plan.duration)   # fewer words in a short --duration
     used = {c['text'] for s in plan.shots for c in s.get('callouts') or ()}
     if plan.mode == 'develop':
         used |= {t for ch in patches for ts in planmod.develop_sentences(ch).values() for t in ts}
-    why = _why(plan, patches, used)
+    why = _why(plan, patches, used, longest)
     # over the repo map (or the title card without one): the body's lead,
     # then the reasons it gives that no hunk's callout took
     framing = [why] if why else []
     if len(patches) == 1 and not plan.is_range:
         units = callouts_mod.sentences(plan.commit.get('body') or '')
-        framing += [t for t in map(say_reason, (u for u in units[1:] if u not in used)) if t]
+        framing += [t for t in (say_reason(u, longest) for u in units[1:] if u not in used) if t]
     at = ('map',) if any(s['kind'] == 'map' for s in plan.shots) else ('title',)
     out += [Phrase(t, at) for t in framing[:narrator.PER_SHOT - (at == ('title',))]]
     develop = {k: planmod.develop_sentences(ch) for k, ch in enumerate(patches)} if plan.mode == 'develop' else {}
 
     def reasons(texts):
-        lines = [(n, say_reason(t)) for n, t in enumerate(texts)]
+        lines = [(n, say_reason(t, longest)) for n, t in enumerate(texts)]
         return [(n, t) for n, t in lines if t]
 
     for s in plan.shots:
         kind, k = s['kind'], s.get('patch', 0)
         key = planmod.shot_key(s)
         if kind == 'patch':
-            out.append(Phrase(sentence_from_subject(plan.patches[k]['commit']['subject'], 'The next patch'), key))
+            subject = plan.patches[k]['commit']['subject']
+            merged = re.fullmatch(r'(\d+) small commits', subject)   # a --duration beat of several
+            out.append(Phrase(f'Next, {number_words(int(merged.group(1)))} small commits.' if merged
+                              else sentence_from_subject(subject, 'The next patch'), key))
         elif kind == 'hunk':
             out += [Phrase(t, key, n) for n, t in reasons(c['text'] for c in s.get('callouts') or ())]
         elif kind == 'xref-push' and _named(s['name'], _bodies(plan, k)):
@@ -804,12 +817,14 @@ def place(plan, phrases, seconds, voice, out_dir, lexicon):
     return {'voice': voice, 'speed': SPEED, 'dir': out_dir, 'lexicon': lexicon, 'bed': BED, 'phrases': out}
 
 
-def narrate(change, patches, verbose, mode, engine, name, narrate_with=None):
+def narrate(change, patches, verbose, mode, engine, name, narrate_with=None, duration=None):
     """The plan of `change` narrated in voice `name`: the script (written by
     `narrate_with(plan)`, a narrator.Narrator, else the heuristic `script`)
     cut to the narrator limits, said (or found in the cache), and placed on
-    its shots."""
-    first = planmod.build(change, verbose, mode, patches)
+    its shots. With a `duration`, the narrated plan keeps to the target:
+    narrated shots take their time from the rest, and if that is not enough
+    middle phrases are dropped (the opening and the closing never)."""
+    first = planmod.build(change, verbose, mode, patches, duration=duration)
     phrases = narrate_with(first) if narrate_with else script(first, patches)
     phrases = narrator.trim(phrases, first, strict=False)
     while True:
@@ -818,8 +833,12 @@ def narrate(change, patches, verbose, mode, engine, name, narrate_with=None):
         seconds = synth(phrases, lexicon, name, engine, out_dir)
         # Again, each shot as long as its phrases need: the same shots, so the
         # same keys (they do not depend on how long shots are).
-        final = planmod.build(change, verbose, mode, patches, voice=Timed(phrases, seconds))
+        final = planmod.build(change, verbose, mode, patches, voice=Timed(phrases, seconds), duration=duration)
         kept = narrator.trim(phrases, first, seconds, final.total, strict=False)   # too much speech: say less
+        if kept == phrases and duration is not None and len(phrases) > 1:
+            from .condense import tolerance
+            if final.total > duration + tolerance(duration):   # past the target: say less rather than miss it
+                kept = narrator.drop_to_fit(phrases, seconds, final.total - (duration + tolerance(duration) / 2))
         if kept == phrases:
             break
         phrases = kept

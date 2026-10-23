@@ -76,11 +76,16 @@ def size_of(change):
     return change.added + change.deleted
 
 
-def fit_series(change, patches, target, mode='tour', verbose=0):
+def fit_series(change, patches, target, mode='tour', verbose=0, voice=False):
     """--series patches made few enough for a plan of `target` s to fit
     (`merge_series`): from `max_beats` beats, one fewer each time the plan
     built from them is still too long (a beat's least cost depends on what
-    it shows: several files, callouts to read, a typed file)."""
+    it shows: several files, callouts to read, a typed file). With `voice`,
+    room is kept for the opening phrase, which the title card must hold."""
+    if voice:
+        from . import narrator, voice as voicemod
+        spoken = narrator.max_words(target) / narrator.WORDS_PER_SECOND
+        target -= max(0.0, P.VOICE_TITLE_AT + spoken + voicemod.BREATH - LIMITS['title'][0])
     most = min(len(patches), max_beats(target))
     while True:
         beats = merge_series(patches, most)
@@ -301,17 +306,19 @@ def body(change, verbose, mode, k, voice, budget, xrefs):
         xrefs = fit if xrefs is None else min(xrefs, fit)
         if verbose == 0 and xrefs is not None:
             xrefs = min(xrefs, 1)
+    def run(keep, voice):
+        if mode == 'tour':
+            return P._tour_body(change, verbose, k, voice, keep=keep, xref_cap=xrefs), {}, {}
+        enters = P.DIVE_DUR + (len(keep) - 1) * P.TRAVEL_DUR if keep else 0.0
+        return P._develop_body(change, verbose, k, voice, keep=keep, budget=max(1.0, budget - enters), duration=True)
+
+    # What is kept does not depend on the voice, so a narrated plan has the
+    # same shots as the plan its script was written for.
     for _ in range(FIT_TRIES):
         keep = _keep_of(items, ids)
-        if mode == 'tour':
-            shots = P._tour_body(change, verbose, k, voice, keep=keep, xref_cap=xrefs)
-            fields, written = {}, {}
-        else:
-            enters = P.DIVE_DUR + (len(keep) - 1) * P.TRAVEL_DUR if keep else 0.0
-            shots, fields, written = P._develop_body(change, verbose, k, voice, keep=keep,
-                                                     budget=max(1.0, budget - enters), duration=True)
+        shots, fields, written = run(keep, None)
         files = list(dict.fromkeys(s['path'] for s in shots if s['kind'] == 'enter'))
-        least = sum(bounds(s, voice)[0] for s in shots if s['kind'] != 'enter') + _enters_min(len(files))
+        least = sum(bounds(s)[0] for s in shots if s['kind'] != 'enter') + _enters_min(len(files))
         if least <= budget + 0.25 or len(ids) <= 1:
             break
         if mode == 'tour' and xrefs:
@@ -319,6 +326,8 @@ def body(change, verbose, mode, k, voice, budget, xrefs):
             continue
         worst = min((it for it in items if it['id'] in ids), key=lambda x: (x['score'], -x['order']))
         ids.discard(worst['id'])
+    if voice is not None:
+        shots, fields, written = run(keep, voice)
     used = sum(1 for s in shots if s['kind'] == 'xref-push')
     visited = set(files)
     kept = {}

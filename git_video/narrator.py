@@ -6,8 +6,8 @@ shot id `shot_rows` gives it) with the text to say. Two narrators write one:
 agent session that reads the change; see `fork_sandbox`). Whichever wrote
 it, the script is held to the same sparse limits (`check`, `trim`): about one
 phrase per SECONDS_PER_PHRASE of the unvoiced film plus the opening and the
-closing, each at most MAX_WORDS words, and speech at most SPEECH_SHARE of the
-voiced film. How a phrase is said (spoken forms, captions) and how the shots
+closing, each at most MAX_WORDS words (fewer for a short --duration,
+`max_words`), and speech at most SPEECH_SHARE of the voiced film. How a phrase is said (spoken forms, captions) and how the shots
 stretch to it is voice's job, the same for both.
 """
 import hashlib
@@ -24,7 +24,8 @@ from dataclasses import dataclass
 from . import edits, plan as planmod
 
 SECONDS_PER_PHRASE = 8.0   # at most one phrase per this much unvoiced film ...
-MAX_WORDS = 35             # ... each at most this many words ...
+MAX_WORDS = 35             # ... each at most this many words (a --duration target's third, at least MIN_WORDS) ...
+MIN_WORDS = 12
 SPEECH_SHARE = 0.45        # ... and all of them at most this share of the voiced film
 WORDS_PER_SECOND = 2.5     # speech, for the brief's budget in seconds
 PER_SHOT = 2               # phrases said over one shot (or edit-shot hunk), at most
@@ -162,11 +163,35 @@ def words(text):
     return len(text.split())
 
 
+def max_words(duration):
+    """The most words in a phrase of a video `duration` s long (None: no
+    target): MAX_WORDS, or a third of the target in words, at least MIN_WORDS."""
+    if duration is None:
+        return MAX_WORDS
+    return max(MIN_WORDS, min(MAX_WORDS, round(duration / 3)))
+
+
 def limits(plan):
     """(most phrases, most seconds of speech) for a script of `plan` (unvoiced):
     one phrase per SECONDS_PER_PHRASE plus the opening and the closing, and
-    speech SPEECH_SHARE of its length (a guide: the voiced film is longer)."""
-    return int(plan.total // SECONDS_PER_PHRASE) + 2, round(SPEECH_SHARE * plan.total)
+    speech SPEECH_SHARE of its length (a guide: the voiced film is longer);
+    with --duration, of the target's length."""
+    length = plan.duration or plan.total
+    return int(length // SECONDS_PER_PHRASE) + 2, round(SPEECH_SHARE * length)
+
+
+def drop_to_fit(phrases, seconds, over):
+    """`phrases` (said in `seconds` each) with enough dropped to save `over`
+    seconds of speech, at least one, from the end of the middle; the opening
+    and the closing are always kept (unchanged when there is no middle)."""
+    keep = list(range(len(phrases)))
+    middle = [j for j in keep if j and phrases[j].key != ('end',)]
+    saved = 0.0
+    while (saved < over or len(keep) == len(phrases)) and middle:
+        j = middle.pop()
+        keep.remove(j)
+        saved += seconds[j] + 0.35
+    return [phrases[j] for j in keep]
 
 
 def check(phrases, plan, seconds=None, total=None):
@@ -178,13 +203,14 @@ def check(phrases, plan, seconds=None, total=None):
     out = []
     index = _positions(plan)
     most, _ = limits(plan)
+    longest = max_words(plan.duration)
     if not phrases:
         return ['no phrases']
     if len(phrases) > most:
         out.append(f'{len(phrases)} phrases, more than {most}')
     for p in phrases:
-        if words(p.text) > MAX_WORDS:
-            out.append(f'{words(p.text)} words, more than {MAX_WORDS}: {p.text!r}')
+        if words(p.text) > longest:
+            out.append(f'{words(p.text)} words, more than {longest}: {p.text!r}')
     per = {}
     for p in phrases:
         per[p.key] = per.get(p.key, 0) + 1
@@ -225,13 +251,14 @@ def trim(phrases, plan, seconds=None, total=None, strict=True):
         phrases = sorted((p for p in phrases if p.key in index), key=lambda p: index[p.key])
     secs = list(seconds) if seconds is not None else [0.0] * len(phrases)
     keep = list(range(len(phrases)))
-    if strict and phrases and words(phrases[0].text) > MAX_WORDS:
-        raise NarratorError(f'the opening is {words(phrases[0].text)} words, more than {MAX_WORDS}')
+    longest = max_words(plan.duration)
+    if strict and phrases and words(phrases[0].text) > longest:
+        raise NarratorError(f'the opening is {words(phrases[0].text)} words, more than {longest}')
     seen = {}
     for j in list(keep):
         p = phrases[j]
         seen[p.key] = seen.get(p.key, 0) + 1
-        if j and (words(p.text) > MAX_WORDS or seen[p.key] > PER_SHOT):
+        if j and (words(p.text) > longest or seen[p.key] > PER_SHOT):
             keep.remove(j)
     most, _ = limits(plan)
     closing = [j for j in keep if phrases[j].key == ('end',) and j]
@@ -300,7 +327,7 @@ def timed_script(plan):
 
 # ---- the brief ----
 BRIEF = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'narrator_brief.md')
-_SLOT = re.compile(r'\{(range|commits|base|tip|max_phrases|max_speech_s|shot_table)\}')
+_SLOT = re.compile(r'\{(range|commits|base|tip|max_phrases|max_speech_s|max_words|length|shot_table)\}')
 
 
 def _indent(text, by='    '):
@@ -309,8 +336,9 @@ def _indent(text, by='    '):
 
 def brief(change, plan, patches):
     """The narrator's handoff: narrator_brief.md with the change (its range
-    and commit messages, trailers removed), the limits, and the shot table
-    of `plan` (unvoiced) filled in."""
+    and commit messages, trailers removed), the video's length (the
+    --duration target, when there is one), the limits, and the shot table
+    of `plan` (unvoiced; condensed, it lists only what is kept) filled in."""
     commits = change.commits
     if change.is_range:
         what = f'{len(commits)} commit{"s" if len(commits) != 1 else ""} {change.base}..{change.target}'
@@ -320,7 +348,8 @@ def brief(change, plan, patches):
                        for c in commits)
     most, speech = limits(plan)
     slots = {'range': what, 'commits': msgs, 'base': change.base, 'tip': change.target,
-             'max_phrases': str(most), 'max_speech_s': str(speech),
+             'max_phrases': str(most), 'max_speech_s': str(speech), 'max_words': str(max_words(plan.duration)),
+             'length': f'{round(plan.duration or plan.total)} seconds',
              'shot_table': shot_table(shot_rows(plan, patches))}
     with open(BRIEF, encoding='utf-8') as f:
         template = f.read()
@@ -346,9 +375,10 @@ class Narrator:
     dir, when it ran, is `run_dir`; on failure under `fallback`, a one-line
     warning goes to `log` and the heuristic writes the script."""
 
-    def __init__(self, name, change, patches, mode='tour', series=False, verbose=0, fallback=False, log=None):
+    def __init__(self, name, change, patches, mode='tour', series=False, verbose=0, fallback=False, log=None,
+                 duration=None):
         self.name, self.change, self.patches = name, change, patches
-        self.mode, self.series, self.verbose = mode, series, verbose
+        self.mode, self.series, self.verbose, self.duration = mode, series, verbose, duration
         self.fallback, self.log = fallback, log if log is not None else sys.stderr
         self.run_dir = None
 
@@ -370,7 +400,7 @@ class Narrator:
 
     def fork_sandbox(self, plan):
         model = os.environ.get('GIT_VIDEO_NARRATOR_MODEL') or DEFAULT_MODEL
-        key = cache_key(self.change, plan, self.patches, self.mode, self.series, self.verbose, model)
+        key = cache_key(self.change, plan, self.patches, self.mode, self.series, self.verbose, model, self.duration)
         path = cache_path(key)
         if os.path.isfile(path):
             try:
@@ -389,7 +419,7 @@ class Narrator:
 
 # ---- the fork-sandbox narrator ----
 DEFAULT_MODEL = 'opus'
-VERSION = 1   # of the brief and how its answer is read: part of the cache key
+VERSION = 2   # of the brief and how its answer is read: part of the cache key
 TEMPLATE_ID = 'git-video-narrate-v1'
 _RUN_DIR = re.compile(r'^\s*run dir:\s+(\S.*?)\s*$', re.M)
 # fork-sandbox refuses a handoff that does not resolve under here, or that
@@ -412,12 +442,13 @@ def _last_word(output):
     return (errors or lines or [''])[-1]
 
 
-def cache_key(change, plan, patches, mode, series, verbose, model):
-    """The narration cache's key: the range filmed, how, by which model and
-    narrator version, and the shots the brief lists."""
+def cache_key(change, plan, patches, mode, series, verbose, model, duration=None):
+    """The narration cache's key: the range filmed, how (the --duration
+    target too), by which model and narrator version, and the shots the
+    brief lists."""
     shots = hashlib.sha256(shot_table(shot_rows(plan, patches)).encode()).hexdigest()
     doc = {'base': change.base, 'tip': change.target, 'mode': mode, 'series': bool(series), 'verbose': verbose,
-           'model': model, 'version': VERSION, 'shots': shots}
+           'model': model, 'version': VERSION, 'shots': shots, 'duration': duration}
     return hashlib.sha256(json.dumps(doc, sort_keys=True).encode()).hexdigest()
 
 
