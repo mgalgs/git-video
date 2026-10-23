@@ -172,6 +172,16 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(info['defs'], {'frob'})
         self.assertLessEqual({'return', 'x'}, info['words'])
 
+    def test_far_scroll_flag(self):
+        p = plan.plan(collect.collect(fixtures.make_far_repo(self.tmp.name + '/far'), 'HEAD'))
+        near, far = kinds(p, 'hunk')
+        self.assertEqual((near['scroll'], far['scroll']), ('near', 'far'))
+        self.assertEqual(far['dur'], round(plan.hunk_dwell(1, far=True), 3))
+        self.assertEqual(near['dur'], round(plan.hunk_dwell(1), 3))
+        big = plan.plan(collect.collect(fixtures.make_big_repo(self.tmp.name + '/farbig'), 'HEAD'))
+        steps = [s for s in kinds(big, 'hunk') if s['path'] == 'big.py'][1:]
+        self.assertEqual({s['scroll'] for s in steps}, {'near'})
+
     def test_large_hunk_dwell(self):
         repo = fixtures.make_big_repo(self.tmp.name + '/large')
         p = plan.plan(collect.collect(repo, 'HEAD'))

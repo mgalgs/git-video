@@ -46,6 +46,8 @@ OPEN_RET_GAP = 0.15       # last letter -> RET
 OPEN_HOLD = 0.6           # the new buffer on screen before the next shot
 
 HUNK_SCROLL = 0.6         # the scroll to the hunk; the sweep starts as it lands
+HUNK_SCROLL_FAR = 1.2     # ... when it travels more than FAR_ROWS: ramped up and down, not a long linear crawl
+FAR_ROWS = 2 * PLAN_ROWS
 HUNK_SWEEP = 0.5
 HUNK_READ_BASE, HUNK_READ_PER_LINE, HUNK_READ_MAX = 1.5, 0.08, 6.0
 MORPH_HOLD = 0.9          # the old text on screen, removed words struck through, before it morphs
@@ -106,9 +108,15 @@ def hunk_read(visible_added, callouts=0):
     return max(min(HUNK_READ_MAX, HUNK_READ_BASE + HUNK_READ_PER_LINE * visible_added), callouts * CALLOUT_EACH)
 
 
-def hunk_dwell(visible_added, *, morph=False, callouts=0):
+def scroll_time(shot):
+    """How long a hunk shot's scroll takes: HUNK_SCROLL_FAR when it is `far`."""
+    return HUNK_SCROLL_FAR if shot.get('scroll') == 'far' else HUNK_SCROLL
+
+
+def hunk_dwell(visible_added, *, morph=False, far=False, callouts=0):
     """A hunk shot's length: the scroll, the morph when there is one, the read."""
-    return HUNK_SCROLL + (MORPH_HOLD + MORPH_DUR if morph else 0) + hunk_read(visible_added, callouts)
+    return ((HUNK_SCROLL_FAR if far else HUNK_SCROLL) + (MORPH_HOLD + MORPH_DUR if morph else 0)
+            + hunk_read(visible_added, callouts))
 
 
 def morph_segments(f, h):
@@ -271,8 +279,8 @@ def _place_callouts(change, shots, readings):
         s = shots[si]
         picks = sorted(chosen.get(k, []), key=lambda x: (-x[1], x[0]))[:CALLOUT_MAX_PER_HUNK]
         picks.sort(key=lambda x: x[0])
-        morph = bool(s['morph'])
-        start = HUNK_SCROLL + (MORPH_HOLD + MORPH_DUR if morph else 0)
+        morph, far = bool(s['morph']), s['scroll'] == 'far'
+        start = scroll_time(s) + (MORPH_HOLD + MORPH_DUR if morph else 0)
         read = hunk_read(visible, len(picks))
         slot = read / max(1, len(picks))
         added = [n for a, b in h.added for n in range(a, b + 1)]
@@ -283,7 +291,7 @@ def _place_callouts(change, shots, readings):
             out.append({'text': text, 'commit': c.short, 'line': line, 'col': col, 'len': length,
                         'at': round(at, 3), 'until': round(at + slot - 0.2, 3)})
         s['callouts'] = out
-        s['dur'] = round(hunk_dwell(visible, morph=morph, callouts=len(picks)), 3)
+        s['dur'] = round(hunk_dwell(visible, morph=morph, far=far, callouts=len(picks)), 3)
 
 
 def plan(change, verbose=0):
@@ -306,6 +314,7 @@ def plan(change, verbose=0):
         if f.text is None:
             continue   # deleted or binary: listed in the side bar, not visited
         shots.append(shot('map', 'enter', 0, path=f.path))   # resolved below, once the xrefs are known
+        last_top = 0   # where the view is when the scroll to the next hunk starts
         for i, h in enumerate(f.hunks):
             if hunk_shots >= MAX_HUNK_SHOTS and i > 0:
                 break
@@ -326,11 +335,14 @@ def plan(change, verbose=0):
             first = min([a for a, _ in h.added] + [s[0] + 1 for s in h.segments] or [focus])
             last = max([b for _, b in h.added] + [s[0] for s in h.segments] or [focus])
             span = [max(first, top + 1), max(min(last, top + PLAN_ROWS), first - 1)]
-            morph = {'at': round(HUNK_SCROLL + MORPH_HOLD, 3), 'dur': MORPH_DUR, 'segments': segments} \
+            far = abs(top - last_top) > FAR_ROWS
+            last_top = top
+            scroll = HUNK_SCROLL_FAR if far else HUNK_SCROLL
+            morph = {'at': round(scroll + MORPH_HOLD, 3), 'dur': MORPH_DUR, 'segments': segments} \
                 if segments else None
-            shots.append(shot('editor', 'hunk', hunk_dwell(len(visible), morph=bool(morph)), path=f.path, index=i,
-                              top=top, added=shown, removed_at=list(h.removed_at), focus_line=focus, focus=span,
-                              morph=morph))
+            shots.append(shot('editor', 'hunk', hunk_dwell(len(visible), morph=bool(morph), far=far), path=f.path,
+                              index=i, top=top, added=shown, removed_at=list(h.removed_at), focus_line=focus,
+                              focus=span, scroll='far' if far else 'near', morph=morph))
             readings.append((len(shots) - 1, f, h, top, len(visible)))
             pickable = [n for n in visible if n <= top + XREF_ROWS]
             hunks.append((len(shots) - 1, f, top, _hunk_candidates(change, f, top, pickable)))

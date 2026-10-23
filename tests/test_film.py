@@ -352,6 +352,36 @@ class TestFilm(unittest.TestCase):
             self.assertAlmostEqual(seg.h, 6 * lay.line_h, places=3, msg=fmt)
             self.assertLessEqual(seg.bottom, text.bottom + 1e-6, fmt)
 
+    def test_far_scroll_ramps(self):
+        dur = plan.HUNK_SCROLL_FAR
+        pos = [film.scroll_at(dur * k / 100, 10, 250, dur) for k in range(101)]
+        self.assertEqual(pos[0], 10)
+        self.assertEqual(pos[-1], 250)
+        self.assertEqual(pos, sorted(pos))
+        speed = [b - a for a, b in zip(pos, pos[1:])]
+        self.assertGreater(speed[50], 3 * speed[4])
+        self.assertGreater(speed[50], 3 * speed[-5])
+        ch = collect.collect(fixtures.make_far_repo(self.tmp.name + '/farfilm'), 'HEAD')
+        tour = film.Tour(plan.plan(ch), ch, log=io.StringIO())
+        (n,) = [n for n, label in tour.film.keyframes if label.startswith('scroll ')]
+        i, t = tour.at(n)
+        self.assertEqual(tour.shots[i]['scroll'], 'far')
+        st = film.stage(tour.film.frame(n, '16x9'))
+        # landed exactly where a plain draw of the hunk's view puts the text
+        end = tour.shot_frames[i] + round(dur * tour.fps) + 1
+        moved = dict(tour.film.frame(end, '16x9').marks)['editor.viewport']
+        from videobuilder.canvas import Canvas
+        from videobuilder.film import FORMATS
+        cv = Canvas(1920, 1080, '#000', format=FORMATS['16x9'])
+        film._pane(tour, cv, st, tour.views[i][1])
+        self.assertEqual(dict(cv.marks)['editor.viewport'], moved)
+        # mid-scroll the text leans and streaks: unlike the same frame without motion
+        mid = tour.film.frame(n, '16x9').bgra()
+        with mock.patch.object(film, 'velocity_skew', lambda v, **kw: (0.0, 0.0)), \
+                mock.patch.object(film, 'STREAK', 0.0):
+            still = tour.film.frame(n, '16x9').bgra()
+        self.assertNotEqual(mid, still)
+
     def test_ellipsize_words(self):
         font = vb.Font('sans-serif', 22)
         s = 'The helper other() returns three times its input.'

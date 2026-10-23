@@ -57,7 +57,7 @@ class TestSounds(unittest.TestCase):
         self.assertEqual(by['pro_hover_tick/soft'], sum(s['kind'] == 'hunk' for s in shots) +
                          sum(len(s.get('callouts') or ()) for s in shots))
         self.assertEqual(by['whoosh_fast/tight'], len(opens) + pushes + pops)
-        moves = sum(s['kind'] in ('dive', 'travel') for s in shots)
+        moves = sum(s['kind'] in ('dive', 'travel') for s in shots) + sum(s.get('scroll') == 'far' for s in shots)
         self.assertEqual(by['whoosh_fast/sleeve'], moves)
         self.assertGreater(moves, 0)
         (m,) = [s for s in shots if s['kind'] == 'map']
@@ -92,6 +92,11 @@ class TestSounds(unittest.TestCase):
         self.assertEqual(cues, [(sounds.frame_at(0, plan.HUNK_SCROLL, 30), 'tick'),
                                 (sounds.frame_at(0, 2.0 + 0.75 * plan.CALLOUT_IN, 30), 'tick'),
                                 (sounds.frame_at(0, 4.0 + 0.75 * plan.CALLOUT_IN, 30), 'tick')])
+
+    def test_far_scroll_whooshes(self):
+        h = plan.shot('editor', 'hunk', 4.0, path='a.py', scroll='far', callouts=[])
+        self.assertEqual(sounds.cues([h], [0], 30), [(sounds.frame_at(0, 0.1, 30), 'whoosh-soft'),
+                                                     (sounds.frame_at(0, plan.HUNK_SCROLL_FAR, 30), 'tick')])
 
     def test_keystroke_frames_deterministic(self):
         a = sounds.cues(self.plan.shots, [0] * len(self.plan.shots), 30)

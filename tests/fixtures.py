@@ -127,6 +127,24 @@ def make_callout_repo(tmp):
     return repo, {'root': root, 'head': head}
 
 
+FAR_LINES = 300
+
+
+def make_far_repo(tmp):
+    """A repo whose HEAD adds a line after line 5 and after line 250 of a
+    300-line file: two hunks far more than FAR_ROWS apart."""
+    repo = os.path.join(tmp, 'far')
+    init(repo)
+    rows = [f'row_{i} = {i}\n' for i in range(FAR_LINES)]
+    write(repo, 'far.py', ''.join(rows))
+    commit(repo, 'Add far.py')
+    rows.insert(250, 'late = True\n')
+    rows.insert(5, 'early = True\n')
+    write(repo, 'far.py', ''.join(rows))
+    commit(repo, 'Add two flags')
+    return repo
+
+
 MORPH_LINES = 60
 
 

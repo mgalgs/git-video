@@ -26,6 +26,8 @@ from videobuilder.capabilities.typography.odometer_roll import draw_odometer
 from videobuilder.capabilities.ui.avatar_stack_spread import draw_avatar_stack
 from videobuilder.capabilities.ui.circular_clip_reveal import GROW, circular_reveal, reach
 from videobuilder.capabilities.ui.cursor_state_change import draw_cursor as draw_state_cursor, hover_amount
+from videobuilder.capabilities.principles.time_remapping import speed_ramp
+from videobuilder.capabilities.ui.scroll_velocity_skew import scroll_velocity, velocity_skew
 
 from . import editor, highlight, plan as P, repomap, sidebar, sounds
 
@@ -237,8 +239,11 @@ class Tour:
                 name = f'{s["path"]}#{s["index"] + 1}'
                 if hunks < 12:
                     hunks += 1
-                    t = P.HUNK_SCROLL + P.HUNK_SWEEP * 0.6
+                    t = P.scroll_time(s) + P.HUNK_SWEEP * 0.6
                     out.append((f0 + round(t * self.fps), f'hunk {name}'))
+                if s.get('scroll') == 'far' and 'scroll' not in seen:
+                    seen.add('scroll')
+                    out.append((f0 + round(0.5 * P.HUNK_SCROLL_FAR * self.fps), f'scroll {name}'))
                 cs = s.get('callouts') or ()
                 if cs and 'callout' not in seen:
                     seen.add('callout')
@@ -638,6 +643,25 @@ def _open(tour, cv, st, shot, t, i, before, after):
     _pane(tour, cv, st, before, echo=echo, echo_cursor=t >= P.OPEN_PROMPT)
 
 
+# A far scroll's speed ramps up, holds and ramps down (time_remapping's
+# speed_ramp, called as is), the text leaning with its speed.
+RAMP = (0.0, 0.35, 0.65, 1.0)   # where the speed keyframes sit, as fractions of the scroll
+MOTION_DEGREES, MOTION_PER_DEGREE, MOTION_STRETCH = 2.0, 500.0, 0.02
+STREAK = 0.01   # the trailing copy's offset, seconds of travel at the current speed
+
+
+def scroll_at(t, a, b, dur):
+    """The view's top `t` s into a far scroll from `a` to `b` taking `dur`:
+    speed 0 -> full -> 0 over RAMP, exactly at `b` once `dur` is up."""
+    if t >= dur:
+        return float(b)
+    if t <= 0:
+        return float(a)
+    times = [x * dur for x in RAMP]
+    full = 1 / (dur * (RAMP[2] - RAMP[1] + RAMP[1] / 2 + (1 - RAMP[2]) / 2))   # the area under the ramp is 1
+    return a + (b - a) * min(1.0, speed_ramp(t, times, [0, full, full, 0]))
+
+
 def morph_progress(shot, t):
     """The hunk's morph progress at `t`: 0 (the old text) until the morph
     starts, 1 once it is over or when there is none."""
@@ -657,22 +681,33 @@ def _hunk(tour, cv, st, shot, t, i, before, after):
     """Scroll to the hunk; morph its replaced and removed lines from old to new;
     sweep a highlighter over the lines that are only added."""
     buf = tour.buffers[after.path]
-    rows = _layout(st, buf).rows
+    lay = _layout(st, buf)
+    rows = lay.rows
     a = _fitted(tour, st, before) if before.path == after.path else 0.0
     b = _fitted(tour, st, after)
-    top = vb.interpolate(t, [0, P.HUNK_SCROLL], [a, b], vb.ease_in_out_quart)
+    landed = P.scroll_time(shot)
+    motion = None
+    if shot.get('scroll') == 'far':
+        top = scroll_at(t, a, b, landed)
+        if 0 < t < landed:
+            v = scroll_velocity(lambda x: scroll_at(x, a, b, landed), t) * lay.line_h
+            deg, stretch = velocity_skew(v, max_degrees=MOTION_DEGREES, per_degree=MOTION_PER_DEGREE,
+                                         max_stretch=MOTION_STRETCH)
+            motion = (deg, stretch, math.copysign(min(lay.line_h * 0.8, abs(v) * STREAK), v))
+    else:
+        top = vb.interpolate(t, [0, landed], [a, b], vb.ease_in_out_quart)
     segs = tour.segments.get(i, ())
     morphed = {seg.line + r for seg in segs for r in range(seg.new)}
     shown = [n - 1 for x, y in shot['added'] for n in range(x, y + 1)
              if b <= n - 1 < b + rows and n - 1 not in morphed]
-    p = vb.clamp01((t - P.HUNK_SCROLL) / P.HUNK_SWEEP)
+    p = vb.clamp01((t - landed) / P.HUNK_SWEEP)
     k = len(shown)
-    sweeps = [(ln, vb.ease_in_out_quart(vb.clamp01(p * k - j)), settle(t - P.HUNK_SCROLL - P.HUNK_SWEEP))
+    sweeps = [(ln, vb.ease_in_out_quart(vb.clamp01(p * k - j)), settle(t - landed - P.HUNK_SWEEP))
               for j, ln in enumerate(shown)]
     f = shot.get('focus')
-    where = _pane(tour, cv, st, after, top=top, sweeps=sweeps, blink=max(0.0, t - P.HUNK_SCROLL), morphs=segs,
+    where = _pane(tour, cv, st, after, top=top, sweeps=sweeps, blink=max(0.0, t - landed), morphs=segs,
                   morph_p=morph_progress(shot, t), focus=(f[0] - 1, f[1] - 1) if f else None,
-                  focus_amount=focus_amount(shot, t, P.HUNK_SCROLL))
+                  focus_amount=focus_amount(shot, t, landed), motion=motion)
     for k, c in enumerate(shot.get('callouts') or ()):
         if c['at'] <= t < c['until']:
             _callout(tour, cv, st, where, shot, i, k, c, t)

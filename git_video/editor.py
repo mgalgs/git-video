@@ -13,6 +13,7 @@ Lines and columns are 0-based. `scroll_top` is the (fractional) index of the
 first line at the top of the text area, so scrolling is smooth. Everything is
 clipped to the box; the canvas size is never consulted.
 """
+import contextlib
 import math
 from dataclasses import dataclass, field
 from typing import Sequence
@@ -25,6 +26,7 @@ from videobuilder.capabilities.typography.dither_reveal import dither_reveal
 from videobuilder.capabilities.typography.scramble_decode import draw_scramble
 from videobuilder.capabilities.ui.highlighter_swipe import highlighter_swipe
 from videobuilder.capabilities.ui.scroll_progress_bar import scroll_progress
+from videobuilder.capabilities.ui.scroll_velocity_skew import skewed
 
 MINIMAP_CELLS = 3.5       # the minimap strip's width, in cells
 MINIMAP_MAX_SCALE = 3.0   # px per line at the most (a short file stays a short strip)
@@ -239,7 +241,7 @@ def _clipped(b, area):
 
 def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), marks_removed_at=(),
          tints=(), sweeps=(), boxes=(), modeline=None, echo='', echo_cursor=False, minimap=None,
-         morphs=(), morph_p=1.0, focus=None, focus_amount=0.0, theme=Theme()):
+         morphs=(), morph_p=1.0, focus=None, focus_amount=0.0, motion=None, theme=Theme()):
     """Draw the pane and return its Placement.
 
     `cursor`: (line, col) of point, a block; `blink`: seconds since point last
@@ -263,6 +265,10 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
     `focus`: (first, last) lines to keep bright while the rest of the text
     area dims by `focus_amount` (0 -> 1) of `theme.dim_strength`; the band
     follows the morph (it covers any segment inside it).
+
+    `motion`: (degrees, stretch, streak px) while the view scrolls fast: the
+    text leans and stretches by the first two, and a faint copy trails
+    `streak` px behind it.
     """
     box, tb, lh, cw = lay.box, lay.text_box, lay.line_h, lay.cell_w
     n = len(buf.lines)
@@ -324,7 +330,12 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                         y = y_of(ln)
                         highlighter_swipe(cv, lay.col_x(c0) - cw * 0.25, y + lh * 0.1, (c1 - c0 + 0.5) * cw,
                                           lh * 0.8, sp, color=theme.sweep, alpha=theme.sweep_alpha * fade, seed=ln)
-            with cv.clip(*tb.pad(0, 0, -lh, 0)):
+            with cv.clip(*tb.pad(0, 0, -lh, 0)), _moving(cv, tb, motion):
+                if motion and motion[2]:
+                    with cv.layer(opacity=0.16, dy=motion[2]):
+                        for ln in lines:
+                            if ln not in inside:
+                                _draw_runs(cv, lay, buf.lines[ln], y_of(ln), font)
                 for ln in lines:
                     if ln in inside:
                         continue
@@ -428,6 +439,14 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
             cv.rect(eb.x + cw * (0.5 + len(echo)), ey, cw, lh, theme.cursor)
         cv.mark('editor.echo', *eb)
     return Placement(lay, scroll_top, lay.visible_range(scroll_top, n), cursor_box)
+
+
+def _moving(cv, tb, motion):
+    """The text's lean and stretch while it scrolls (scroll_velocity_skew's
+    `skewed`, called as is), about the text area's centre."""
+    if not motion or (not motion[0] and not motion[1]):
+        return contextlib.nullcontext()
+    return skewed(cv, tb.cx, tb.cy, motion[0], motion[1])
 
 
 def _draw_runs(cv, lay, runs, y, font):

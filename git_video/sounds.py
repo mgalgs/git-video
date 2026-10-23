@@ -1,6 +1,6 @@
 """The tour's sound effects: keys while the minibuffer types, a mouse click on
 each xref click, a soft tick as a hunk is reached and as a commit callout lands, a whoosh on a buffer switch,
-a softer whoosh for each camera move over the repo map and a low tick as each
+a softer whoosh for each camera move over the repo map and each long scroll and a low tick as each
 changed tile lights.
 
 Each sound is an id pair with a role fallback (the pattern of videobuilder's
@@ -60,7 +60,9 @@ def cues(shots, shot_frames, fps):
             out += [(frame_at(f0, t, fps), 'key') for t in (*keys, *letters, ret)]
             out.append((frame_at(f0, ret, fps), 'whoosh'))
         elif kind == 'hunk':
-            out.append((frame_at(f0, planmod.HUNK_SCROLL, fps), 'tick'))
+            if s.get('scroll') == 'far':
+                out.append((frame_at(f0, 0.1, fps), 'whoosh-soft'))
+            out.append((frame_at(f0, planmod.scroll_time(s), fps), 'tick'))
             out += [(frame_at(f0, c['at'] + 0.75 * planmod.CALLOUT_IN, fps), 'tick') for c in s.get('callouts') or ()]
         elif kind == 'xref-push':
             out.append((frame_at(f0, planmod.XREF_CLICK, fps), 'click'))
