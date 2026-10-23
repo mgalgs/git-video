@@ -70,12 +70,14 @@ def parser():
                         'long runs; 2 never elides but still speeds up; 3 types everything at natural speed. '
                         'A bare --verbose means 1')
     p.add_argument('--voice', metavar='VOICE-PROFILE',
-                   help=f'--voice[=<voice-profile>]: narrate the change, with captions, in a Kokoro voice '
+                   help=f'--voice[=<voice-profile>]: narrate the change, with captions: not reading the code but '
+                        f'explaining the intent behind it, in a Kokoro voice '
                         f"(default {DEFAULT_VOICE}); needs the voice extra, pip install 'git-video[voice]', "
                         'and the Kokoro model files')
     p.add_argument('--format', choices=(*FORMATS, 'all'), default='16x9', help='output shape (default 16x9)')
     p.add_argument('-o', '--out', metavar='FILE',
-                   help='output MP4 (default git-video-<short-sha>.mp4, or git-video-<a>-<b>.mp4 for a range)')
+                   help='output MP4 (default git-video-<short-sha>.mp4, or git-video-<a>-<b>.mp4 for a range; with '
+                        '--format all, -<format> goes before the extension); a missing directory is created')
     p.add_argument('--jobs', type=int, metavar='N', help='render workers (default: one per CPU)')
     p.add_argument('--plan-json', action='store_true', help='print the shot plan as JSON and exit')
     p.add_argument('-C', dest='C', action='append', metavar='PATH',

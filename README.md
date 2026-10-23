@@ -98,6 +98,19 @@ pip install git+https://github.com/mgalgs/git-video
 That puts `git-video` on your PATH, so git finds it as `git video`.
 `python -m git_video` runs the same thing. Rendering needs `ffmpeg`.
 
+`git video --help` opens the man page, `man/git-video.1` in this
+repository. Copy or symlink it into a `man1` directory on your `MANPATH`:
+
+```
+mkdir -p ~/.local/share/man/man1
+ln -s "$PWD/man/git-video.1" ~/.local/share/man/man1/
+```
+
+(`manpath` lists the directories `man` searches.) `python -m git_video
+--help` prints the short help without it. The page is generated from the
+block at the top of this README and the option help in `git_video/cli.py`
+by `python man/mkman.py`; a test fails when it is out of date.
+
 `--voice` needs the voice extra, which brings videobuilder's speech support
 (kokoro-onnx), and Kokoro's model files:
 
