@@ -32,12 +32,6 @@ def stat_text(f):
     return f'+{f["added"]} {MINUS}{f["deleted"]}'
 
 
-def file_rows(files, current_path):
-    """The files section's rows as text: `▶ path` for the current file, two
-    spaces before the others."""
-    return [f'{MARK if f["path"] == current_path else " "} {f["path"]}  {stat_text(f)}' for f in files]
-
-
 def _ellipsize_left(s, font, width):
     if vbtext.measure(s, font) <= width:
         return s
@@ -74,7 +68,8 @@ def _fonts(ui, mono, scale):
 def draw(cv, box, *, commit, files, current_path, xref_stack, ui='sans-serif', mono='monospace', scale=1.0,
          style=Style()):
     """The full side bar in `box`. `commit`: the plan's commit dict; `files`: the
-    plan's file dicts; `xref_stack`: [(name, path, line)], oldest first."""
+    plan's file dicts; `xref_stack`: [(name, path, line)], oldest first.
+    Returns the files rows as drawn: [(texts, weight)]."""
     F = _fonts(ui, mono, scale)
     box = vb.Box(*box)
     with cv.clip(*box):
@@ -94,8 +89,9 @@ def draw(cv, box, *, commit, files, current_path, xref_stack, ui='sans-serif', m
         commit_h = max(0.0, inner.h - xref_h - files_h - 2 * gap)
         c_box, f_box, x_box = inner.column(commit_h, files_h, xref_h, gap=gap)
         _commit(cv, c_box, commit, F, style)
-        _files(cv, f_box, files, current_path, files_shown, F, style)
+        drawn = _files(cv, f_box, files, current_path, files_shown, F, style)
         _xref(cv, x_box, xref_stack, xref_rows, F, style)
+    return drawn
 
 
 def _header(cv, box, label, F, style):
@@ -150,7 +146,9 @@ def trim(lines, room, font, width):
 
 
 def _files(cv, box, files, current_path, rows, F, style):
+    """Returns what it drew, one (texts, weight of the path) per row, for tests."""
     cv.mark('sidebar.files', *box)
+    drawn = []
     with cv.clip(*box):
         n = len(files)
         y = _header(cv, box, f'FILES  {n}', F, style)
@@ -162,24 +160,31 @@ def _files(cv, box, files, current_path, rows, F, style):
             f = files[i]
             is_cur = i == cur
             font = F['row_bold'] if is_cur else F['row']
+            texts = []
+
+            def put(s, fnt, x, color):
+                texts.append(s)
+                vbtext.draw(cv, [s], fnt, x, y, color)
+
             if is_cur:
                 cv.rect(box.x - 8, y, box.w + 16, rh, style.current_bg, radius=4)
-                vbtext.draw(cv, [MARK], font, box.x, y, style.head)
+                put(MARK, font, box.x, style.head)
             stat = stat_text(f)
             sw = vbtext.measure(stat, F['row'])
             path_w = box.w - 2 * cell - sw - cell * 1.5
-            vbtext.draw(cv, [_ellipsize_left(f['path'], font, path_w)], font, box.x + 2 * cell, y,
-                        style.strong if is_cur else style.fg)
+            put(_ellipsize_left(f['path'], font, path_w), font, box.x + 2 * cell, style.strong if is_cur else style.fg)
             x = box.right - sw
             if f.get('binary'):
-                vbtext.draw(cv, [stat], F['row'], x, y, style.muted)
+                put(stat, F['row'], x, style.muted)
             else:
                 plus, _, minus = stat.rpartition(' ')
                 if plus:
-                    vbtext.draw(cv, [plus], F['row'], x, y, style.added)
+                    put(plus, F['row'], x, style.added)
                     x += vbtext.measure(plus + ' ', F['row'])
-                vbtext.draw(cv, [minus], F['row'], x, y, style.removed)
+                put(minus, F['row'], x, style.removed)
+            drawn.append((tuple(texts), font.weight))
             y += rh
+    return drawn
 
 
 def _xref(cv, box, stack, rows, F, style):

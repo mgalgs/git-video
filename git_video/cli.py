@@ -27,11 +27,20 @@ empty tree); A..B shows the combined diff of the range.
 
 def _expand_bare(argv):
     """Give the optional-value flags their value inline, so `--verbose HEAD~1`
-    reads HEAD~1 as the rev rather than as the verbosity."""
+    reads HEAD~1 as the rev rather than as the verbosity, while `--verbose 2`
+    still means level 2."""
     out = []
-    for a in argv:
+    argv = list(argv)
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        i += 1
         if a == '--verbose':
-            a = '--verbose=1'
+            if i < len(argv) and argv[i] in ('1', '2', '3'):
+                a = f'--verbose={argv[i]}'
+                i += 1
+            else:
+                a = '--verbose=1'
         elif a == '--voice':
             a = f'--voice={DEFAULT_VOICE}'
         out.append(a)

@@ -104,10 +104,14 @@ class TestFilm(unittest.TestCase):
         i, n = self.frame_of('hunk', 1.0, nth=1)
         path, _ = self.tour.state(n)
         self.assertEqual(path, self.plan.shots[i]['path'])
-        rows = sidebar.file_rows(self.plan.files, path)
-        marked = [r for r in rows if r.startswith(sidebar.MARK)]
-        self.assertEqual(marked, [f'{sidebar.MARK} {path}  +1 {sidebar.MINUS}1'])
-        self.assertTrue(all(r.startswith('  ') for r in rows if r not in marked))
+        cv = self.tour.film.frame(n, format='16x9')
+        st = film.stage(cv)
+        rows = sidebar.draw(cv, st.side, commit=self.plan.commit, files=self.plan.files, current_path=path,
+                            xref_stack=(), scale=st.scale)
+        marked = [r for r in rows if sidebar.MARK in r[0]]
+        self.assertEqual(marked, [((sidebar.MARK, path, '+1', f'{sidebar.MINUS}1'), 700)])
+        self.assertEqual(len(rows), len(self.plan.files))
+        self.assertTrue(all(w == 400 for _, w in rows if (_, w) not in marked))
 
     def test_xref_stack_push_pop(self):
         i, n = self.frame_of('xref-push', plan.XREF_SWITCH + 0.2)

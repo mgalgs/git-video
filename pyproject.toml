@@ -8,7 +8,6 @@ version = "0.1.0"
 description = "Render an MP4 walk-through of a git change set"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
 dependencies = [
     "videobuilder @ git+https://github.com/mgalgs/videobuilder@v0.1.114",
     "pygments>=2.17",
