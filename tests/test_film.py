@@ -866,3 +866,116 @@ class TestFilm(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestVoiceFilm(unittest.TestCase):
+    """Captions with the voice (a fake engine): where they sit in every format."""
+
+    @classmethod
+    def setUpClass(cls):
+        from git_video import voice
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.env = mock.patch.dict(os.environ, {vb.sfx.ENV: os.path.join(cls.tmp.name, 'no-sfx'),
+                                               'XDG_CACHE_HOME': os.path.join(cls.tmp.name, 'cache')})
+        cls.env.start()
+        repo, sha = fixtures.make_callout_repo(cls.tmp.name)
+        cls.change = collect.collect(repo, sha['head'])
+        repo, sha = fixtures.make_range_repo(cls.tmp.name)
+        cls.series = collect.series(repo, f'{sha["a"]}..{sha["c"]}')
+        cls.tours = {}
+        for mode in ('tour', 'develop'):
+            p = voice.narrate(cls.change, [cls.change], 0, mode, fixtures.FakeEngine(), 'bf_isabella')
+            cls.tours[mode] = film.Tour(p, cls.change, log=io.StringIO())
+        change, patches = cls.series
+        p = voice.narrate(change, patches, 0, 'tour', fixtures.FakeEngine(), 'bf_isabella')
+        cls.tours['series'] = film.Tour(p, change, log=io.StringIO(), patches=patches)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.env.stop()
+        cls.tmp.cleanup()
+
+    def mid(self, tour, q):
+        return round((q['start'] + q['end']) / 2 * tour.fps)
+
+    def test_captions_in_every_format(self):
+        seen = set()
+        for name, tour in self.tours.items():
+            for q in tour.voice['phrases']:
+                n = self.mid(tour, q)
+                shot = tour.shots[q['shot']]
+                for fmt in ('16x9', '9x16', '1x1'):
+                    cv = tour.film.frame(n, fmt)
+                    caps = [b for m, b in cv.marks if m == 'caption']
+                    self.assertEqual(len(caps), 1, (name, fmt, q['text']))
+                    cap = caps[0]
+                    why = (name, fmt, shot['kind'], q['text'])
+                    self.assertTrue(vb.captions.safe_area(cv).contains(cap), why)
+                    st = film.stage(cv, voice=True)
+                    self.assertLess(cap.h, 2 * vb.text.line_height(st.caption_font), why)   # one line, never three
+                    words = [b for m, b in cv.marks if m == 'caption.word']
+                    self.assertEqual(len(words), 1, why)
+                    self.assertTrue(cap.contains(words[0]), why)
+                    marks = dict(cv.marks)
+                    others = [(m, b) for m, b in cv.marks if m.split('.')[0] in ('callout', 'editor', 'sidebar', 'card')
+                              or m in ('lower-third', 'avatars', 'xref.word', 'xref.pointer')]
+                    for m, b in others:
+                        self.assertFalse(cap.intersects(b), (*why, m))
+                    if shot['scene'] == 'editor':
+                        seen.add((fmt, 'editor'))
+                        self.assertTrue(st.caption.contains(cap), why)
+                        self.assertGreaterEqual(cap.y, marks['editor.echo'].bottom, why)
+                        if fmt == '16x9':   # under the pane
+                            self.assertLess(cap.x, marks['editor.text'].right)
+                            self.assertLessEqual(cap.right, st.side.x)
+                        else:   # in the band between the code and the side bar
+                            self.assertLessEqual(cap.bottom, st.side.y, why)
+                    elif shot['scene'] == 'card':
+                        seen.add((fmt, shot['kind']))
+        for fmt in ('16x9', '9x16', '1x1'):
+            self.assertLessEqual({(fmt, 'editor'), (fmt, 'title'), (fmt, 'end'), (fmt, 'patch')}, seen)
+
+    def test_caption_off_point_and_the_hunk(self):
+        tour = self.tours['develop']
+        for q in tour.voice['phrases']:
+            if tour.shots[q['shot']]['kind'] != 'edit':
+                continue
+            for fmt in ('16x9', '9x16', '1x1'):
+                cv = tour.film.frame(self.mid(tour, q), fmt)
+                marks = dict(cv.marks)
+                text = marks['editor.text']
+                self.assertGreaterEqual(marks['caption'].y, text.bottom)   # point and the hunk are in the text area
+
+    def test_rows_and_cols_with_the_voice(self):
+        for fmt in ('16x9', '9x16', '1x1'):
+            cv = vb.film.as_format(fmt)
+            st = film.stage(cv, voice=True)
+            self.assertGreaterEqual(film.editor.layout(st.main, st.mono).rows, plan.PLAN_ROWS, fmt)
+            lay = film.editor.layout(st.main, st.mono, digits=6, minimap=True)
+            self.assertGreaterEqual(int(lay.text_box.w // lay.cell_w), plan.PLAN_COLS, fmt)
+            self.assertEqual(film.stage(cv), film.stage(cv, voice=False))
+            self.assertIsNone(film.stage(cv).caption)
+
+    def test_draw_is_pure(self):
+        tour = self.tours['tour']
+        for q in tour.voice['phrases'][:4]:
+            n = self.mid(tour, q)
+            for fmt in ('16x9', '9x16'):
+                a = tour.film.frame(n, fmt).bgra()
+                tour.film.frame(n + 11, fmt)
+                self.assertEqual(a, tour.film.frame(n, fmt).bgra())
+
+    def test_caption_keyframes(self):
+        tour = self.tours['tour']
+        caps = [(n, label) for n, label in tour.film.keyframes if label.startswith('caption ')]
+        self.assertEqual([label for _, label in caps], ['caption title', 'caption hunk'])
+        for n, _ in caps:
+            self.assertTrue(any(round(q['start'] * tour.fps) <= n < round(q['end'] * tour.fps)
+                                for q in tour.voice['phrases']))
+
+    def test_no_voice_no_captions(self):
+        p = plan.build(self.change)
+        tour = film.Tour(p, self.change, log=io.StringIO())
+        for n, _ in tour.film.keyframes:
+            for fmt in ('16x9', '9x16', '1x1'):
+                self.assertNotIn('caption', dict(tour.film.frame(n, fmt).marks))

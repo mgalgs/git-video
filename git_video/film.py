@@ -50,6 +50,8 @@ class Stage:
     compact: bool       # the side bar is the narrow 1:1 strip
     mono: vb.Font
     scale: float        # of the side bar's type
+    caption: vb.Box | None = None    # with --voice: the band the captions sit in, under the main box
+    caption_font: vb.Font | None = None
 
 
 def _stage_16x9(cv, family):
@@ -69,9 +71,42 @@ def _stage_1x1(cv, family):
 
 LAYOUT = {'16x9': _stage_16x9, '9x16': _stage_9x16, '1x1': _stage_1x1}
 
+# With --voice, per format: the captions' size, and the editor's font made
+# small enough that the main box, less the caption band, still shows
+# plan.PLAN_ROWS rows (16x9 has no rows to spare).
+CAPTION_SIZE = {'16x9': 32, '9x16': 36, '1x1': 30}
+VOICE_MONO = {'16x9': 23, '9x16': 24, '1x1': 21}
+CAPTION_GAP = 16    # between the main box and the caption band
 
-def stage(cv, family='monospace'):
-    return vb.per_format(LAYOUT, cv)(cv, family)
+
+def caption_font(size):
+    return vb.Font(UI, size, weight=700)
+
+
+def caption_height(font):
+    """A caption's box: one line and videobuilder's padding above and below."""
+    return vbtext.line_height(font) + 2 * 0.32 * font.size
+
+
+def _voiced(st, cv):
+    """The stage with a caption band carved from the bottom of its main box,
+    inside the frame's caption safe area: under the editor pane in 16:9,
+    between the code and the side bar in 9:16 and 1:1."""
+    font = caption_font(vb.per_format(CAPTION_SIZE, cv))
+    safe = vb.captions.safe_area(cv)
+    h = caption_height(font)
+    bottom = min(st.main.bottom, safe.bottom)
+    x0, x1 = max(st.main.x, safe.x), min(st.main.right, safe.right)
+    band = vb.Box(x0, bottom - h, x1 - x0, h)
+    main = vb.Box(st.main.x, st.main.y, st.main.w, band.y - CAPTION_GAP - st.main.y)
+    return replace(st, main=main, mono=replace(st.mono, size=vb.per_format(VOICE_MONO, cv)), caption=band, caption_font=font)
+
+
+def stage(cv, family='monospace', voice=False):
+    st = vb.per_format(LAYOUT, cv)(cv, family)
+    if voice:
+        st = _voiced(st, cv)
+    return st
 
 
 # ---- per-shot state ----
@@ -140,6 +175,13 @@ class Tour:
                 raise ValueError(f'unknown scene {s["scene"]!r} in a {s["kind"]!r} shot; '
                                  f'known: {", ".join(SCENES)}')
         self.plan, self.change, self.font = plan, change, font
+        self.voice = plan.voice   # with --voice: the phrases, each with its clip (voice.place)
+        self.narrations = [vb.speech.load(os.path.join(self.voice['dir'], p['audio']))
+                           for p in self.voice['phrases']] if self.voice else []
+        # The captions on the film's clock: each phrase's words from its own start.
+        self.captions = vb.captions.Track(
+            w for n, p in zip(self.narrations, self.voice['phrases'] if self.voice else ())
+            for w in n.track_at(round(p['start'] * plan.fps), plan.fps))
         self.patches = list(patches) if patches else [change]   # the change of each --series patch
         self.fps = plan.fps
         self.shots = plan.shots
@@ -200,16 +242,16 @@ class Tour:
         self.maps = {}   # the treemap per main box, laid out once
         if plan.map:
             for f in formats:
-                self.map_layout(stage(vb.film.as_format(f), font).main)
+                self.map_layout(self.stage(vb.film.as_format(f)).main)
         self.timings = {i: P.open_timing(s['path']) for i, s in enumerate(self.shots) if s['kind'] == 'open'}
-        self.voice = plan.voice   # with --voice: the phrases, each with its clip (voice.place)
-        self.narrations = [vb.speech.load(os.path.join(self.voice['dir'], p['audio']))
-                           for p in self.voice['phrases']] if self.voice else []
         said = tuple(n.sound(at=round(p['start'] * self.fps), fps=self.fps)
                      for n, p in zip(self.narrations, self.voice['phrases'] if self.voice else ()))
         self.film = vb.Film(self.draw, fps=self.fps, frames=self.frames, formats=formats, background=THEME.bg,
                             sounds=sounds.sounds_for(self.shots, self.shot_frames, self.fps, log=log) + said,
                             keyframes=self.keyframes())
+
+    def stage(self, cv):
+        return stage(cv, self.font, voice=bool(self.voice))
 
     def patch_info(self, k):
         """The plan's entry for patch k: its commit and files. With one patch
@@ -376,6 +418,11 @@ class Tour:
                     out.append((f0 + round((r0 + 0.6 * (r1 - r0)) * self.fps), f'graph {s["name"]} route'))
                 out.append((f0 + round((P.XREF_SWITCH + P.XREF_REVEAL + P.XREF_SWEEP + 0.4) * self.fps),
                             f'xref {s["name"]} def'))
+        for scene in ('card', 'editor'):   # a caption mid-phrase, on a card and over the code
+            q = next((q for q in (self.voice or {}).get('phrases', ())
+                      if self.shots[q['shot']]['scene'] == scene), None)
+            if q is not None:
+                out.append((round((q['start'] + q['end']) / 2 * self.fps), f'caption {self.shots[q["shot"]]["kind"]}'))
         out.sort(key=lambda kf: kf[0])   # stills numbered in the order they are seen
         return tuple((min(n, self.frames - 1), label) for n, label in out)
 
@@ -425,9 +472,10 @@ class Tour:
     def draw(self, n, cv):
         i, t = self.at(n)
         shot = self.shots[i]
-        st = stage(cv, self.font)
+        st = self.stage(cv)
         if shot['scene'] == 'card':
             SCENES['card'](self, cv, vb.Box.of(cv), shot, t, i, st)
+            self.draw_caption(cv, st, shot, n)
             return
         alpha = 1.0
         if i > 0 and self.shots[i - 1]['scene'] == 'card':
@@ -449,6 +497,32 @@ class Tour:
                         def graph(c, box, i=i, t=t, path=path, stack=stack):
                             self.draw_graph(c, box, i, t, path, stack, st.scale)
                     sidebar.draw(cv, st.side, scale=st.scale, graph=graph, beside=st.side.w > st.side.h, **kw)
+        self.draw_caption(cv, st, shot, n)
+
+    def caption_place(self, cv, st, shot):
+        """(box, position) of the caption: the stage's band under the code; on a
+        card, the bottom of the frame's safe area (whose content the card keeps
+        above it), or its top over a --series card, whose strip is low."""
+        if shot['scene'] != 'card':
+            return st.caption, 'bottom'
+        return vb.captions.safe_area(cv), 'top' if shot['kind'] == 'patch' else 'bottom'
+
+    def draw_caption(self, cv, st, shot, n):
+        """The voice's caption on frame n, one line at a time, the word being
+        said lit and underlined (colour is never the only cue)."""
+        if not self.voice:
+            return None
+        safe, position = self.caption_place(cv, st, shot)
+        font = st.caption_font
+        drawn = vb.captions.draw(cv, self.captions, n / self.fps, font=font, safe=safe, position=position,
+                                 color='#e6e9ef', spoken=THEME.cursor, box=CALLOUT_BG, box_alpha=0.94)
+        if drawn is None:
+            return None
+        for w, b, c in drawn.words:
+            if c == THEME.cursor:
+                cv.rect(b.x, b.bottom - 3, b.w, 3, THEME.cursor, radius=1.5)
+                cv.mark('caption.word', *b)
+        return drawn
 
     def graph_part(self, patch):
         """The call graph the side bar shows during `patch` (its own, with --series)."""
@@ -495,10 +569,17 @@ def _stats(plan):
 
 
 def draw_card(tour, cv, box, shot, t, i, st):
-    """The title and end cards, each fading in and out over 0.4 s."""
+    """The title and end cards, each fading in and out over 0.4 s. With the
+    voice, a title or end card ends above the caption at the foot of the
+    frame's safe area."""
     alpha = min(vb.clamp01(t / 0.4), vb.clamp01((shot['dur'] - t) / 0.4))
+    box = box.pad(60)
+    if st.caption is not None and shot['kind'] != 'patch':
+        safe, _ = tour.caption_place(cv, st, shot)
+        bottom = safe.bottom - caption_height(st.caption_font) - CAPTION_GAP
+        box = vb.Box(box.x, box.y, box.w, min(box.bottom, bottom) - box.y)
     with cv.layer(opacity=alpha):
-        CARD_KINDS[shot['kind']](tour, cv, box.pad(60), shot, t)
+        CARD_KINDS[shot['kind']](tour, cv, box, shot, t)
 
 
 # ---- the title card ----
