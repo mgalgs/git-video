@@ -594,10 +594,12 @@ def _develop_body(change, verbose, patch):
             t0, t1 = on_screen(a['at']), on_screen(b['at'] + b['dur'])
             picks = sorted(chosen[k], key=lambda x: (-x[1], x[0]))[:CALLOUT_MAX_PER_HUNK]
             picks.sort(key=lambda x: x[0])
-            slot = max(CALLOUT_EACH, (t1 - t0) / len(picks))
+            # up while its hunk is typed, and no longer: the leader follows the cursor
+            slot = min(CALLOUT_EACH, (t1 - t0) / len(picks))
             for n, (_, _, _, text, c) in enumerate(picks):
+                end = t1 if n == len(picks) - 1 else t0 + (n + 1) * slot - 0.2
                 callouts.append({'text': text, 'commit': c.short, 'hunk': hi, 'at': round(t0 + n * slot, 3),
-                                 'until': round(t0 + (n + 1) * slot - 0.2, 3)})
+                                 'until': round(min(end, t1), 3)})
         callouts.sort(key=lambda c: c['at'])
         for c, nxt in zip(callouts, callouts[1:] + [None]):
             c['until'] = round(min(c['until'], dur - 0.2, nxt['at'] - 0.05 if nxt else dur), 3)
