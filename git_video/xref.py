@@ -7,7 +7,7 @@ small table of per-language definition patterns, one grep per language.
 import re
 from dataclasses import dataclass
 
-from pygments.token import Name
+from pygments.token import Name, Text
 
 from . import collect, highlight
 
@@ -21,9 +21,15 @@ _LISP = ('*.el', '*.lisp', '*.lsp', '*.cl', '*.scm', '*.ss', '*.rkt', '*.clj', '
 _js = (_JS, r'^\s*(export\s+)?(default\s+)?(async\s+)?(function\*?|class|const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*',
        [r'^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?P<kind>function|class)\*?\s+(?P<name>[A-Za-z_$][\w$]*)',
         r'^\s*(?:export\s+)?(?P<kind>const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*='])
-_c = (_C, r'^[A-Za-z_][A-Za-z0-9_ \*:<>,&]*[ \*&:]\*?[A-Za-z_][A-Za-z0-9_]* *\(',
+# C-ish: a top-level `type name(`, an indented method declaration (`public int
+# total(...) {`: no `;`, not a `return f(` statement), or a struct/class/enum.
+_c = (_C, r'^\s*[A-Za-z_][A-Za-z0-9_ \*:<>,&]*[ \*&:]\*?[A-Za-z_][A-Za-z0-9_]* *\('
+          r'|^\s*([A-Za-z]+\s+)*(struct|class|enum|union|interface)\s+[A-Za-z_]',
       [r'^[A-Za-z_][\w \*:<>,&]*[ \*&:]\*?(?P<name>[A-Za-z_]\w*) *\(',
-       r'^\s*(?:typedef\s+)?(?P<kind>struct|class|enum|union|interface)\s+(?P<name>[A-Za-z_]\w*)\s*[{:]?\s*$'])
+       r'^\s+(?!(?:return|else|new|delete|throw|case|goto|await|yield|co_return)\b)'
+       r'[A-Za-z_][\w \*:<>,&]*[ \*&:]\*?(?P<name>[A-Za-z_]\w*) *\([^;]*$',
+       r'^\s*(?:(?:public|private|protected|internal|static|final|abstract|sealed|partial)\s+)*'
+       r'(?:typedef\s+)?(?P<kind>struct|class|enum|union|interface)\s+(?P<name>[A-Za-z_]\w*)[^;=()]*$'])
 _sh = (_SH, r'^\s*(function\s+)?[A-Za-z_][A-Za-z0-9_-]*\s*\(\)',
        [r'^\s*(?:function\s+)?(?P<name>[A-Za-z_][\w-]*)\s*\(\)'])
 _lisp = (_LISP, r'^\s*\(def[A-Za-z*-]*\s+[^ ()]+',
@@ -49,6 +55,8 @@ FUNCTION_KINDS = frozenset('def class function func fn struct enum trait type in
                            'defn defclass cl-defun defsubst define'.split())
 # Name.Function and Name.Class mark a definition site (`def frob`), not a use.
 SKIP = (Name.Function, Name.Class, Name.Builtin, Name.Namespace, Name.Decorator, Name.Attribute, Name.Tag, Name.Label, Name.Exception)
+# Lisp names are hyphenated (`compute-total`); shell names may be too.
+WORD = re.compile(r'[A-Za-z_][\w-]*\w|[A-Za-z_]\w*')
 AMBIGUOUS = 5     # a name defined more often than this is skipped (main, setUp, ...)
 MIN_LEN = 3
 
@@ -109,14 +117,16 @@ def index(repo, target, lang):
 def candidates(text, path, lines):
     """The candidate identifiers on the given 1-based `lines` of the file, in order."""
     toks = highlight.tokens_by_line(text, path)
+    # Pygments' Bash lexer gives a command name (`compute_total 3`) plain Text.
+    shell = lang_of(path) == 'Bash'
     out = []
     for ln in lines:
         if not 1 <= ln <= len(toks):
             continue
         col, row = 0, toks[ln - 1]
         for i, (ttype, value) in enumerate(row):
-            if (ttype in Name and not any(ttype in s for s in SKIP) and len(value) >= MIN_LEN
-                    and value.isidentifier()):
+            named = (ttype in Name and not any(ttype in s for s in SKIP)) or (shell and ttype is Text)
+            if named and len(value) >= MIN_LEN and WORD.fullmatch(value):
                 rest = ''.join(v for _, v in row[i + 1:i + 3]).lstrip()
                 out.append(Candidate(ln, col, value, rest.startswith('(')))
             col += len(value)

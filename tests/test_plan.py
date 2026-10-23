@@ -155,6 +155,29 @@ class TestPlan(unittest.TestCase):
         names = [s['name'] for s in kinds(plan.plan(collect.collect(repo, 'HEAD'), 3), 'xref-push')]
         self.assertEqual(names, ['nearby'])
 
+    def test_shell_lisp_and_indented_c_definitions(self):
+        from git_video import xref
+        repo = self.tmp.name + '/langs'
+        fixtures.init(repo)
+        fixtures.write(repo, 'lib.sh', 'compute_total() {\n  echo 3\n}\n')
+        fixtures.write(repo, 'lib.el', '(defun compute-total (x)\n  (+ x 1))\n')
+        fixtures.write(repo, 'Lib.java', 'public class Lib {\n    public static int computeTotal(int x) {\n'
+                       '        return helper(x);\n    }\n}\n')
+        fixtures.write(repo, 'point.h', 'struct point {\n    int x;\n};\n')
+        fixtures.commit(repo, 'Start')
+        fixtures.write(repo, 'use.sh', '. ./lib.sh\ncompute_total 3\n')
+        fixtures.write(repo, 'use.el', '(compute-total 3)\n')
+        fixtures.commit(repo, 'Use them')
+        head = collect.collect(repo, 'HEAD').target
+        java = xref.index(repo, head, 'Java')
+        self.assertEqual([(d.path, d.line) for d in java['computeTotal']], [('Lib.java', 2)])
+        self.assertEqual([d.kind for d in java['Lib']], ['class'])
+        self.assertNotIn('helper', java)   # a `return f(` statement is a use
+        self.assertEqual([d.line for d in xref.index(repo, head, 'C')['point']], [1])
+        pushes = {s['path']: s['definition']['path'] for s in kinds(plan.plan(collect.collect(repo, 'HEAD'), 3),
+                                                                   'xref-push')}
+        self.assertEqual(pushes, {'use.sh': 'lib.sh', 'use.el': 'lib.el'})
+
     def test_total_duration(self):
         for p in self.plans.values():
             self.assertAlmostEqual(p.total, sum(s['dur'] for s in p.shots), places=6)
