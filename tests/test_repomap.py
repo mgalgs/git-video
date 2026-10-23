@@ -110,6 +110,38 @@ class TestRepoMap(unittest.TestCase):
                     areas = [t.box.w * t.box.h for t in sorted(quiet, key=lambda t: -t.info['size'])]
                     self.assertEqual(areas, sorted(areas, reverse=True), (fmt, g['dir']))
 
+    def synthetic(self, n):
+        """A map of a repo where `n` files changed, spread over a few directories
+        with very uneven sizes, beside quiet files."""
+        tree = [(f'{d}/mod_{i:03d}_{"x" * (i % 7)}.py', 40 + (i * 97) % 9000)
+                for i, d in zip(range(n), itertools.cycle(['git_video', 'tests', 'docs/api', 'tools']))]
+        tree += [(f'lib/quiet_{i:02d}.py', 500 + 37 * i) for i in range(30)] + [('README.md', 4000)]
+        files = [{'path': p, 'added': (i * 13) % 300 + 1, 'deleted': (i * 7) % 40} for i, (p, _) in enumerate(tree[:n])]
+        return repomap.tiles(tree, files, 'repo'), [f['path'] for f in files]
+
+    def test_labels_never_overlap(self):
+        for n in (40, 80):
+            m, paths = self.synthetic(n)
+            for fmt, box in self.boxes():
+                lay = repomap.layout(m, box)
+                lit = {t.key: 1.0 for t in lay.tiles if t.heat is not None}
+                smallest = min((t for t in lay.tiles if t.heat is not None), key=lambda t: t.box.w * t.box.h)
+                for focus in (None, smallest.key):
+                    cv = vb.Canvas(int(box.right + 40), int(box.bottom + 40), '#000')
+                    repomap.draw(cv, lay, lit, focus=focus)
+                    labels = [(name, b) for name, b in cv.marks if name.startswith('map.label ')]
+                    heads = [(name, b) for name, b in cv.marks if name.startswith('map.head ')]
+                    self.assertTrue(labels and heads, (n, fmt))
+                    for (na, a), (nb, b) in itertools.combinations(labels + heads, 2):
+                        self.assertFalse(a.intersects(b), (n, fmt, focus, na, nb))
+                    for name, b in labels:
+                        self.assertTrue(box.contains(b), (n, fmt, name, b))
+                        key = name.split(' ', 1)[1]
+                        if key != focus:   # a label stays inside its own cell
+                            self.assertTrue(lay.tile(key).box.contains(b), (n, fmt, name))
+                    if focus is not None:   # the dive's target is always labelled
+                        self.assertIn(f'map.label {focus}', dict(labels))
+
     def test_many_directories_fold(self):
         tree = [(f'd{i:02d}/f', 10) for i in range(30)]
         m = repomap.tiles(tree, [{'path': 'd29/f', 'added': 1, 'deleted': 1}], 'r')

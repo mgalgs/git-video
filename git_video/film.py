@@ -236,6 +236,11 @@ class Tour:
                                   max(3, len(str(max(len(old), len(new)) + 1))), _mode(s['path']))
         return self.performances[i]
 
+    def dive_after(self, i):
+        """The path of the tile the camera dives into after map shot i, if it does."""
+        nxt = self.shots[i + 1] if i + 1 < len(self.shots) else None
+        return nxt['path'] if nxt is not None and nxt['kind'] == 'dive' else None
+
     def map_layout(self, box):
         k = tuple(box)
         if k not in self.maps:
@@ -1416,16 +1421,17 @@ def _lerp_box(a, b, e):
     return vb.Box(*(x + (y - x) * e for x, y in zip(a, b)))
 
 
-def _map_under(tour, cv, box, lay, cam, lit, skip=()):
+def _map_under(tour, cv, box, lay, cam, lit, skip=(), focus=None):
     """The whole map seen through camera `cam` (the zoom-to-location idea, for a
-    box instead of the frame)."""
+    box instead of the frame); `focus`, the tile the camera dives into next,
+    keeps its label on top."""
     cx, cy, span = cam
     s = box.w / span
     with cv.clip(*box):
         cv.rect(*box, THEME.bg)
         with cv.layer(dx=box.cx - cx * s, dy=box.cy - cy * s, scale=s):
             repomap.draw(cv, lay, lit, ui=UI, mono=tour.font, added=THEME.fringe_added,
-                         removed=THEME.fringe_removed, outline=THEME.xref_box, skip=skip)
+                         removed=THEME.fringe_removed, outline=THEME.xref_box, skip=skip, focus=focus)
 
 
 def _focus(tour, cv, st, box, cam, tile, view, q):
@@ -1452,11 +1458,14 @@ def draw_map(tour, cv, box, shot, t, i, st):
     """The repo map scene: the map itself, and the camera moves into and
     between files."""
     before, after = tour.views[i]
+    if shot['kind'] == 'map':
+        _map(tour, cv, replace(st, main=box), tour.map_layout(box), shot, t, before, after, focus=tour.dive_after(i))
+        return
     MAP_KINDS[shot['kind']](tour, cv, replace(st, main=box), tour.map_layout(box), shot, t, before, after)
 
 
-def _map(tour, cv, st, lay, shot, t, before, after):
-    _map_under(tour, cv, st.main, lay, _wide(st.main), lit_amounts(shot, t))
+def _map(tour, cv, st, lay, shot, t, before, after, focus=None):
+    _map_under(tour, cv, st.main, lay, _wide(st.main), lit_amounts(shot, t), focus=focus)
 
 
 def _all_lit(lay):
