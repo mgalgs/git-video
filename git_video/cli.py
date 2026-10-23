@@ -184,6 +184,9 @@ def main(argv=None):
     try:
         if args.series:
             change, patches = collect.series(repo_path(args.C), args.rev)
+            if args.duration is not None and len(patches) > 1:   # few enough beats for the target
+                from . import condense
+                patches = condense.fit_series(change, patches, args.duration, args.mode, args.verbose)
         else:
             change = collect.collect(repo_path(args.C), args.rev)
             patches = [change]

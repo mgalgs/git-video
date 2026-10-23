@@ -299,6 +299,11 @@ current patch marked, and the side bar follows the patch. One opening and
 one closing card frame the whole. A single rev is the same with or without
 `--series`.
 
+With `--duration`, the target is shared among the patches by their size,
+with a floor so each keeps its card and at least one hunk. A series too long
+for the floors plays fewer beats: the smallest adjacent patches merge into
+one, whose card says so ("3 small commits").
+
 ## --duration
 
 `--duration 60` makes a video of any change set, one small commit or a
@@ -330,6 +335,9 @@ selection first, then speed.
   ×256 under `--duration`); the rest of a visited file is put in at once,
   one step per run of hunks, under a `⇥ N hunks applied` marker (only the
   changed lines are marked as changed).
+- With `--series`, each patch gets a share of the target by its size, and
+  a long series merges its smallest neighbouring patches into one beat
+  (see above).
 - A target under 15 s is an error that says so. A change too small to fill
   the target stays shorter (its shots stretch only so far), with a note on
   stderr. Rendering prints what was kept and why, one line per hunk, and

@@ -240,6 +240,8 @@ def _commit_info(change):
         info['subject'] = f'{a}..{b}: {n} commit{"s" if n != 1 else ""}'
         info['body'] = ''
         info['coauthors'] = list(dict.fromkeys(n for c in change.commits for n in c.coauthors))
+    if change.merged:   # small --series patches played as one beat: its card says so
+        info['subject'] = f'{change.merged} small commits'
     return info
 
 

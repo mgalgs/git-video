@@ -76,6 +76,46 @@ def size_of(change):
     return change.added + change.deleted
 
 
+def fit_series(change, patches, target, mode='tour', verbose=0):
+    """--series patches made few enough for a plan of `target` s to fit
+    (`merge_series`): from `max_beats` beats, one fewer each time the plan
+    built from them is still too long (a beat's least cost depends on what
+    it shows: several files, callouts to read, a typed file)."""
+    most = min(len(patches), max_beats(target))
+    while True:
+        beats = merge_series(patches, most)
+        if len(beats) <= 1 or len(beats) > most:   # one beat, or nothing more can merge
+            return beats
+        p = P.build(change, verbose, mode, beats, duration=target)
+        if p.total <= target + tolerance(target) / 2:
+            return beats
+        most = len(beats) - 1
+
+
+def merge_series(patches, most):
+    """--series patches as at most `most` beats: while there are more, the
+    adjacent pair smallest together (the earliest on a tie) becomes one beat,
+    a range change with `merged` set to the commits in it. A root commit is
+    never merged (its base is no commit)."""
+    beats = [[ch] for ch in patches]
+    while len(beats) > most:
+        pairs = [(sum(size_of(c) for c in a + b), k) for k, (a, b) in enumerate(zip(beats, beats[1:]))
+                 if a[0].is_range or a[0].base != collect.empty_tree(a[0].repo)]
+        if not pairs:
+            break
+        _, k = min(pairs)
+        beats[k:k + 2] = [beats[k] + beats[k + 1]]
+    out = []
+    for b in beats:
+        if len(b) == 1:
+            out.append(b[0])
+            continue
+        ch = collect.collect(b[0].repo, f'{b[0].base}..{b[-1].target}')
+        ch.merged = sum(max(1, c.merged) for c in b)
+        out.append(ch)
+    return out
+
+
 def split_budget(target, patches, has_map=True):
     """Each patch's content budget, seconds: what the fixed costs at their
     floors leave of `target`, shared by the patches' sizes, at least

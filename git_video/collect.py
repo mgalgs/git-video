@@ -60,6 +60,7 @@ class Change:
     deleted: int
     tree: list = field(default_factory=list)   # [(path, size)] of every blob at the target
     next: 'Commit | None' = None               # the commit after the target on HEAD's line, if any
+    merged: int = 0      # --series under --duration: this many small patches played as one beat (a range)
     _texts: dict = field(default_factory=dict, repr=False)
     _old_texts: dict = field(default_factory=dict, repr=False)
 

@@ -178,6 +178,52 @@ class TestSummary(unittest.TestCase):
             self.assertNotIn('target 20s', err)
 
 
+class TestSeries(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.repo, cls.shas = fixtures.make_series_repo(cls.tmp.name)
+        cls.rev = f'{cls.shas[0]}..{cls.shas[-1]}'
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_every_beat_has_a_card_and_a_beat(self):
+        for mode in ('tour', 'develop'):
+            code, p, err = plan_json(self.repo, self.rev, '--series', '--mode', mode, '--duration', '60')
+            self.assertEqual(code, 0, err)
+            self.assertEqual(len(p['patches']), 12, mode)
+            self.assertEqual(sum(1 for s in p['shots'] if s['kind'] == 'patch'), 11, mode)
+            body = {s['patch'] for s in p['shots'] if s['kind'] in ('hunk', 'edit')}
+            self.assertEqual(body, set(range(12)), mode)
+
+    def test_small_patches_merge(self):
+        from git_video import narrator
+        change, patches = collect.series(self.repo, self.rev)
+        beats = condense.fit_series(change, patches, 15, 'tour')
+        self.assertLessEqual(len(beats), condense.max_beats(15))
+        self.assertGreater(len(beats), 1)
+        merged = [b for b in beats if b.merged]
+        self.assertTrue(merged)
+        self.assertEqual(sum(max(1, b.merged) for b in beats), 12)
+        p = plan.build(change, 0, 'tour', beats, duration=15)
+        self.assertEqual(len(p.patches), len(beats))
+        subjects = [e['commit']['subject'] for e in p.patches]
+        for b, subject in zip(beats, subjects):
+            if b.merged:
+                self.assertRegex(subject, r'^\d+ small commits$')
+                self.assertEqual(subject, f'{b.merged} small commits')
+        k = next(k for k, b in enumerate(beats) if b.merged and k)
+        rows = narrator.shot_table(narrator.shot_rows(p, beats))
+        self.assertIn(f'"{beats[k].merged} small commits"', rows)
+        with mock.patch('git_video.film.Tour'), mock.patch('videobuilder.render.render'):
+            code, _, err = quiet(cli.main, ['-C', self.repo, '--series', '--duration', '15', '-o',
+                                            os.path.join(self.tmp.name, 'v.mp4'), self.rev])
+        self.assertEqual(code, 0, err)
+        self.assertRegex(err, r'(?m)^patch 2: \d+ small commits$')
+
+
 class TestTolerance(unittest.TestCase):
     """Every mode and --series and --voice combination lands within the tolerance."""
 
@@ -222,7 +268,7 @@ class TestTolerance(unittest.TestCase):
             if not series and target <= 30:
                 return self.repo, self.sha['change']
             return self.series, whole
-        self.matrix(cases, (False,), (False,))
+        self.matrix(cases, (False,), (False, True))
 
     def test_this_repos_history(self):
         # straight through plan.build, one collected change for every target (the scores are computed once)
@@ -235,7 +281,7 @@ class TestTolerance(unittest.TestCase):
         whole = collect.collect(ROOT, f'{revs[-1]}..HEAD')
         combined, patches = collect.series(ROOT, 'HEAD~12..HEAD')
         for mode in ('tour', 'develop'):
-            for series in (False,):
+            for series in (False, True):
                 for voice in (False,):
                     ch, ps = (combined, patches) if series else (whole, [whole])
                     for target in TARGETS:
@@ -244,6 +290,8 @@ class TestTolerance(unittest.TestCase):
                             self.assertLessEqual(abs(p.total - target), condense.tolerance(target), p.total)
 
     def build(self, change, patches, mode, voice, target):
+        if len(patches) > 1:
+            patches = condense.fit_series(change, patches, target, mode)
         return plan.build(change, 0, mode, patches, duration=target)
 
 
