@@ -436,6 +436,38 @@ def clock(natural, s0, fast=None, ramp=0.4):
              'times': [round(a, 4), round(a + ramp, 4), round(b - ramp, 4), round(b, 4)]})
 
 
+def hold(clk, span, dur, a_src, b_src, least, eps=1e-4):
+    """The clock with natural [a_src, b_src] played over at least `least` s on
+    screen, whatever speed was there (an elided run's fold must be seen to fill
+    in, even inside a speed-up); the time it adds pushes the rest later.
+    Returns (clock, the fast span moved with it, duration, seconds added)."""
+    ta, tb = shot_time(a_src, clk), shot_time(b_src, clk)
+    if tb - ta >= least - 1e-6:
+        return clk, span, dur, 0.0
+    extra = least - (tb - ta)
+    sa, sb = speed_at(ta, clk), speed_at(tb, clk)
+    # steps from the old speeds to v and back over eps: v is what makes the
+    # area under the whole piece exactly b_src - a_src
+    v = (b_src - a_src - eps * (sa + sb) / 2) / (least - eps)
+    pairs = list(zip(clk['times'], clk['speeds']))
+    times = [t for t, _ in pairs if t < ta - 1e-9] + [ta, ta + eps, ta + least - eps, ta + least]
+    speeds = [x for t, x in pairs if t < ta - 1e-9] + [sa, v, v, sb]
+    times += [t + extra for t, _ in pairs if t > tb + 1e-9]
+    speeds += [x for t, x in pairs if t > tb + 1e-9]
+
+    def moved(x):
+        if x <= ta:
+            return x
+        if x >= tb:
+            return x + extra
+        return ta + (x - ta) * least / (tb - ta)
+
+    if span:
+        span = dict(span, at=round(moved(span['at']), 4), until=round(moved(span['until']), 4),
+                    times=[round(moved(x), 4) for x in span['times']])
+    return {'times': times, 'speeds': speeds}, span, dur + extra, extra
+
+
 def ramp_fits(span_src, s0, peak, ramp):
     return span_src >= ramp * (s0 + peak)
 

@@ -78,6 +78,8 @@ FAST_PEAK_MAX = 64.0
 FAST_RAMP = 0.4
 ELIDE_LINES = {0: 30, 1: 80}   # --verbose -> the typed run long enough to elide (2 and 3 never)
 DEVELOP_CALLOUT_MIN = 1.2      # a develop callout shorter than this is dropped
+FILL_SHOWN = 1.0               # an elided run's fold fills in over at least this long on screen
+                               # (its natural length if shorter), whatever the speed around it
 
 XREF_TRAVEL = 0.7         # the pointer glides to the word
 XREF_CLICK = 0.7          # ... and clicks it
@@ -587,6 +589,19 @@ def _longest_spans(avail, natural, budget, s0, r):
     return s0, best[1], best[2]
 
 
+def _clock(sc, s0, fast):
+    """A script's clock at speed s0 with the speed-up `fast`, each fill held on
+    screen for FILL_SHOWN: (clock, duration, fast span, seconds the holds add)."""
+    clk, dur, span = edits.clock(sc['natural'], s0, fast, FAST_RAMP)
+    added = 0.0
+    for st in sc['steps']:
+        if st['kind'] == 'fill':
+            clk, span, dur, extra = edits.hold(clk, span, dur, st['at'], st['at'] + st['dur'],
+                                               min(st['dur'], FILL_SHOWN))
+            added += extra
+    return clk, dur, span, added
+
+
 def _develop_body(change, verbose, patch):
     """Develop mode for one change: per file (in `order_files` order) an
     `enter` and an `edit` shot playing its edit script, paced to the budget.
@@ -601,13 +616,19 @@ def _develop_body(change, verbose, patch):
         scripts.append(edits.build(old, new, f.hunks, elide=elide, seed=f.path))
     lines = sum(edits.weight(sc['steps']) for sc in scripts)
     budget = develop_budget(lines)
-    s0, peak, spans = _pace(scripts, budget, verbose)
+    target = budget   # what the speed-ups aim at: the budget less the time the folds are held
+    for _ in range(6):
+        s0, peak, spans = _pace(scripts, target, verbose)
+        clocks = [_clock(sc, s0, (*spans[fi], peak) if fi in spans else None) for fi, sc in enumerate(scripts)]
+        held = sum(c[3] for c in clocks)
+        if abs(budget - held - target) < 0.01 or budget - held <= 1.0:
+            break
+        target = budget - held
     chosen = _match_callouts(change, [(f, h) for f in files if f.text is not None for h in f.hunks])
     keys = [(fi, hi) for fi, f in enumerate(files) if f.text is not None for hi in range(len(f.hunks))]
     shots, written, done = [], {}, 0
     for fi, (f, sc) in enumerate(zip(files, scripts)):
-        fast = (*spans[fi], peak) if fi in spans else None
-        clk, dur, span = edits.clock(sc['natural'], s0, fast, FAST_RAMP)
+        clk, dur, span, _ = clocks[fi]
         on_screen = lambda x, clk=clk: round(edits.shot_time(x, clk), 4)
         steps = sc['steps']
         elisions = [{'line': st['line'] + 1, 'count': st['count'], 'at': on_screen(st['at']),

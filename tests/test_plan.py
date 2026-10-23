@@ -434,6 +434,26 @@ class TestDevelopPlan(unittest.TestCase):
         self.assertEqual(filled(2), {})
         self.assertEqual(filled(3), {})
 
+    def test_elision_fold_is_seen(self):
+        """However fast the patch plays, an elided run's fold fills in over
+        FILL_SHOWN on screen (its natural length if shorter), and the time
+        that takes still comes out of the budget."""
+        from git_video import edits
+        for name in ('develop', 'big'):
+            p = self.plan_of(name)
+            (patch,) = p.patches
+            fills = 0
+            for s in kinds(p, 'edit'):
+                for st, e in zip([st for st in s['steps'] if st['kind'] == 'fill'], s['elisions']):
+                    fills += 1
+                    self.assertGreaterEqual(e['until'] - e['at'], min(st['dur'], plan.FILL_SHOWN) - 0.01, (s['path'], e))
+                self.assertAlmostEqual(edits.source_time(s['dur'], s['clock']), s['natural'], delta=0.01)
+                times = s['clock']['times']
+                self.assertEqual(times, sorted(set(times)))
+            self.assertTrue(fills, name)
+            if patch['speed'] > 1:
+                self.assertLessEqual(plan.perf_time(p), patch['budget'] + 0.05)
+
     def test_develop_plan_json(self):
         code, out, _ = quiet(cli.main, ['-C', self.repo, '--mode', 'develop', '--plan-json', self.sha['change']])
         self.assertEqual(code, 0)
