@@ -33,7 +33,7 @@ from videobuilder.capabilities.ui.scroll_velocity_skew import scroll_velocity, v
 from videobuilder.capabilities.transitions.stacked_card_reveal import stacked_card_reveal
 from videobuilder.capabilities.ui.progress_steps_connector_fill import draw_progress_steps
 
-from . import edits, editor, graph as graphmod, highlight, plan as P, repomap, sidebar, sounds
+from . import edits, editor, graph as graphmod, highlight, plan as P, repomap, sidebar, sounds, voice
 
 THEME = editor.Theme()
 FORMATS = ('16x9', '9x16', '1x1')
@@ -246,9 +246,13 @@ class Tour:
         self.timings = {i: P.open_timing(s['path']) for i, s in enumerate(self.shots) if s['kind'] == 'open'}
         said = tuple(n.sound(at=round(p['start'] * self.fps), fps=self.fps)
                      for n, p in zip(self.narrations, self.voice['phrases'] if self.voice else ()))
+        effects = sounds.sounds_for(self.shots, self.shot_frames, self.fps, log=log,
+                                    spoken=[(x.at, x.at + x.frames - 1) for x in said])
+        # The effects dip under the voice by videobuilder's ducking, which
+        # only applies with music: the bed is silence.
+        bed = vb.Audio(os.path.join(self.voice['dir'], self.voice['bed']), duck_db=voice.DUCK_DB) if said else None
         self.film = vb.Film(self.draw, fps=self.fps, frames=self.frames, formats=formats, background=THEME.bg,
-                            sounds=sounds.sounds_for(self.shots, self.shot_frames, self.fps, log=log) + said,
-                            keyframes=self.keyframes())
+                            sounds=effects + said, audio=bed, keyframes=self.keyframes())
 
     def stage(self, cv):
         return stage(cv, self.font, voice=bool(self.voice))

@@ -31,6 +31,32 @@ class TestSounds(unittest.TestCase):
         return mock.patch.dict(os.environ, {vb.sfx.ENV: fixtures.fake_pack(os.path.join(self.tmp.name, name),
                                                                             entries)})
 
+    def test_voice_mix(self):
+        from git_video import voice
+        with mock.patch.dict(os.environ, {'XDG_CACHE_HOME': os.path.join(self.tmp.name, 'cache')}):
+            p = voice.narrate(self.change, [self.change], 0, 'develop', fixtures.FakeEngine(), 'bf_isabella')
+        with self.pack('full-voice', FULL):
+            f, _ = film.build(p, self.change, log=io.StringIO())
+        self.assertEqual(f.audio.duck_db, voice.DUCK_DB)
+        self.assertTrue(os.path.isfile(f.audio.path))
+        said = [x for x in f.sounds if x.path.startswith(p.voice['dir'])]
+        self.assertEqual(len(said), len(p.voice['phrases']))
+        self.assertTrue(all(x.ducks for x in said))
+        spans = [(x.at, x.at + x.frames - 1) for x in said]
+        under = lambda x: any(a <= x.at <= b for a, b in spans)
+        gains = {}
+        for x in f.sounds:
+            if x.ducks:
+                continue
+            gains.setdefault((x.effect, under(x)), set()).add(x.gain_db)
+        key, run = sounds.KEY[0][0], sounds.RUN[0][0]
+        self.assertEqual(gains[key, False], {sounds.KEY[2]})
+        self.assertEqual(gains[key, True], {sounds.KEY[2] + voice.TYPING_UNDER_VOICE})
+        for (effect, _), g in gains.items():
+            if effect not in (key, run):
+                self.assertEqual(len(g), 1, effect)   # the rest only duck with the bed
+        self.assertIsNone(film.build(self.plan, self.change, log=io.StringIO())[0].audio)
+
     def test_no_pack_is_silent_with_note(self):
         empty = os.path.join(self.tmp.name, 'empty')
         os.makedirs(empty, exist_ok=True)

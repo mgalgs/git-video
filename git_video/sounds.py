@@ -3,6 +3,10 @@ each xref click, a soft tick as a hunk is reached and as a commit callout lands,
 a softer whoosh for each camera move over the repo map and each long scroll and a low tick as each
 changed tile lights.
 
+With --voice the effects duck under the narration (the film's silent music
+bed carries videobuilder's ducking), and the keys and typing runs heard
+while a phrase is said go quieter still.
+
 Each sound is an id pair with a role fallback (the pattern of videobuilder's
 terminal log), so a pack without the preferred ids still plays something
 fitting, and no pack at all means a silent render with a one-line note.
@@ -12,7 +16,7 @@ import sys
 
 import videobuilder as vb
 
-from . import edits, plan as planmod
+from . import edits, plan as planmod, voice
 
 # (preferred ids, fallback roles, gain dB, align)
 KEY = (('pro_typing_key/tick', 'typing_key/crisp'), ('key', 'typing'), -10.0, 'onset')
@@ -126,8 +130,10 @@ def _edit_cues(s, f0, fps):
     return sorted(out)
 
 
-def sounds_for(shots, shot_frames, fps, log=None):
-    """The `vb.sfx` sounds of a tour; () and one note on `log` without a pack."""
+def sounds_for(shots, shot_frames, fps, log=None, spoken=()):
+    """The `vb.sfx` sounds of a tour; () and one note on `log` without a pack.
+    `spoken`: (first, last) frames of each phrase the voice says, under which
+    typing is voice.TYPING_UNDER_VOICE dB quieter."""
     try:
         bank = vb.sfx.bank()
     except vb.sfx.SfxUnavailable as e:
@@ -139,6 +145,8 @@ def sounds_for(shots, shot_frames, fps, log=None):
     out = []
     for frame, name in cues(shots, shot_frames, fps):
         sid, gain, align = chosen[name]
+        if name in ('key', 'typing-run') and any(a <= frame <= b for a, b in spoken):
+            gain += voice.TYPING_UNDER_VOICE
         if sid is not None:
             out.append(vb.sfx.sound(sid, at=frame, fps=fps, gain_db=gain, align=align))
     return tuple(out)

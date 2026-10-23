@@ -96,6 +96,17 @@ pip install git+https://github.com/mgalgs/git-video
 That puts `git-video` on your PATH, so git finds it as `git video`.
 `python -m git_video` runs the same thing. Rendering needs `ffmpeg`.
 
+`--voice` needs the voice extra, which brings videobuilder's speech support
+(kokoro-onnx), and Kokoro's model files:
+
+```
+pip install 'git-video[voice] @ git+https://github.com/mgalgs/git-video'
+```
+
+Without them `--voice` stops before rendering and says what to install and
+where videobuilder looks for the model files (`$VIDEOBUILDER_KOKORO_DIR` or
+`~/.cache/kokoro`).
+
 Sounds come from videobuilder's sound-effects pack, fetched once with
 `python -m videobuilder sfx fetch`. Without it the video renders silently
 (you get a one-line note).
@@ -151,6 +162,7 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
 - A closing card: a recap of the files visited and the definitions dived
   into, and the next commit's subject when the target has one on the
   current branch.
+- `--voice`: a narration with captions, paced into the film (see below).
 - Colour is never the only cue: added lines carry a `+` in the fringe,
   removed lines a `−` marker between lines, removed words a strike-through,
   added words an underline, the current file in the side bar a `▶`, the
@@ -266,6 +278,5 @@ later pass (an LLM, say) can rewrite.
 
 ## Planned
 
-- `--voice`: a narration explaining the intent behind the change, voiced
-  with videobuilder's `say` (Kokoro voice `bf_isabella` by default).
+- `--voice` written by a model from the change rather than by heuristics.
 - More scenes beside the editor and the map: explainer cards.

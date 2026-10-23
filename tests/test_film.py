@@ -864,10 +864,6 @@ class TestFilm(unittest.TestCase):
         self.assertIn('video', [s['codec_type'] for s in streams])
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class TestVoiceFilm(unittest.TestCase):
     """Captions with the voice (a fake engine): where they sit in every format."""
 
@@ -973,9 +969,25 @@ class TestVoiceFilm(unittest.TestCase):
             self.assertTrue(any(round(q['start'] * tour.fps) <= n < round(q['end'] * tour.fps)
                                 for q in tour.voice['phrases']))
 
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'needs ffmpeg')
+    def test_render_voiced(self):
+        from videobuilder.render import render
+        tour = self.tours['tour']
+        q = tour.voice['phrases'][0]
+        n = round(q['start'] * tour.fps)
+        out = os.path.join(self.tmp.name, 'voiced.mp4')
+        render(tour.film, out, format='16x9', jobs=1, frames=(n - 5, n + 10), log=io.StringIO())
+        r = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-of', 'json', out], capture_output=True,
+                           text=True, check=True)
+        self.assertEqual(sorted(s['codec_type'] for s in json.loads(r.stdout)['streams']), ['audio', 'video'])
+
     def test_no_voice_no_captions(self):
         p = plan.build(self.change)
         tour = film.Tour(p, self.change, log=io.StringIO())
         for n, _ in tour.film.keyframes:
             for fmt in ('16x9', '9x16', '1x1'):
                 self.assertNotIn('caption', dict(tour.film.frame(n, fmt).marks))
+
+
+if __name__ == '__main__':
+    unittest.main()
