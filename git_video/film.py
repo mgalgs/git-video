@@ -87,6 +87,7 @@ class View:
     variant: str = 'new'        # the file as the patch leaves it (`new`) or finds it (`old`)
     edit: int | None = None     # develop: the edit shot whose buffer is shown, ...
     end: bool = False           # ... as it ends (else as it starts)
+    wash: int | None = None     # the hunk shot whose swept lines stay washed while this view shows them
 
 
 SCRATCH_TEXT = (';; This buffer is for text that is not saved, and for Lisp evaluation.\n'
@@ -259,6 +260,7 @@ class Tour:
         """[(before, after)] View per shot."""
         out = []
         cur = View(None, 0, 0, (0, 0), ())
+        hunk = None   # the hunk shot current now
         for s in self.shots:
             before, kind, k = cur, s['kind'], s.get('patch', 0)
             if kind == 'map':
@@ -286,6 +288,13 @@ class Tour:
             elif kind == 'xref-pop':
                 ln = s['line'] - 1
                 cur = View(s['path'], s['back_top'], ln, (ln, s['col']), cur.stack[:-1], patch=k)
+            if kind == 'hunk':
+                hunk = len(out)
+            elif s['scene'] == 'card' or kind == 'map':
+                hunk = None
+            h = self.shots[hunk] if hunk is not None else None
+            if h is not None and cur.path == h['path'] and cur.patch == h.get('patch', 0) and cur.edit is None:
+                cur = replace(cur, wash=hunk)   # the hunk is current until the next one: its wash stays
             out.append((before, cur))
         return out
 
@@ -988,11 +997,28 @@ def draw_editor(tour, cv, box, shot, t, i, st):
     EDITOR_KINDS[shot['kind']](tour, cv, replace(st, main=box), shot, t, i, before, after)
 
 
-def _pane(tour, cv, st, view, top=None, **kw):
-    """Draw the editor showing `view` (its scroll fitted to this format's rows)."""
+def swept_lines(tour, st, i):
+    """The lines hunk shot i sweeps in this format: its added lines in the
+    view it lands on, but for the ones its morph brings in."""
+    s = tour.shots[i]
+    view = tour.views[i][1]
+    rows = _layout(st, tour.buffer(view)).rows
+    b = _fitted(tour, st, view)
+    morphed = {seg.line + r for seg in tour.segments.get(i, ()) for r in range(seg.new)}
+    return [n - 1 for x, y in s['added'] for n in range(x, y + 1) if b <= n - 1 < b + rows and n - 1 not in morphed]
+
+
+def _pane(tour, cv, st, view, top=None, wash=True, **kw):
+    """Draw the editor showing `view` (its scroll fitted to this format's rows),
+    with the current hunk's swept lines still washed (`view.wash`) unless
+    `wash` is False (the hunk shot sweeps them itself)."""
     if view.edit is not None:   # develop: an edit shot's buffer as it starts or ends
         s = tour.shots[view.edit]
         return _edit_pane(tour, cv, st, view.edit, s['natural'] if view.end else 0.0, **kw)[0]
+    if wash and view.wash is not None:
+        mine = list(kw.get('sweeps', ()))
+        taken = {sw[0] for sw in mine}
+        kw['sweeps'] = [(ln, 1.0, SETTLED) for ln in swept_lines(tour, st, view.wash) if ln not in taken] + mine
     buf = tour.buffer(view)
     lay = _layout(st, buf)
     if top is None:
@@ -1087,15 +1113,18 @@ def _hunk(tour, cv, st, shot, t, i, before, after):
     else:
         top = vb.interpolate(t, [0, landed], [a, b], vb.ease_in_out_quart)
     segs = tour.segments.get(i, ())
-    morphed = {seg.line + r for seg in segs for r in range(seg.new)}
-    shown = [n - 1 for x, y in shot['added'] for n in range(x, y + 1)
-             if b <= n - 1 < b + rows and n - 1 not in morphed]
+    shown = swept_lines(tour, st, i)
     p = vb.clamp01((t - landed) / P.HUNK_SWEEP)
     k = len(shown)
     sweeps = [(ln, vb.ease_in_out_quart(vb.clamp01(p * k - j)), settle(t - landed - P.HUNK_SWEEP))
               for j, ln in enumerate(shown)]
+    if before.wash is not None and before.path == after.path and before.patch == after.patch:
+        # the hunk before, in this file, hands over: its wash fades as the view moves on
+        fade = SETTLED * (1 - vb.clamp01(t / max(landed, 1e-6)))
+        taken = set(shown)
+        sweeps = [(ln, 1.0, fade) for ln in swept_lines(tour, st, before.wash) if ln not in taken and fade > 0] + sweeps
     f = shot.get('focus')
-    where = _pane(tour, cv, st, after, top=top, sweeps=sweeps, blink=max(0.0, t - landed), morphs=segs,
+    where = _pane(tour, cv, st, after, top=top, wash=False, sweeps=sweeps, blink=max(0.0, t - landed), morphs=segs,
                   morph_p=morph_progress(shot, t), focus=(f[0] - 1, f[1] - 1) if f else None,
                   focus_amount=focus_amount(shot, t, landed), motion=motion)
     for k, c in enumerate(shot.get('callouts') or ()):

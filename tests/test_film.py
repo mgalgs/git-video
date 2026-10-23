@@ -210,6 +210,42 @@ class TestFilm(unittest.TestCase):
         self.assertLess(marks['card.counters'].bottom, marks['lower-third'].y)
         self.assertLess(marks['lower-third'].y - marks['card.counters'].bottom, 0.12 * cv.height)
 
+    def washed(self, tour, n, fmt):
+        """The lines' highlighter strokes drawn on frame n: [(y, alpha, progress)]."""
+        strokes = []
+        real = editor.highlighter_swipe
+
+        def record(cv, x, y, w, h, p, **kw):
+            strokes.append((y, kw.get('alpha', 1.0), p))
+            return real(cv, x, y, w, h, p, **kw)
+
+        with mock.patch.object(editor, 'highlighter_swipe', record):
+            tour.film.frame(n, fmt)
+        return strokes
+
+    def test_wash_stays_through_travels_and_returns(self):
+        # a pure addition (swept), a dive and M-, back, then a travel on
+        ch = collect.collect(fixtures.make_edge_repo(self.tmp.name + '/wash'), 'HEAD')
+        p = plan.plan(ch)
+        tour = film.Tour(p, ch, log=io.StringIO())
+        shots, fps = p.shots, p.fps
+        starts = tour.shot_frames
+        travel = next(i for i, s in enumerate(shots) if s['kind'] == 'travel')
+        pop = next(i for i, s in enumerate(shots) if s['kind'] == 'xref-pop')
+        push = pop - 1
+        settled = editor.Theme().sweep_alpha * film.SETTLED
+        for fmt in ('16x9', '9x16', '1x1'):
+            frames = [starts[travel] - 2, starts[travel] - 1, starts[travel], starts[travel] + 1,   # leaving on a travel
+                      starts[travel] + round(plan.TRAVEL_SHRINK * fps * 0.5),
+                      starts[push], starts[push] + 1, starts[push] + round(plan.XREF_CLICK * fps),   # off on M-.
+                      starts[pop] + round(plan.POP_SWITCH * fps) + 1,   # back on M-,
+                      starts[pop] + round((plan.POP_SWITCH + plan.POP_REVEAL) * fps),
+                      starts[pop + 1] - 1]
+            for n in frames:
+                strokes = self.washed(tour, n, fmt)
+                self.assertTrue(strokes, (fmt, n, tour.at(n)))
+                self.assertTrue(any(abs(a - settled) < 1e-6 and p >= 1 for _, a, p in strokes), (fmt, n, strokes))
+
     def test_card_text(self):
         c = film.card_text(self.plan)
         self.assertEqual((c['kicker'], c['title'], c['name']), ('REPO', 'Use the library from an app', 'Test Person'))
