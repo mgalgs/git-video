@@ -11,6 +11,7 @@ the minimaps among them).
 """
 import bisect
 import math
+import os
 import re
 from dataclasses import dataclass, replace
 
@@ -201,8 +202,13 @@ class Tour:
             for f in formats:
                 self.map_layout(stage(vb.film.as_format(f), font).main)
         self.timings = {i: P.open_timing(s['path']) for i, s in enumerate(self.shots) if s['kind'] == 'open'}
+        self.voice = plan.voice   # with --voice: the phrases, each with its clip (voice.place)
+        self.narrations = [vb.speech.load(os.path.join(self.voice['dir'], p['audio']))
+                           for p in self.voice['phrases']] if self.voice else []
+        said = tuple(n.sound(at=round(p['start'] * self.fps), fps=self.fps)
+                     for n, p in zip(self.narrations, self.voice['phrases'] if self.voice else ()))
         self.film = vb.Film(self.draw, fps=self.fps, frames=self.frames, formats=formats, background=THEME.bg,
-                            sounds=sounds.sounds_for(self.shots, self.shot_frames, self.fps, log=log),
+                            sounds=sounds.sounds_for(self.shots, self.shot_frames, self.fps, log=log) + said,
                             keyframes=self.keyframes())
 
     def patch_info(self, k):

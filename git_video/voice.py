@@ -14,12 +14,23 @@ path or a flag is said (`spoken`) goes to videobuilder's `say` as its
 `lexicon`, so `draw_card` is heard as "draw card" and captioned as itself.
 Trailers, URLs, hashes, symbols and code are never read out.
 """
+import hashlib
+import json
+import math
 import os
 import re
+import wave
 from dataclasses import dataclass
 
-from . import callouts as callouts_mod, plan as planmod, xref
+from videobuilder import speech
 
+from . import callouts as callouts_mod, edits, plan as planmod, xref
+
+SPEED = 1.0         # Kokoro's speaking rate (part of the cache key)
+GAP = 0.35          # seconds between two phrases said over one shot (say's own gap)
+BREATH = 0.5        # after a shot's last phrase, before the shot may end
+DUCK_DB = -10.0     # the sound effects dip this far under the voice ...
+TYPING_UNDER_VOICE = -6.0   # ... and typing this much more
 MAX_WORDS = 20      # a phrase is cut to this many words ...
 MIN_WORDS = 6       # ... at a clause boundary that leaves at least this many
 
@@ -467,3 +478,174 @@ def keys_of(s):
 def shot_index(shots):
     """{phrase key: the index of the shot it is said over}."""
     return {key: i for i, s in enumerate(shots) for key in keys_of(s)}
+
+
+# ---- the voice: engine, cache, synthesis ----
+class VoiceError(RuntimeError):
+    """Narration is not possible: no speech extra, no model files, no such voice."""
+
+
+def make_engine():
+    """videobuilder's Kokoro engine; VoiceError with videobuilder's own
+    message about what to install when the speech extra is missing."""
+    try:
+        return speech.Kokoro()
+    except speech.SpeechUnavailable as e:
+        raise VoiceError(str(e)) from None
+
+
+def check_voice(engine, name):
+    """Stop before anything renders when the model files are missing or
+    `name` is not one of the engine's voices (the error lists them)."""
+    try:
+        names = engine.voices()
+    except speech.SpeechUnavailable as e:
+        raise VoiceError(str(e)) from None
+    model = getattr(engine, 'model_path', '')
+    if model is None or (model and not os.path.isfile(model)):
+        raise VoiceError(f'Kokoro model files not found. {speech.INSTALL_HINT}')
+    if name not in names:
+        raise VoiceError(f'no Kokoro voice {name!r}; the voices are: {", ".join(names)}')
+
+
+def cache_root():
+    """$XDG_CACHE_HOME/git-video/voice (~/.cache by default): never in the repo filmed."""
+    base = os.environ.get('XDG_CACHE_HOME') or os.path.join(os.path.expanduser('~'), '.cache')
+    return os.path.join(base, 'git-video', 'voice')
+
+
+def script_dir(phrases, lexicon, voice, speed=SPEED):
+    """The cache directory of a script said in `voice` at `speed`: a hash of
+    what is said and how, so a second render of the same change finds it."""
+    key = json.dumps({'phrases': [p.text for p in phrases], 'lexicon': lexicon, 'voice': voice, 'speed': speed},
+                     sort_keys=True, ensure_ascii=False)
+    return os.path.join(cache_root(), hashlib.sha256(key.encode()).hexdigest()[:16])
+
+
+BED = 'bed.wav'
+
+
+def _write_bed(path):
+    """Half a second of silence: the music bed videobuilder ducks the effects
+    with (it only dips them under speech when the film has music)."""
+    if os.path.isfile(path):
+        return
+    tmp = f'{path}.{os.getpid()}.tmp'
+    with wave.open(tmp, 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(speech.RATE)
+        w.writeframes(bytes(2 * speech.RATE // 2))
+    os.replace(tmp, path)
+
+
+def clip_name(k):
+    return f'{k:03d}.wav'
+
+
+def synth(phrases, lexicon, voice, engine, out_dir):
+    """Say each phrase into `out_dir`/NNN.wav (and its .vtt/.json) with
+    videobuilder's `say`, which writes nothing (and runs no model) for a
+    phrase whose files already match. Returns each phrase's length in s."""
+    os.makedirs(out_dir, exist_ok=True)
+    seconds = []
+    try:
+        for k, p in enumerate(phrases):
+            doc = speech.say(p.text, os.path.join(out_dir, clip_name(k)), engine, voice=voice, speed=SPEED,
+                             lexicon=lexicon)
+            seconds.append(doc['seconds'])
+    except speech.SpeechUnavailable as e:
+        raise VoiceError(str(e)) from None
+    _write_bed(os.path.join(out_dir, BED))
+    return seconds
+
+
+# ---- the voice on the film's clock ----
+class Timed:
+    """The script with each phrase's length: `fit(key, anchor)` lays out the
+    phrases said over one shot (or edit-shot hunk). Each starts at its
+    anchor (seconds into the shot; a list gives one per slot) or GAP after
+    the one before, whichever is later. Returns ([(start, end)], need): need
+    is when the shot may end, BREATH after its last phrase (0 for none)."""
+
+    def __init__(self, phrases, seconds):
+        self.by_key = {}
+        for p, sec in zip(phrases, seconds):
+            self.by_key.setdefault(p.key, []).append((p.slot, sec))
+
+    def __contains__(self, key):
+        return key in self.by_key
+
+    def fit(self, key, anchor=0.0):
+        spans, end = [], None
+        for slot, sec in self.by_key.get(key, ()):
+            a = anchor[min(slot, len(anchor) - 1)] if isinstance(anchor, (list, tuple)) else anchor
+            start = a if end is None else max(a, end + GAP)
+            end = start + sec
+            spans.append((start, end))
+        return spans, (end + BREATH if spans else 0.0)
+
+
+def read_start(s):
+    """When a tour hunk shot's read begins: after its scroll and its morph."""
+    return planmod.scroll_time(s) + (planmod.MORPH_HOLD + planmod.MORPH_DUR if s.get('morph') else 0)
+
+
+def anchors(s):
+    """{phrase key: anchor} for shot `s`: where in it each of its phrases may
+    start (`Timed.fit`). The planner stretches a shot from these and `place`
+    puts the phrases there, so the two agree."""
+    kind = s['kind']
+    if kind == 'title':
+        return {('title',): planmod.VOICE_TITLE_AT}
+    if kind == 'end':
+        return {('end',): planmod.VOICE_END_AT}
+    if kind == 'patch':
+        return {planmod.shot_key(s): planmod.VOICE_PATCH_AT}
+    if kind in ('dive', 'travel', 'open'):
+        return {planmod.shot_key(s): 0.0}
+    if kind == 'hunk':
+        return {planmod.shot_key(s): [c['at'] for c in s.get('callouts') or ()] or read_start(s)}
+    if kind == 'xref-push':
+        return {planmod.shot_key(s): planmod.XREF_CLICK}
+    if kind == 'edit':
+        first = {}
+        for st in s['steps']:
+            first.setdefault(st['hunk'], st['at'])
+        return {('edit', s.get('patch', 0), s['path'], hi): edits.shot_time(at, s['clock'])
+                for hi, at in first.items()}
+    return {}
+
+
+def place(plan, phrases, seconds, voice, out_dir, lexicon):
+    """The plan's `voice`: each phrase on the film's clock, starting on the
+    first frame at or after its place in its shot (as the sound effects do),
+    with the clip that says it."""
+    starts, _ = planmod.frame_starts(plan.shots, plan.fps)
+    timed = Timed(phrases, seconds)
+    where = {}
+    for i, s in enumerate(plan.shots):
+        for key, anchor in anchors(s).items():
+            if key in timed:
+                where[key] = (i, iter(timed.fit(key, anchor)[0]))
+    out = []
+    for k, (p, sec) in enumerate(zip(phrases, seconds)):
+        i, spans = where[p.key]
+        rel, _ = next(spans)
+        frame = starts[i] + math.ceil(rel * plan.fps - 1e-9)
+        out.append({'text': p.text, 'shot': i, 'start': round(frame / plan.fps, 3),
+                    'end': round(frame / plan.fps + sec, 3), 'audio': clip_name(k)})
+    return {'voice': voice, 'speed': SPEED, 'dir': out_dir, 'lexicon': lexicon, 'bed': BED, 'phrases': out}
+
+
+def narrate(change, patches, verbose, mode, engine, name):
+    """The plan of `change` narrated in voice `name`: the script written from
+    the plan, said (or found in the cache), and placed on its shots."""
+    first = planmod.build(change, verbose, mode, patches)
+    phrases = script(first, patches)
+    lexicon = lexicon_for(phrases)
+    out_dir = script_dir(phrases, lexicon, name)
+    seconds = synth(phrases, lexicon, name, engine, out_dir)
+    final = first
+    final.voice = place(final, phrases, seconds, name, out_dir, lexicon)
+    return final

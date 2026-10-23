@@ -469,3 +469,31 @@ def make_voice_repo(tmp):
           + '\n\ndef draw_card(cv):\n    width = 3\n    return width\n')
     head = commit(repo, 'Add draw_card and rework frob\n\n' + VOICE_BODY)
     return repo, {'root': root, 'head': head}
+
+
+class FakeEngine:
+    """A stand-in for videobuilder's Kokoro engine, for `vb.speech.say`: the
+    phonemes are the text, and each phrase comes out as a tone about as long
+    as the real voice would take to say it. `calls` counts syntheses; with
+    `fail_after`, every synthesis after that many raises (a killed run)."""
+    model_id = 'fake'
+
+    def __init__(self, fail_after=None):
+        self.calls = 0
+        self.fail_after = fail_after
+
+    def voices(self):
+        return ['af_heart', 'bf_isabella']
+
+    def phonemize(self, text, lang):
+        return text
+
+    def synth(self, phonemes, voice, speed, lang):
+        import array
+        import math
+        from videobuilder import speech
+        if self.fail_after is not None and self.calls >= self.fail_after:
+            raise RuntimeError('killed')
+        self.calls += 1
+        n = int(speech.RATE * max(0.4, 0.045 * len(phonemes)) / speed)
+        return array.array('h', (int(8000 * math.sin(2 * math.pi * 440 * k / speech.RATE)) for k in range(n)))

@@ -38,6 +38,9 @@ TITLE_BAR_OUT = 0.45      # ... and out, this long before the card ends
 TITLE_AVATARS = 1.5       # co-authors spread out beside it
 END_DUR = 3.0
 END_REVEAL = 1.2          # the closing card's panels fade up one after another over this long
+VOICE_TITLE_AT = 0.6      # with --voice: when the title card's phrases may start ...
+VOICE_END_AT = 0.6        # ... the closing card's
+VOICE_PATCH_AT = 0.5      # ... and a --series card's
 
 # Shot timings, shared by the film (what is seen) and the sounds (what is heard).
 PER_CHAR = 0.055          # mean seconds per typed character

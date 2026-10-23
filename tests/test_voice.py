@@ -1,12 +1,26 @@
 import json
 import os
+import subprocess
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
+
+import videobuilder as vb
+from videobuilder import speech
 
 from git_video import cli, collect, plan, voice
 from tests import fixtures
 from tests.test_cli import ROOT, quiet
+
+
+def have_model():
+    """Whether the real Kokoro voice can run here: the speech extra and both model files."""
+    try:
+        e = speech.Kokoro()
+    except speech.SpeechUnavailable:
+        return False
+    return bool(e.model_path and e.voices_path and e.model_path.is_file() and e.voices_path.is_file())
 
 
 def texts(phrases, kind=None):
@@ -141,6 +155,108 @@ class TestScript(unittest.TestCase):
         self.assertEqual(voice.size_sentence(3, 198), 'Three files, about two hundred lines.')
 
 
+class TestSynth(unittest.TestCase):
+    """The voice said into the cache, with a fake engine."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cache = os.path.join(self.tmp.name, 'cache')
+        self.env = mock.patch.dict(os.environ, {'XDG_CACHE_HOME': self.cache})
+        self.env.start()
+        self.repo, self.sha = fixtures.make_callout_repo(self.tmp.name)
+        self.change = collect.collect(self.repo, self.sha['head'])
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def narrate(self, engine, mode='tour'):
+        return voice.narrate(self.change, [self.change], 0, mode, engine, 'bf_isabella')
+
+    def test_cache(self):
+        e = fixtures.FakeEngine()
+        a = self.narrate(e)
+        n = len(a.voice['phrases'])
+        self.assertEqual(e.calls, n)
+        self.assertTrue(a.voice['dir'].startswith(os.path.join(self.cache, 'git-video', 'voice') + os.sep))
+        e2 = fixtures.FakeEngine()
+        b = self.narrate(e2)
+        self.assertEqual(e2.calls, 0)   # the second render runs no model
+        self.assertEqual(a, b)
+        os.remove(os.path.join(a.voice['dir'], '001.wav'))   # a run killed mid-way
+        e3 = fixtures.FakeEngine()
+        self.assertEqual(self.narrate(e3), a)
+        self.assertEqual(e3.calls, 1)
+        self.assertEqual(fixtures.git(self.repo, 'status', '--porcelain', '--ignored'), '')
+        other = voice.narrate(self.change, [self.change], 0, 'tour', fixtures.FakeEngine(), 'af_heart')
+        self.assertNotEqual(other.voice['dir'], a.voice['dir'])
+
+    def test_interrupted(self):
+        phrases = voice.script(plan.build(self.change), [self.change])
+        lex = voice.lexicon_for(phrases)
+        d = voice.script_dir(phrases, lex, 'bf_isabella')
+        with self.assertRaises(RuntimeError):
+            voice.synth(phrases, lex, 'bf_isabella', fixtures.FakeEngine(fail_after=2), d)
+        names = sorted(os.listdir(d))
+        self.assertEqual(names, ['000.json', '000.vtt', '000.wav', '001.json', '001.vtt', '001.wav'])
+        e = fixtures.FakeEngine()
+        voice.synth(phrases, lex, 'bf_isabella', e, d)
+        self.assertEqual(e.calls, len(phrases) - 2)
+        self.assertFalse([x for x in os.listdir(d) if x.endswith('.tmp')])
+
+    def test_caption_keeps_the_spelling(self):
+        phrases = [voice.Phrase('A new function, draw_card, in film.py.', ('title',))]
+        lex = voice.lexicon_for(phrases)
+        d = os.path.join(self.tmp.name, 'one')
+        voice.synth(phrases, lex, 'bf_isabella', fixtures.FakeEngine(), d)
+        narr = vb.speech.load(os.path.join(d, '000.wav'))
+        self.assertEqual(narr.phrases[0].text, 'A new function, draw_card, in film.py.')
+        self.assertIn('draw_card', narr.track.text)
+        with open(os.path.join(d, '000.json')) as fh:
+            self.assertEqual(json.load(fh)['inputs']['lexicon'], {'draw_card': 'draw card', 'film.py': 'film dot pie'})
+
+    def test_film_plays_each_phrase(self):
+        import io
+        from git_video import film
+        p = self.narrate(fixtures.FakeEngine())
+        with mock.patch.dict(os.environ, {vb.sfx.ENV: os.path.join(self.tmp.name, 'no-sfx')}):
+            tour = film.Tour(p, self.change, log=io.StringIO())
+        said = [x for x in tour.film.sounds if x.path.startswith(p.voice['dir'])]
+        self.assertEqual([x.at for x in said], [round(q['start'] * p.fps) for q in p.voice['phrases']])
+        self.assertTrue(all(x.ducks for x in said))
+
+    def test_bed_is_silent(self):
+        import wave
+        p = self.narrate(fixtures.FakeEngine())
+        with wave.open(os.path.join(p.voice['dir'], p.voice['bed'])) as w:
+            self.assertGreater(w.getnframes(), 0)
+            self.assertEqual(set(w.readframes(w.getnframes())), {0})
+
+    def test_plan_json_voice(self):
+        with mock.patch('git_video.voice.make_engine', return_value=fixtures.FakeEngine()):
+            code, out, err = quiet(cli.main, ['-C', self.repo, '--voice', '--plan-json', self.sha['head']])
+        self.assertEqual(code, 0, err)
+        doc = json.loads(out)
+        v = doc['voice']
+        self.assertEqual((v['voice'], v['speed']), ('bf_isabella', voice.SPEED))
+        self.assertIn('lexicon', v)
+        for p in v['phrases']:
+            self.assertEqual(set(p), {'text', 'shot', 'start', 'end', 'audio'})
+            self.assertLess(p['start'], p['end'])
+            self.assertTrue(os.path.isfile(os.path.join(v['dir'], p['audio'])))
+        self.assertEqual(doc['shots'][v['phrases'][0]['shot']]['kind'], 'title')
+
+    @unittest.skipUnless(have_model(), 'no Kokoro model files (set VIDEOBUILDER_KOKORO_DIR)')
+    def test_real_model(self):
+        engine = voice.make_engine()
+        voice.check_voice(engine, 'bf_isabella')
+        phrases = [voice.Phrase('A new function, draw_card.', ('title',))]
+        d = os.path.join(self.tmp.name, 'real')
+        secs = voice.synth(phrases, voice.lexicon_for(phrases), 'bf_isabella', engine, d)
+        self.assertTrue(0.8 <= secs[0] <= 4, secs)
+        self.assertIn('draw_card', vb.speech.load(os.path.join(d, '000.wav')).track.text)
+
+
 class TestVoiceFlag(unittest.TestCase):
     def test_parse(self):
         self.assertEqual(cli.parse(['--voice']).voice, 'bf_isabella')
@@ -149,12 +265,40 @@ class TestVoiceFlag(unittest.TestCase):
         self.assertEqual((a.mode, a.voice, a.rev), ('develop', 'bf_isabella', 'HEAD'))
         self.assertIsNone(cli.parse([]).voice)
 
-    def test_plan_json(self):
-        with tempfile.TemporaryDirectory() as tmp:
+    def test_without_voice_no_engine(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch('git_video.voice.make_engine', side_effect=AssertionError('no engine without --voice')):
             repo, sha = fixtures.make_callout_repo(tmp)
             code, out, err = quiet(cli.main, ['-C', repo, '--plan-json', sha['head']])
             self.assertEqual(code, 0, err)
             self.assertNotIn('voice', json.loads(out))
+
+    def test_missing_extra_or_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, sha = fixtures.make_callout_repo(tmp)
+            out = os.path.join(tmp, 'out.mp4')
+
+            class NoModel(fixtures.FakeEngine):
+                def voices(self):
+                    raise speech.SpeechUnavailable(f'Kokoro model files not found. {speech.INSTALL_HINT}')
+
+            for make in (mock.Mock(side_effect=speech.SpeechUnavailable(speech.INSTALL_HINT)),
+                         mock.Mock(return_value=NoModel())):
+                with mock.patch.object(speech, 'Kokoro', make), \
+                        mock.patch.dict(os.environ, {'XDG_CACHE_HOME': os.path.join(tmp, 'cache')}):
+                    code, _, err = quiet(cli.main, ['-C', repo, '--voice', sha['head'], '-o', out])
+                self.assertEqual(code, 2)
+                self.assertIn("pip install 'videobuilder[speech]'", err)
+                self.assertTrue(err.startswith('git video: '))
+                self.assertFalse(os.path.exists(out))
+                self.assertFalse(os.path.exists(os.path.join(tmp, 'cache')))
+
+    def test_unknown_voice(self):
+        with mock.patch('git_video.voice.make_engine', return_value=fixtures.FakeEngine()):
+            code, _, err = quiet(cli.main, ['--voice=nope', 'HEAD'])
+        self.assertEqual(code, 2)
+        for name in ('nope', 'af_heart', 'bf_isabella'):
+            self.assertIn(name, err)
 
     def test_extra_and_man_page(self):
         with open(os.path.join(ROOT, 'pyproject.toml'), 'rb') as fh:

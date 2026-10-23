@@ -36,11 +36,7 @@ class TestCli(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn('invalid choice', err)
 
-    def test_voice_not_rendered_yet(self):
-        for argv in (['--voice'], ['--voice=bf_isabella'], ['--mode', 'develop', '--voice']):
-            code, _, err = quiet(cli.main, argv)
-            self.assertNotEqual(code, 0, argv)
-            self.assertIn('not rendered yet', err, argv)
+    def test_develop_plan_json(self):
         import tempfile
         from tests import fixtures
         with tempfile.TemporaryDirectory() as tmp:

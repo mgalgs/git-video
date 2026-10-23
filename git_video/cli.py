@@ -116,9 +116,14 @@ def _fail(msg, code):
 
 def main(argv=None):
     args = parse(sys.argv[1:] if argv is None else argv)
-    if args.voice is not None and not args.plan_json:
-        return _fail('--voice is not rendered yet; --plan-json shows its script', 2)
     from . import collect, plan
+    if args.voice is not None:   # before any git work: no model, no render
+        from . import voice
+        try:
+            engine = voice.make_engine()
+            voice.check_voice(engine, args.voice)
+        except voice.VoiceError as e:
+            return _fail(str(e), 2)
     try:
         if args.series:
             change, patches = collect.series(repo_path(args.C), args.rev)
@@ -127,12 +132,13 @@ def main(argv=None):
             patches = [change]
     except collect.GitError as e:
         return _fail(str(e), 1)
-    tour = plan.build(change, args.verbose, args.mode, patches)
     if args.voice is not None:
-        from . import voice
-        shots = voice.shot_index(tour.shots)
-        tour.voice = {'voice': args.voice, 'phrases': [{'text': p.text, 'shot': shots[p.key]}
-                                                       for p in voice.script(tour, patches)]}
+        try:
+            tour = voice.narrate(change, patches, args.verbose, args.mode, engine, args.voice)
+        except voice.VoiceError as e:
+            return _fail(str(e), 2)
+    else:
+        tour = plan.build(change, args.verbose, args.mode, patches)
     if args.plan_json:
         print(tour.to_json())
         return 0
