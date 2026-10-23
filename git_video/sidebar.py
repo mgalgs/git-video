@@ -133,10 +133,20 @@ def _commit(cv, box, commit, F, style):
         else:   # a range: one row per commit
             lines = [_ellipsize(f'{c["short"]} {c["subject"]}', F['body'], box.w)
                      for c in commit.get('commits', [])] if len(commit.get('commits', [])) > 1 else []
-        if len(lines) > room:
-            lines = lines[:room]
-            lines[-1] = _ellipsize(lines[-1] + ' …', F['body'], box.w)
-        vbtext.draw(cv, lines, F['body'], box.x, y, style.fg)
+        vbtext.draw(cv, trim(lines, room, F['body'], box.w), F['body'], box.x, y, style.fg)
+
+
+def trim(lines, room, font, width):
+    """At most `room` lines; a cut ends on a line of text with an ellipsis, never
+    on the blank line between paragraphs."""
+    if len(lines) <= room:
+        return list(lines)
+    lines = list(lines[:room])
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines:
+        lines[-1] = _ellipsize(lines[-1] + ' \u2026', font, width)
+    return lines
 
 
 def _files(cv, box, files, current_path, rows, F, style):

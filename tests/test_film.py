@@ -103,6 +103,12 @@ class TestFilm(unittest.TestCase):
         end = self.tour.shot_frames[j] + round(self.plan.shots[j]['dur'] * self.plan.fps) - 1
         self.assertEqual(self.tour.state(end), ('src/app.py', ()))
 
+    def test_body_trim_never_ends_on_a_blank_line(self):
+        font = vb.Font('sans-serif', 21)
+        out = sidebar.trim(['one', 'two', '', 'three'], 3, font, 1000)
+        self.assertEqual(out, ['one', 'two \u2026'])
+        self.assertEqual(sidebar.trim(['a', 'b'], 3, font, 1000), ['a', 'b'])
+
     def test_sweep_settles_to_a_wash(self):
         self.assertEqual(film.settle(-1), 1.0)
         self.assertAlmostEqual(film.settle(5), film.SETTLED)
