@@ -106,7 +106,10 @@ A tour is built in four steps: collect the git facts, plan a list of shots,
 build a film from the plan, render it. The plan is plain JSON
 (`--plan-json` prints it): a list of shots, each with a `scene` (`card` or
 `editor` today), a `kind` (`title`, `open`, `hunk`, `xref-push`,
-`xref-pop`, `end`) and a duration. The planner is deterministic heuristics
+`xref-pop`, `end`) and a duration, beside plan-level facts: the `commit`
+(with its `coauthors` from `Co-Authored-By:` trailers), the `files`, the
+`repo` name, and `next`, the commit after the target on the current branch
+(or null). The planner is deterministic heuristics
 for now; the JSON is the shape a later pass (an LLM, say) can rewrite.
 
 ## Planned

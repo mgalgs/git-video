@@ -60,7 +60,7 @@ def make_repo(tmp):
     root:   src/lib.py defines frob() and Thing.
     change: src/app.py calls frob() in a new main(); src/lib.py changes line 2;
             tests/test_app.py calls main(); bin.dat is binary.
-    delete: bin.dat is deleted.
+    delete: bin.dat is deleted; two co-authors (one named twice).
     """
     repo = os.path.join(tmp, 'repo')
     init(repo)
@@ -72,7 +72,9 @@ def make_repo(tmp):
     write(repo, 'bin.dat', b'\x00\x01\x02binary\x00')
     change = commit(repo, 'Use the library from an app\n\nThe app doubles instead of incrementing.')
     os.remove(os.path.join(repo, 'bin.dat'))
-    delete = commit(repo, 'Drop the binary')
+    delete = commit(repo, 'Drop the binary\n\nCo-Authored-By: Ada Lovelace <ada@example.com>\n'
+                          'Co-Authored-By: Grace Hopper <grace@example.com>\n'
+                          'co-authored-by: Ada Lovelace <ada@example.org>')
     return repo, {'root': root, 'change': change, 'delete': delete}
 
 

@@ -193,6 +193,19 @@ class TestPlan(unittest.TestCase):
                 self.assertEqual(s['scene'], 'card' if s['kind'] in ('title', 'end') else 'editor')
         self.assertIn('"scene"', self.plans[0].to_json())
 
+    def test_range_coauthors_union(self):
+        p = plan.plan(collect.collect(self.repo, f'{self.sha["root"]}..HEAD'))
+        self.assertEqual(p.commit['coauthors'], ['Ada Lovelace', 'Grace Hopper'])
+        self.assertTrue(all(c['date'].startswith('2026-01-02') for c in p.commit['commits']))
+        self.assertEqual(self.plans[0].commit['coauthors'], [])
+
+    def test_next_in_plan_json(self):
+        for rev, want in (('change', 'Drop the binary'), ('delete', None)):
+            code, out, _ = quiet(cli.main, ['-C', self.repo, '--plan-json', self.sha[rev]])
+            doc = json.loads(out)
+            self.assertEqual(doc['next'] and doc['next']['subject'], want)
+            self.assertEqual(doc['repo'], 'repo')
+
     def test_range_title(self):
         ch = collect.collect(self.repo, f'{self.sha["root"]}..HEAD')
         p = plan.plan(ch)

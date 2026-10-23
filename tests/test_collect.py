@@ -1,3 +1,5 @@
+import os
+import subprocess
 import tempfile
 import unittest
 
@@ -86,6 +88,37 @@ class TestCollect(unittest.TestCase):
         self.assertTrue(collect.is_test('pkg/foo_test.go'))
         self.assertTrue(collect.is_test('web/a.spec.ts'))
         self.assertFalse(collect.is_test('src/contest.py'))
+
+    def test_ls_tree(self):
+        tree = collect.ls_tree(self.repo, self.sha['change'])
+        self.assertIn(('src/lib.py', len(fixtures.LIB_2)), tree)
+        self.assertIn(('bin.dat', 10), tree)
+        self.assertFalse([p for p, _ in tree if p.endswith('/')])
+        self.assertEqual(collect.collect(self.repo, self.sha['change']).tree, tree)
+
+    def test_coauthor_trailers(self):
+        (d,) = collect.commit_meta(self.repo, self.sha['change'], self.sha['delete'], False)
+        self.assertEqual(d.coauthors, ['Ada Lovelace', 'Grace Hopper'])
+        (c,) = collect.commit_meta(self.repo, self.sha['root'], self.sha['change'], False)
+        self.assertEqual(c.coauthors, [])
+        commits = collect.commit_meta(self.repo, self.sha['root'], self.sha['delete'], True)
+        self.assertEqual([c.coauthors for c in commits], [[], ['Ada Lovelace', 'Grace Hopper']])
+        self.assertEqual(collect.coauthor_names(['Solo', ' A B <a@b> ', 'A B']), ['Solo', 'A B'])
+
+    def test_next_commit(self):
+        self.assertEqual(collect.next_commit(self.repo, self.sha['change']).short,
+                         collect.short(self.repo, self.sha['delete']))
+        self.assertIsNone(collect.next_commit(self.repo, self.sha['delete']))
+        # off the current branch's line: no next
+        side = os.path.join(self.tmp.name, 'side')
+        subprocess.run(['git', 'clone', '-q', self.repo, side], check=True, capture_output=True)
+        fixtures.git(side, 'config', 'user.name', 'Test Person')
+        fixtures.git(side, 'config', 'user.email', 'test@example.com')
+        fixtures.git(side, 'checkout', '-q', '-b', 'side', self.sha['root'])
+        fixtures.write(side, 'other.txt', 'x\n')
+        fixtures.commit(side, 'Go another way')
+        self.assertIsNone(collect.next_commit(side, self.sha['change']))
+        self.assertIsNotNone(collect.next_commit(side, self.sha['root']))
 
     def test_parse_hunks_pure_deletion(self):
         patch = '@@ -3,2 +2,0 @@\n-a\n-b\n'

@@ -40,6 +40,7 @@ class Commit:
     body: str
     author: str
     date: str            # ISO 8601, the author date
+    coauthors: list = field(default_factory=list)   # names from Co-Authored-By: trailers, in order
 
 
 @dataclass
@@ -53,6 +54,8 @@ class Change:
     files: list
     added: int
     deleted: int
+    tree: list = field(default_factory=list)   # [(path, size)] of every blob at the target
+    next: 'Commit | None' = None               # the commit after the target on HEAD's line, if any
     _texts: dict = field(default_factory=dict, repr=False)
 
     def text(self, path):
@@ -122,11 +125,33 @@ def resolve(repo, spec):
     return base, target, short(repo, target), False
 
 
+_TRAILERS = '%(trailers:key=Co-Authored-By,valueonly,separator=%x1e)'
+_RANGE_FORMAT = f'%H%x1f%h%x1f%an%x1f%aI%x1f%s%x1f{_TRAILERS}'
+_EMAIL = re.compile(r'^(.*?)\s*<[^>]*>\s*$')
+
+
+def coauthor_names(values):
+    """Names from Co-Authored-By: values (`Name <email>`), email stripped, order
+    kept, each name once."""
+    out = []
+    for v in values:
+        m = _EMAIL.match(v.strip())
+        name = (m.group(1) if m else v).strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
 def _one(repo, rev):
     """The Commit of one rev, with its body."""
-    out = git(repo, 'log', '-1', '--format=%H%n%h%n%an%n%aI%n%s%n%b', rev)
-    sha, sh, author, date, subject, *body = out.split('\n')
-    return Commit(sha, sh, subject, '\n'.join(body).strip(), author, date)
+    out = git(repo, 'log', '-1', f'--format=%H%n%h%n%an%n%aI%n%s%n{_TRAILERS}%n%b', rev)
+    sha, sh, author, date, subject, trailers, *body = out.split('\n')
+    return Commit(sha, sh, subject, '\n'.join(body).strip(), author, date, coauthor_names(trailers.split('\x1e')))
+
+
+def _ranged(rec):
+    sha, sh, author, date, subject, trailers = rec.strip('\n').split('\x1f')
+    return Commit(sha, sh, subject, '', author, date, coauthor_names(trailers.split('\x1e')))
 
 
 def commit_meta(repo, base, target, is_range):
@@ -134,16 +159,19 @@ def commit_meta(repo, base, target, is_range):
     a range's commits carry their subjects only."""
     if not is_range:
         return [_one(repo, target)]
-    out = git(repo, 'log', '--reverse', '-z', '--format=%H%x1f%h%x1f%an%x1f%aI%x1f%s', f'{base}..{target}')
-    commits = []
-    for rec in filter(None, out.split('\0')):
-        sha, sh, author, date, subject = rec.strip('\n').split('\x1f')
-        commits.append(Commit(sha, sh, subject, '', author, date))
+    out = git(repo, 'log', '--reverse', '-z', f'--format={_RANGE_FORMAT}', f'{base}..{target}')
+    commits = [_ranged(rec) for rec in filter(None, out.split('\0'))]
     if not commits:   # B is not ahead of A: still describe B
-        out = git(repo, 'log', '-1', '--format=%H%x1f%h%x1f%an%x1f%aI%x1f%s', target)
-        sha, sh, author, date, subject = out.strip('\n').split('\x1f')
-        commits.append(Commit(sha, sh, subject, '', author, date))
+        commits.append(_ranged(git(repo, 'log', '-1', f'--format={_RANGE_FORMAT}', target)))
     return commits
+
+
+def next_commit(repo, target):
+    """The commit right after `target` on the way to HEAD (its child on the
+    current branch), or None when `target` is HEAD or not an ancestor of it."""
+    out = git(repo, 'rev-list', '--topo-order', '--reverse', '--ancestry-path', f'{target}..HEAD', ok=(0, 128))
+    first = out.split('\n', 1)[0].strip()
+    return _one(repo, first) if first else None
 
 
 _DIFF = ('-M', '--no-color', '--no-ext-diff', '--no-textconv')
@@ -229,6 +257,18 @@ def blob_text(repo, rev, path):
     return r.stdout.decode('utf-8', 'replace')
 
 
+def ls_tree(repo, rev):
+    """[(path, size)] for every blob at `rev` (symlinks included; submodules,
+    which have no blob, left out)."""
+    out = []
+    for rec in filter(None, git(repo, 'ls-tree', '-r', '-l', '-z', rev).split('\0')):
+        meta, path = rec.split('\t', 1)
+        _, kind, _, size = meta.split(None, 3)
+        if kind == 'blob':
+            out.append((path, 0 if size.strip() == '-' else int(size)))
+    return out
+
+
 _TEST = re.compile(r'(^|/)(tests?|spec|__tests__)/|(^|/)test_[^/]*$|_test\.[^/]*$|\.(test|spec)\.[^/]*$')
 
 
@@ -257,4 +297,5 @@ def collect(repo, spec):
         files.append(FileChange(path, old, status, a, d, binary, parse_hunks(patch), text, lines))
     files = [f for f in files if not is_test(f.path)] + [f for f in files if is_test(f.path)]
     return Change(repo, base, target, label, is_range, commits, files,
-                  sum(f.added for f in files), sum(f.deleted for f in files))
+                  sum(f.added for f in files), sum(f.deleted for f in files),
+                  tree=ls_tree(repo, target), next=next_commit(repo, target))

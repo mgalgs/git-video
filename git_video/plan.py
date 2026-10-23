@@ -6,6 +6,7 @@ fields its kind needs. The planner here is deterministic heuristics; the JSON
 is the seam a later pass (an LLM, say) can rewrite before the film is built.
 """
 import json
+import os
 from dataclasses import asdict, dataclass, field
 
 from videobuilder.type.typewriter import schedule
@@ -87,6 +88,8 @@ class Plan:
     verbose: int
     shots: list = field(default_factory=list)
     total: float = 0.0
+    repo: str = ''            # the repository's directory name, for the title card's kicker
+    next: dict | None = None  # {'short', 'subject'} of the commit after the target on HEAD's line
 
     def to_json(self):
         return json.dumps(asdict(self), indent=2, sort_keys=True, ensure_ascii=False)
@@ -96,15 +99,24 @@ class Plan:
         return cls(**json.loads(text))
 
 
+def repo_name(path):
+    """The repository's directory name (a bare repository's without `.git`)."""
+    name = os.path.basename(os.path.normpath(path))
+    return name[:-4] if name.endswith('.git') and len(name) > 4 else name
+
+
 def _commit_info(change):
     last = change.commits[-1]
     info = {'subject': last.subject, 'body': last.body, 'short': last.short, 'author': last.author,
-            'date': last.date, 'commits': [{'short': c.short, 'subject': c.subject} for c in change.commits]}
+            'date': last.date, 'coauthors': list(last.coauthors),
+            'commits': [{'short': c.short, 'subject': c.subject, 'author': c.author, 'date': c.date}
+                        for c in change.commits]}
     if change.is_range:
         a, b = change.label.split('-', 1)
         n = len(change.commits)
         info['subject'] = f'{a}..{b}: {n} commit{"s" if n != 1 else ""}'
         info['body'] = ''
+        info['coauthors'] = list(dict.fromkeys(n for c in change.commits for n in c.coauthors))
     return info
 
 
@@ -196,5 +208,6 @@ def plan(change, verbose=0):
 
     files = [{'path': f.path, 'old_path': f.old_path, 'status': f.status, 'added': f.added,
               'deleted': f.deleted, 'binary': f.binary, 'lines': f.lines} for f in change.files]
+    nxt = {'short': change.next.short, 'subject': change.next.subject} if change.next else None
     return Plan(VERSION, FPS, change.base, change.target, change.label, change.is_range, _commit_info(change),
-                files, verbose, out, round(sum(s['dur'] for s in out), 3))
+                files, verbose, out, round(sum(s['dur'] for s in out), 3), repo=repo_name(change.repo), next=nxt)
