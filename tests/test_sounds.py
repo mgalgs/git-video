@@ -10,7 +10,7 @@ from git_video import collect, film, plan, sounds
 from tests import fixtures
 
 FULL = [('pro_typing_key/tick', 'key'), ('pro_click/mouse', 'click'), ('pro_hover_tick/soft', 'tick'),
-        ('whoosh_fast/tight', 'whoosh'), ('whoosh_soft/air', 'whoosh'), ('hover_tick/detent', 'tick')]
+        ('whoosh_fast/tight', 'whoosh'), ('whoosh_fast/sleeve', 'whoosh'), ('pro_hover_tick/detent', 'tick')]
 
 
 class TestSounds(unittest.TestCase):
@@ -57,10 +57,10 @@ class TestSounds(unittest.TestCase):
         self.assertEqual(by['pro_hover_tick/soft'], sum(s['kind'] == 'hunk' for s in shots))
         self.assertEqual(by['whoosh_fast/tight'], len(opens) + pushes + pops)
         moves = sum(s['kind'] in ('dive', 'travel') for s in shots)
-        self.assertEqual(by['whoosh_soft/air'], moves)
+        self.assertEqual(by['whoosh_fast/sleeve'], moves)
         self.assertGreater(moves, 0)
         (m,) = [s for s in shots if s['kind'] == 'map']
-        self.assertEqual(by['hover_tick/detent'], min(len(m['lit']), plan.MAP_MAX_TICKS))
+        self.assertEqual(by['pro_hover_tick/detent'], min(len(m['lit']), plan.MAP_MAX_TICKS))
 
     def test_role_fallback(self):
         with self.pack('clickonly', [('other/clicky', 'click')]):

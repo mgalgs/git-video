@@ -19,8 +19,8 @@ KEY = (('pro_typing_key/tick', 'typing_key/crisp'), ('key', 'typing'), -10.0, 'o
 CLICK = (('pro_click/mouse', 'click/soft'), ('click',), -6.0, 'onset')
 TICK = (('pro_hover_tick/soft', 'hover_tick/detent'), ('tick',), -18.0, 'onset')
 WHOOSH = (('whoosh_fast/tight',), ('whoosh',), -14.0, 'peak')
-WHOOSH_SOFT = (('whoosh_soft/air', 'whoosh_fast/tight'), ('whoosh',), -22.0, 'peak')
-TILE = (('hover_tick/detent', 'pro_hover_tick/soft'), ('tick',), -22.0, 'onset')
+WHOOSH_SOFT = (('whoosh_fast/sleeve', 'whoosh_fast/tight'), ('whoosh',), -22.0, 'peak')
+TILE = (('pro_hover_tick/detent', 'hover_tick/detent'), ('tick',), -22.0, 'onset')
 
 
 def pick(bank, ids, roles):
