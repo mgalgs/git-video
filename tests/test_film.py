@@ -1,3 +1,4 @@
+import contextlib
 import io
 import json
 import os
@@ -1130,3 +1131,69 @@ class TestVoiceFilm(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestPanelCallout(unittest.TestCase):
+    """9:16 and 1:1: with no free space in the pane, the callout goes to the panel under the code."""
+
+    @classmethod
+    def setUpClass(cls):
+        from git_video import voice
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.env = mock.patch.dict(os.environ, {vb.sfx.ENV: os.path.join(cls.tmp.name, 'no-sfx'),
+                                               'XDG_CACHE_HOME': os.path.join(cls.tmp.name, 'cache')})
+        cls.env.start()
+        repo, sha = fixtures.make_callout_repo(cls.tmp.name)
+        cls.change = collect.collect(repo, sha['head'])
+        cls.plans = {mode: voice.narrate(cls.change, [cls.change], 0, mode, fixtures.FakeEngine(), 'bf_isabella')
+                     for mode in ('tour', 'develop')}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.env.stop()
+        cls.tmp.cleanup()
+
+    def frames(self, mode, full=False):
+        """(fmt, frame, stage) mid-life of every callout, the pane made full of code unless `full` is False."""
+        with mock.patch.object(film, 'free_callout_box', return_value=None) if full else contextlib.nullcontext():
+            tour = film.Tour(self.plans[mode], self.change, log=io.StringIO())
+            for i, s in enumerate(tour.shots):
+                for c in s.get('callouts') or ():
+                    n = tour.shot_frames[i] + round((c['at'] + c['until']) / 2 * tour.fps)
+                    for fmt in ('9x16', '1x1'):
+                        cv = tour.film.frame(n, fmt)
+                        yield fmt, cv, film.stage(cv, voice=True)
+
+    def test_card_in_the_lower_panel_when_the_pane_is_full(self):
+        for mode in ('tour', 'develop'):
+            seen = set()
+            for fmt, cv, st in self.frames(mode, full=True):
+                marks = dict(cv.marks)
+                why = (mode, fmt)
+                self.assertEqual([m for m, _ in cv.marks].count('callout.card'), 1, why)
+                card = marks['callout.card']
+                seen.add(fmt)
+                self.assertTrue(st.side.contains(card), (*why, card, st.side))
+                self.assertGreaterEqual(card.y, st.caption.bottom, why)
+                for name in ('callout.point', 'callout.hunk', 'callout.target', 'editor.text'):
+                    if name in marks:
+                        self.assertFalse(card.intersects(marks[name]), (*why, name))
+                self.assertFalse(card.intersects(st.caption), why)
+                for m, b in cv.marks:
+                    if m == 'caption':
+                        self.assertFalse(card.intersects(b), why)
+                # anchored: the connector runs from the word in the pane to the card
+                self.assertIn('callout.line', marks, why)
+                line, target = marks['callout.line'], marks['callout.target']
+                self.assertLessEqual(line.y, target.bottom + 1, why)
+                self.assertGreaterEqual(line.bottom, card.y - 1, why)
+            self.assertEqual(seen, {'9x16', '1x1'}, mode)
+
+    def test_free_space_in_the_pane_still_comes_first(self):
+        for mode in ('tour', 'develop'):
+            for fmt, cv, st in self.frames(mode):
+                marks = dict(cv.marks)
+                card = marks.get('callout.card')
+                if card is None or not marks['editor.text'].contains(card):
+                    continue
+                self.assertFalse(card.intersects(marks['callout.point']), (mode, fmt))

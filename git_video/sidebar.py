@@ -214,6 +214,16 @@ def free_area(box, *, commit, files, xref_stack, ui='sans-serif', mono='monospac
     return vb.Box(c_box.x, y, c_box.w, c_box.bottom - y) if c_box.bottom - y > 0 else None
 
 
+def commit_box(box, *, commit, files, xref_stack, ui='sans-serif', mono='monospace', scale=1.0, graph=False,
+               beside=False, **_):
+    """(the commit section's box in the full side bar as `draw` lays it out,
+    the y its heading, subject and meta line end at)."""
+    F = _fonts(ui, mono, scale)
+    c_box = _sections(vb.Box(*box), files, xref_stack, F, scale, graph, beside)[0]
+    meta_y = _commit_layout(c_box, commit, F)[3]
+    return c_box, meta_y + vbtext.line_height(F['meta'])
+
+
 def _header(cv, box, label, F, style):
     vbtext.draw(cv, [label], F['head'], box.x, box.y, style.head)
     return box.y + vbtext.line_height(F['head']) + 8

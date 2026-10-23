@@ -151,7 +151,10 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
   matched to the hunks they name (functions, files, identifiers, flags) and
   shown as a caption card beside the code with a line to the words (in
   develop mode in free space at least three rows from the typing when there
-  is any, else the side bar's free area, else over code away from it). For a
+  is any, else the side bar's free area, else over code away from it; in
+  9:16 and 1:1, where the side bar is a panel under the code, a card with no
+  free space three rows from point, in either mode, sits over the commit
+  text in that panel instead, its line still running to the words). For a
   range, each hunk uses the message of the commit that last touched it
   (`git blame` within the range).
 - A call graph in the side bar (16:9 and 9:16): the definitions the change

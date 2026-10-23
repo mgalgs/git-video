@@ -1240,12 +1240,10 @@ def focus_amount(shot, t, landed):
     return _ease(t - landed, 0, P.FOCUS_IN) * (1 - _ease(t - (shot['dur'] - P.FOCUS_OUT), 0, P.FOCUS_OUT))
 
 
-def _hunk(tour, cv, st, shot, t, i, before, after):
-    """Scroll to the hunk; morph its replaced and removed lines from old to new;
-    sweep a highlighter over the lines that are only added."""
-    buf = tour.buffer(after)
-    lay = _layout(st, buf)
-    rows = lay.rows
+def _hunk_top(tour, st, shot, t, before, after):
+    """A hunk shot's view at `t`: (its top line, when it lands, the scroll's
+    motion or None)."""
+    lay = _layout(st, tour.buffer(after))
     a = _fitted(tour, st, before) if before.path == after.path else 0.0
     b = _fitted(tour, st, after)
     landed = P.scroll_time(shot) if abs(a - b) > 1e-6 else 0.0   # already there: sweep at once
@@ -1256,6 +1254,13 @@ def _hunk(tour, cv, st, shot, t, i, before, after):
             motion = scroll_motion(a, b, t, landed, lay.line_h)
     else:
         top = vb.interpolate(t, [0, landed], [a, b], vb.ease_in_out_quart) if landed else b
+    return top, landed, motion
+
+
+def _hunk(tour, cv, st, shot, t, i, before, after):
+    """Scroll to the hunk; morph its replaced and removed lines from old to new;
+    sweep a highlighter over the lines that are only added."""
+    top, landed, motion = _hunk_top(tour, st, shot, t, before, after)
     segs = tour.segments.get(i, ())
     shown = swept_lines(tour, st, i)
     p = vb.clamp01((t - landed) / P.HUNK_SWEEP)
@@ -1288,12 +1293,12 @@ def callout_fonts(st):
             vb.Font(UI, size, line_height=1.32))
 
 
-def callout_lines(text, font, width):
-    """The card's text: wrapped to `width`, at most CALLOUT_LINES lines, a cut
+def callout_lines(text, font, width, most=CALLOUT_LINES):
+    """The card's text: wrapped to `width`, at most `most` lines, a cut
     ending with an ellipsis between two words."""
     lines = list(vbtext.wrap(text, font, width))
-    if len(lines) > CALLOUT_LINES:
-        lines = lines[:CALLOUT_LINES - 1] + [sidebar.ellipsize_words(' '.join(lines[CALLOUT_LINES - 1:]), font, width)]
+    if len(lines) > most:
+        lines = lines[:most - 1] + [sidebar.ellipsize_words(' '.join(lines[most - 1:]), font, width)]
     return lines
 
 
@@ -1354,12 +1359,12 @@ def _clear_of(y, h, points, rows):
     return all(y >= p.bottom + rows - 1e-6 or y + h <= p.y - rows + 1e-6 for p in points)
 
 
-def free_callout_box(area, ends, points, target, w, h, lh, gap, clear=CALLOUT_CLEAR):
-    """Develop: the card's box in free space, or None: right-aligned over rows
+def free_callout_box(area, ends, points, target, w, h, lh, gap, clear=CALLOUT_CLEAR, avoid=()):
+    """The card's box in free space, or None: right-aligned over rows
     whose text (`ends`, see `row_ends`) stops short of it, blank rows or the
     empty right part of short lines, at least `clear` rows from every box in
-    `points` (point's row through the callout's life); of those, the nearest
-    `target`."""
+    `points` (point's row through the callout's life) and off every box in
+    `avoid`; of those, the nearest `target`."""
     x = area.right - w - gap
     m = math.ceil((h + gap) / lh)
     best = None
@@ -1367,7 +1372,7 @@ def free_callout_box(area, ends, points, target, w, h, lh, gap, clear=CALLOUT_CL
         if any(e > x - gap for e in ends[k:k + m]):
             continue
         y = area.y + k * lh + (m * lh - h) / 2
-        if not _clear_of(y, h, points, clear * lh):
+        if not _clear_of(y, h, points, clear * lh) or any(vb.Box(x, y, w, h).intersects(b) for b in avoid):
             continue
         d = abs(y + h / 2 - target.cy)
         if best is None or d < best[0]:
@@ -1419,7 +1424,8 @@ def develop_callout_places(tour, st, i, k):
     stays within CALLOUT_CLEAR rows, decided for the whole stretch so the
     card never jumps under the typing. In each: ('free', box) in free space
     at least CALLOUT_CLEAR rows from point; else ('side', box) in the side
-    bar's free area; else ('over', box) over code outside the hunk, as far
+    bar's free area; else, in 9:16 and 1:1, ('panel', box) over the commit
+    text in the panel under the code; else ('over', box) over code outside the hunk, as far
     from point as fits (over the hunk too when it fills the screen); else
     ('frame', None): placed frame by frame, as the view scrolls under it."""
     key = (i, k, tuple(st.main), st.mono.size)
@@ -1430,7 +1436,7 @@ def develop_callout_places(tour, st, i, k):
     lay = editor.layout(st.main, st.mono, digits=tour.edit_texts[i][2], minimap=True)
     area = _text_area(lay)
     w = callout_width(area)
-    _, h = _card_text(tour, st, (i, k), c, w)
+    _, h, _ = _card_text(tour, st, (i, k), c, w)
     gap, lh = lay.line_h * 0.5, lay.line_h
     samples = []
     for j in range(CALLOUT_SAMPLES + 1):
@@ -1466,27 +1472,110 @@ def develop_callout_places(tour, st, i, k):
 def _callout_place(tour, st, i, k, c, area, w, h, lh, gap, samples):
     ends = [max(col) for col in zip(*(sm[5] for sm in samples))]
     points = [sm[2] for sm in samples]
-    wide, _ = _card_text(tour, st, (i, k), c, w)
+    wide, _, _ = _card_text(tour, st, (i, k), c, w)
     for fw in (w, w * 0.8, w * 0.68):   # a narrower card fits more free space, if it cuts no more of the text
-        lines, fh = _card_text(tour, st, (i, k), c, fw)
+        lines, fh, _ = _card_text(tour, st, (i, k), c, fw)
         if fw < w and ' '.join(lines) != ' '.join(wide):
             break
         card = free_callout_box(area, ends, points, samples[0][4], fw, fh, lh, gap)
         if card is not None:
             return 'free', card
-    if st.side is not None and not st.compact:
-        info = tour.patch_info(tour.shots[i].get('patch', 0))
-        free = sidebar.free_area(st.side, commit=info['commit'], files=info['files'], xref_stack=(), ui=UI,
-                                 mono=tour.font, scale=st.scale, graph=bool(tour.graph_nodes),
-                                 beside=st.side.w > st.side.h)
-        if free is not None and free.w >= 280:
-            sw = min(CALLOUT_W, free.w)
-            _, sh = _card_text(tour, st, (i, k), c, sw)
-            if sh <= free.h:
-                return 'side', vb.Box(free.x, free.y, sw, sh)
+    side = side_callout_box(tour, st, i, (i, k), c)
+    if side is not None:
+        return 'side', side
+    if panel_below(st):
+        return 'panel', panel_callout_box(tour, st, i, (i, k), c)
     card = (far_callout_box(area, [sm[3] for sm in samples], points, w, h, lh, gap)
             or far_callout_box(area, [], points, w, h, lh, gap))   # the hunk fills the screen
     return ('over', card) if card is not None else ('frame', None)
+
+
+def side_callout_box(tour, st, i, key, c):
+    """The card in the full side bar's free area (under a short commit
+    message), or None."""
+    if st.side is None or st.compact:
+        return None
+    info = tour.patch_info(tour.shots[i].get('patch', 0))
+    free = sidebar.free_area(st.side, commit=info['commit'], files=info['files'], xref_stack=(), ui=UI,
+                             mono=tour.font, scale=st.scale, graph=bool(tour.graph_nodes),
+                             beside=st.side.w > st.side.h)
+    if free is None or free.w < 280:
+        return None
+    sw = min(CALLOUT_W, free.w)
+    _, sh, _ = _card_text(tour, st, key, c, sw)
+    return vb.Box(free.x, free.y, sw, sh) if sh <= free.h else None
+
+
+def panel_below(st):
+    """Whether the side bar is a panel under the code (9:16 and 1:1)."""
+    return st.side is not None and st.side.y >= st.main.bottom
+
+
+def panel_callout_box(tour, st, i, key, c):
+    """9:16 and 1:1: the card in the panel under the code, over the commit's
+    text (the commit section in 9:16, the whole strip in 1:1), its text cut
+    to the room there. Outside the pane, it is clear of point and the hunk,
+    and the caption band lies above the panel."""
+    if st.compact:
+        region = st.side.pad(4)
+        w = region.w
+    else:
+        info = tour.patch_info(tour.shots[i].get('patch', 0))
+        region, head = sidebar.commit_box(st.side, commit=info['commit'], files=info['files'], xref_stack=(), ui=UI,
+                                          mono=tour.font, scale=st.scale, graph=bool(tour.graph_nodes),
+                                          beside=st.side.w > st.side.h)
+        inset = 26 * st.scale - 12   # from the bar's edge: over the heading as well as the text
+        region = vb.Box(region.x - inset, region.y - inset, region.w + 2 * inset, region.h + inset)
+        w = min(CALLOUT_W, region.w)
+    _, h, _ = _card_text(tour, st, key, c, w, room=region.h)
+    if not st.compact:   # down past the meta line, so no line of the commit shows half covered
+        h = min(region.h, max(h, head + 10 - region.y))
+    return vb.Box(region.x, region.y, w, h)
+
+
+TOUR_CALLOUT_SAMPLES = 8   # the moments of a tour callout's life its free space is checked at
+
+
+def tour_callout_place(tour, st, i, k):
+    """9:16 and 1:1, hunk shot i's callout k, for its whole life: ('free', box)
+    in the pane's free space, off the hunk and the words it points at and at
+    least CALLOUT_CLEAR rows from point; else ('side', box) in the side
+    bar's free area; else ('panel', box) over the commit text in the panel
+    under the code."""
+    key = ('tour', i, k, tuple(st.main), st.mono.size)
+    if key in tour.callout_places:
+        return tour.callout_places[key]
+    shot, (before, after) = tour.shots[i], tour.views[i]
+    c = shot['callouts'][k]
+    buf = tour.buffer(after)
+    lay = _layout(st, buf)
+    area = _text_area(lay)
+    w = callout_width(area)
+    _, h, _ = _card_text(tour, st, (i, k), c, w)
+    f0, f1 = shot['focus']
+    segs = sorted(tour.segments.get(i, ()), key=lambda s: s.line)
+    ends, points, avoid = None, [], []
+    for j in range(TOUR_CALLOUT_SAMPLES + 1):
+        t = c['at'] + (c['until'] - c['at']) * j / TOUR_CALLOUT_SAMPLES
+        top, _, _ = _hunk_top(tour, st, shot, t, before, after)
+        p = vb.clamp01(morph_progress(shot, t))
+        geo = editor.Geometry(lay, buf.lines, top, segs if p < 1 else [], p)
+        e = row_ends(geo, area)
+        ends = e if ends is None else [max(a, b) for a, b in zip(ends, e)]
+
+        def rows(a, b):
+            y0 = geo.y(a)
+            return vb.Box(area.x, y0, area.w, geo.y(b) + geo.height(b) - y0)
+        points.append(rows(after.cursor[0], after.cursor[0]))
+        avoid += [rows(f0 - 1, max(f0, f1) - 1), rows(c['line'] - 1, c['line'] - 1)]
+    card = free_callout_box(area, ends, points, avoid[-1], w, h, lay.line_h, lay.line_h * 0.5, avoid=avoid)
+    if card is not None:
+        place = ('free', card)
+    else:
+        side = side_callout_box(tour, st, i, (i, k), c)
+        place = ('side', side) if side is not None else ('panel', panel_callout_box(tour, st, i, (i, k), c))
+    tour.callout_places[key] = place
+    return place
 
 
 def develop_callout_at(tour, st, i, k, t):
@@ -1527,43 +1616,69 @@ def _callout(tour, cv, st, where, shot, i, k, c, t):
         gy = where.line_box(c['line'] - 1).y
         target = vb.Box(lay.text_box.x, gy - 2, lay.cell_w * 6, 4)
     point = where.line_box(tour.views[i][1].cursor[0])
-    _callout_card(tour, cv, st, where, (i, k), c, t, target, band, point, outline=bool(c['len']))
+    card = room = None
+    if panel_below(st):   # 9:16 and 1:1: free space in the pane, else the panel under it
+        kind, card = tour_callout_place(tour, st, i, k)
+        room = card.h if kind == 'panel' else None
+    args = (tour, cv, st, where, (i, k), c, t, target, band, point)
+    if card is not None and kind != 'free':   # drawn once the side bar is, which it sits on
+        tour.late.append(lambda cv: _callout_card(*args, outline=bool(c['len']), card=card, room=room))
+    else:
+        _callout_card(*args, outline=bool(c['len']), card=card)
 
 
 def callout_width(area):
     return min(CALLOUT_W, area.w * 0.62)
 
 
-def _card_text(tour, st, key, c, w):
-    """The card's wrapped lines at width `w`, and the card's height."""
+PANEL_PAD = 10   # a callout card's padding where a low panel would leave it one line
+
+
+def _card_text(tour, st, key, c, w, room=None):
+    """(wrapped lines, height, padding) of the card at width `w`; with `room`,
+    its most height: fewer lines, then a tighter padding, to fit it."""
     kicker_f, font = callout_fonts(st)
+    lh = vbtext.line_height(font)
+
+    def fixed(pad):
+        return 2 * pad + vbtext.line_height(kicker_f) + 6
+
+    def made(pad, most):
+        ck = (*key, round(w), pad, most)
+        if ck not in tour.callout_text:
+            tour.callout_text[ck] = callout_lines(c['text'], font, w - 2 * pad - 6, most)
+        lines = tour.callout_text[ck]
+        return lines, fixed(pad) + len(lines) * lh, pad
     pad = 16 if st.compact else 18
-    key = (*key, round(w))
-    if key not in tour.callout_text:
-        tour.callout_text[key] = callout_lines(c['text'], font, w - 2 * pad - 6)
-    lines = tour.callout_text[key]
-    return lines, 2 * pad + vbtext.line_height(kicker_f) + 6 + len(lines) * vbtext.line_height(font)
+    out = made(pad, CALLOUT_LINES)
+    if room is None or out[1] <= room + 1e-6:
+        return out
+    most = int((room - fixed(pad) + 1e-6) // lh)
+    if most < 2:
+        pad = PANEL_PAD
+        most = int((room - fixed(pad) + 1e-6) // lh)
+    return made(pad, max(1, min(CALLOUT_LINES, most)))
 
 
-def _callout_card(tour, cv, st, where, key, c, t, target, band, point, outline=True, card=None, draw=True):
+def _callout_card(tour, cv, st, where, key, c, t, target, band, point, outline=True, card=None, draw=True,
+                  room=None):
     """One commit sentence as a caption card beside the code, clear of `band`
     (the current hunk's rows) and the `point` row (see `callout_box`), or in
     `card` when given, a line drawn from it to `target`
     (callout_line_with_label's leader, called as is, with the label drawn as
     our card); fading in, then out before `until`. `key` names the callout
-    for the wrapped-text cache. Returns the card's box (only that, without
-    `draw`)."""
+    for the wrapped-text cache; `room`: the most height its text may take
+    (`_card_text`). Returns the card's box (only that, without `draw`)."""
     lay = where.layout
     area = _text_area(lay)
     kicker_f, font = callout_fonts(st)
     band = _union(band, vb.Box(area.x, target.y, area.w, target.h))   # the words it points at stay clear too
-    pad = 16 if st.compact else 18
     if card is None:
         w = callout_width(area)
-        lines, h = _card_text(tour, st, key, c, w)
+        lines, h, pad = _card_text(tour, st, key, c, w)
         card = callout_box(area, band, point, w, h, lay.line_h * 0.5)
     else:
-        lines, _ = _card_text(tour, st, key, c, card.w)
+        lines, _, pad = _card_text(tour, st, key, c, card.w, room=room)
     if not draw:
         return card
     e = vb.ease_out_quint(vb.clamp01((t - c['at']) / 0.3))
@@ -1583,7 +1698,7 @@ def _callout_card(tour, cv, st, where, key, c, t, target, band, point, outline=T
                      shelf=0, gap=0)
         cv.marks[n0:] = [(f'callout.{name}', b) for name, b in cv.marks[n0:] if name != 'label']
         with cv.layer(opacity=e, dy=10 * (1 - e)):
-            cv.rect(*card, CALLOUT_BG, radius=10, alpha=0.96)
+            cv.rect(*card, CALLOUT_BG, radius=10, alpha=0.96 if room is None else 1.0)   # opaque over the panel's text
             cv.outline(card.x + 0.5, card.y + 0.5, card.w - 1, card.h - 1, '#3f444a', width=1, radius=10)
             cv.rect(card.x, card.y + 10, 4, card.h - 20, THEME.cursor, radius=2)
             x, y = card.x + pad + 6, card.y + pad
@@ -1865,9 +1980,11 @@ def _edit(tour, cv, st, shot, t, i, before, after):
             kind, box = develop_callout_at(tour, st, i, k, t)
             if box is None:
                 box = _callout_card(*args, outline=False, draw=False)
-            card = box if kind != 'side' else None
+            card = box if kind not in ('side', 'panel') else None
+            room = box.h if kind in ('panel', 'moving') else None
             # drawn once the side bar is, which it may sit on
-            tour.late.append(lambda cv, args=args, box=box: _callout_card(*args, outline=False, card=box))
+            tour.late.append(lambda cv, args=args, box=box, room=room: _callout_card(*args, outline=False, card=box,
+                                                                                   room=room))
     _speed_badge(cv, st, where, shot, t, avoid=card)
 
 
