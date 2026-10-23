@@ -128,7 +128,10 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
   crawling, the text leaning with the speed.
 - Xref without a language server: identifiers on the added lines are looked
   up with `git grep` against per-language definition patterns (Python,
-  JavaScript/TypeScript, Go, Rust, C-like languages, shell, Lisps).
+  JavaScript/TypeScript, Go, Rust, C-like languages, shell, Lisps). A name
+  goes to the definition in the same class or file, else in a module the
+  file imports it from, else the only one in the repository; still
+  ambiguous, the tour does not dive.
   `--verbose` sets how many definitions get visited.
 - The xref is a dive: the pointer swells into a disc on the word, the click
   ripples, the definition opens out of the clicked word in a growing

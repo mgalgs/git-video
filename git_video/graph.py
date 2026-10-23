@@ -136,8 +136,9 @@ def build(change, shots):
             continue
         ch = changes[_patch(changes, s)]
         index = xref.index(ch.repo, ch.target, lang)
-        for c in xref.candidates(ch.text(s['path']), s['path'], _changed(h)):
-            d = xref.resolve(c, index, s['path'])
+        text = ch.text(s['path'])
+        for c in xref.candidates(text, s['path'], _changed(h)):
+            d = xref.resolve(c, index, s['path'], text)
             b = by_def.get((d.path, d.line)) if d else None
             if b and b != a and (a, b) not in seen:
                 seen.add((a, b))
@@ -197,7 +198,7 @@ def build_develop(change, shots, written):
         index = xref.index(ch.repo, ch.target, lang)
         for c in xref.candidates(text, s['path'], sorted(j + 1 for j in done)):
             e = holders[c.line - 1] if 0 < c.line <= len(holders) else None
-            d = xref.resolve(c, index, s['path']) if c.is_call else None
+            d = xref.resolve(c, index, s['path'], text) if c.is_call else None
             if not e or d is None:
                 continue
             a = f'{s["path"]}:{e[0]}'

@@ -246,7 +246,89 @@ class TestPlan(unittest.TestCase):
         from git_video import xref
         defs = {'handle': [xref.Definition('a.js', 1, 'function'), xref.Definition('b.js', 1, 'function')]}
         self.assertIsNone(xref.resolve(xref.Candidate(1, 16, 'handle', True), defs, 'b.js'))
-        self.assertEqual(xref.resolve(xref.Candidate(3, 4, 'handle', True), defs, 'b.js').path, 'a.js')
+        # a call in b.js means b.js's own handle (the same file comes first)
+        self.assertEqual(xref.resolve(xref.Candidate(3, 4, 'handle', True), defs, 'b.js').path, 'b.js')
+        self.assertEqual(xref.resolve(xref.Candidate(3, 4, 'handle', True), defs, 'c.js'), None)
+
+    def xref_defs(self):
+        from git_video import xref
+        D = xref.Definition
+        return {'draw': [D('pkg/editor.py', 10, 'def'), D('pkg/graph.py', 5, 'def'), D('pkg/sidebar.py', 3, 'def', 4),
+                         D('pkg/sidebar.py', 20, 'def', 4)],
+                'Bar': [D('pkg/sidebar.py', 1, 'class'), ], 'Strip': [D('pkg/sidebar.py', 18, 'class')],
+                'layout': [D('pkg/editor.py', 30, 'def'), D('pkg/repomap.py', 40, 'def')],
+                'frobnicate': [D('pkg/util.py', 2, 'def')]}
+
+    def test_xref_rung_a_same_class_then_same_file(self):
+        from git_video import xref
+        text = ('class Bar:\n'                     # 1
+                '\n'
+                '    def draw(self):\n'            # 3: Bar.draw
+                '        return 1\n'
+                '\n'
+                '    def show(self):\n'
+                '        self.draw()\n' +          # 7
+                '\n' * 10 +
+                'class Strip:\n'                   # 18
+                '\n'
+                '    def draw(self):\n'            # 20: Strip.draw
+                '        self.draw()\n')           # 21
+        defs = self.xref_defs()
+        C = xref.Candidate
+        self.assertEqual(xref.resolve(C(7, 13, 'draw', True), defs, 'pkg/sidebar.py', text).line, 3)
+        self.assertEqual(xref.resolve(C(21, 13, 'draw', True), defs, 'pkg/sidebar.py', text).line, 20)
+        # the same file, one definition: a bare call means it
+        one = {'draw': [xref.Definition('pkg/editor.py', 10, 'def'), xref.Definition('pkg/sidebar.py', 1, 'def')]}
+        text = 'def draw():\n    pass\n\n\ndraw()\n'
+        self.assertEqual(xref.resolve(C(5, 0, 'draw', True), one, 'pkg/sidebar.py', text).path, 'pkg/sidebar.py')
+
+    def test_xref_rung_b_imported_module(self):
+        from git_video import xref
+        defs, C = self.xref_defs(), xref.Candidate
+        for text, col in (('from .graph import draw\n\ndraw(1)\n', 0),
+                          ('from . import graph\n\ngraph.draw(1)\n', 6),
+                          ('import pkg.graph as g\n\ng.draw(1)\n', 2)):
+            d = xref.resolve(C(3, col, 'draw', True), defs, 'pkg/main.py', text)
+            self.assertEqual((d.path, d.line), ('pkg/graph.py', 5), text)
+        # `editor.draw` in a file that defines its own draw: the module's, not the file's
+        text = 'from . import editor\n\n\n\neditor.draw(1)\n'
+        d = xref.resolve(C(5, 7, 'draw', True), defs, 'pkg/sidebar.py', text)
+        self.assertEqual((d.path, d.line), ('pkg/editor.py', 10))
+        text = "import { layout } from './repomap';\nlayout(1);\n"
+        js = {'layout': [xref.Definition('web/repomap.js', 4, 'function'), xref.Definition('web/editor.js', 9, 'function')]}
+        self.assertEqual(xref.resolve(C(2, 0, 'layout', True), js, 'web/app.js', text).path, 'web/repomap.js')
+
+    def test_xref_rung_c_unique_anywhere(self):
+        from git_video import xref
+        defs, C = self.xref_defs(), xref.Candidate
+        d = xref.resolve(C(2, 4, 'frobnicate', True), defs, 'pkg/main.py', 'import os\n    frobnicate(2)\n')
+        self.assertEqual(d.path, 'pkg/util.py')
+        d = xref.resolve(C(2, 7, 'frobnicate', True), defs, 'pkg/main.py', 'import os\nthing.frobnicate(2)\n')
+        self.assertEqual(d.path, 'pkg/util.py')
+
+    def test_xref_ambiguous_does_not_dive(self):
+        from git_video import xref
+        defs, C = self.xref_defs(), xref.Candidate
+        # two `layout`s, neither in this file nor imported: no dive
+        self.assertIsNone(xref.resolve(C(2, 0, 'layout', True), defs, 'pkg/main.py', 'import os\nlayout(1)\n'))
+        # `x.draw` with an x nobody imported: not this file's draw, not a guess among four
+        self.assertIsNone(xref.resolve(C(2, 2, 'draw', True), defs, 'pkg/sidebar.py', 'import os\nx.draw()\n'))
+        # an import line names the module's own definition, never another of that name
+        self.assertIsNone(xref.resolve(C(1, 14, 'layout', False), defs, 'pkg/x.py', 'from . import layout as L\n'))
+        d = xref.resolve(C(1, 21, 'layout', False), defs, 'pkg/x.py', 'from .repomap import layout\n')
+        self.assertEqual(d.path, 'pkg/repomap.py')
+        # a nested function elsewhere in the file, out of the call's reach
+        nested = {'helper': [xref.Definition('pkg/x.py', 2, 'def', 8, owner='def')]}
+        text = 'def outer():\n    def helper():\n        pass\n\n\nhelper()\n'
+        self.assertIsNone(xref.resolve(C(6, 0, 'helper', True), nested, 'pkg/x.py', text))
+        text = 'def outer():\n    def helper():\n        pass\n    helper()\n'
+        self.assertEqual(xref.resolve(C(4, 4, 'helper', True), nested, 'pkg/x.py', text).line, 2)
+        # `s.replace(...)` is str's, not the one method named replace in the repo
+        meth = {'replace': [xref.Definition('t.py', 9, 'def', 8, owner='class')]}
+        self.assertIsNone(xref.resolve(C(1, 2, 'replace', True), meth, 'a.py', 's.replace(1)\n'))
+        # a bare `draw` in a file with two methods of that name and no module-level one
+        text = 'class Bar:\n    pass\n\ndraw()\n'
+        self.assertIsNone(xref.resolve(C(4, 0, 'draw', True), defs, 'pkg/sidebar.py', text))
 
     def test_xref_only_from_columns_every_format_shows(self):
         repo = self.tmp.name + '/cols'

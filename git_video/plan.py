@@ -236,7 +236,7 @@ def _hunk_candidates(change, f, top, visible):
     for c in xref.candidates(f.text, f.path, visible):
         if c.col + len(c.name) > PLAN_COLS:
             continue
-        d = xref.resolve(c, defs, f.path)
+        d = xref.resolve(c, defs, f.path, f.text)
         if d is not None and change.text(d.path) is not None:
             out.append((xref.rank_key(c, d, f.path), c, d))
     out.sort(key=lambda r: r[0])   # stable: equal keys keep their order of appearance
@@ -484,7 +484,7 @@ def order_files(change):
             continue
         index = xref.index(change.repo, change.target, lang)
         for c in xref.candidates(g.text, g.path, sorted(added[g.path])):
-            d = xref.resolve(c, index, g.path)
+            d = xref.resolve(c, index, g.path, g.text)
             if d is not None and d.path != g.path and d.line in written.get(d.path, ()):
                 after[d.path].add(g.path)
     need = {f.path: 0 for f in src}

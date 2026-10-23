@@ -5,7 +5,7 @@ their definitions are found with `git grep` at the target revision against a
 small table of per-language definition patterns, one grep per language.
 """
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from pygments.token import Name, Text
 
@@ -57,7 +57,6 @@ FUNCTION_KINDS = frozenset('def class function func fn struct enum trait type in
 SKIP = (Name.Function, Name.Class, Name.Builtin, Name.Namespace, Name.Decorator, Name.Attribute, Name.Tag, Name.Label, Name.Exception)
 # Lisp names are hyphenated (`compute-total`); shell names may be too.
 WORD = re.compile(r'[A-Za-z_][\w-]*\w|[A-Za-z_]\w*')
-AMBIGUOUS = 5     # a name defined more often than this is skipped (main, setUp, ...)
 MIN_LEN = 3
 
 
@@ -67,6 +66,7 @@ class Definition:
     line: int
     kind: str
     col: int = 0     # 0-based column of the name, tabs expanded
+    owner: str | None = None   # `class` for a method, a function kind for a nested function; None: top level
 
 
 @dataclass(frozen=True)
@@ -94,7 +94,7 @@ def index(repo, target, lang):
     out = collect.git(repo, 'grep', '-z', '-n', '-I', '-E', '--no-color', '-e', ere, target, '--', *specs,
                       ok=(0, 1))
     pats = [re.compile(p) for p in pys]
-    defs = {}
+    defs, indents = {}, {}
     prefix = f'{target}:'
     rows = out.split('\n')
     for row in rows:
@@ -109,9 +109,34 @@ def index(repo, target, lang):
                 kind = m.groupdict().get('kind') or 'function'
                 col = len(text[:m.start('name')].expandtabs(highlight.TAB))
                 defs.setdefault(m.group('name'), []).append(Definition(path, int(line), kind, col))
+                indents.setdefault(path, {})[int(line)] = _indent(text.expandtabs(highlight.TAB))
                 break
+    defs = _owned(defs, indents)
     _indexes[key] = defs
     return defs
+
+
+CLASS_KINDS = frozenset('class struct interface enum union trait'.split())
+
+
+def _owned(defs, indents):
+    """`defs` with each Definition's `owner` set: the kind of the nearest
+    definition above it in its file indented less (`class` for a method,
+    a function's kind for a nested function), None at top level."""
+    by_path = {}
+    for name, ds in defs.items():
+        for d in ds:
+            by_path.setdefault(d.path, []).append((d.line, name, d))
+    owner = {}
+    for path, rows in by_path.items():
+        stack = []   # (indent, kind)
+        for line, name, d in sorted(rows, key=lambda r: r[0]):
+            ind = indents.get(path, {}).get(line, 0)
+            while stack and stack[-1][0] >= ind:
+                stack.pop()
+            owner[path, line] = ('class' if stack[-1][1] in CLASS_KINDS else stack[-1][1]) if stack else None
+            stack.append((ind, d.kind))
+    return {name: [replace(d, owner=owner.get((d.path, d.line))) for d in ds] for name, ds in defs.items()}
 
 
 def candidates(text, path, lines):
@@ -133,16 +158,189 @@ def candidates(text, path, lines):
     return out
 
 
-def resolve(cand, defs, use_path):
-    """The definition `cand` most likely means, or None: never one on the very
-    line being looked at (a name defined there is not a use at all), preferring another file, then a function or class."""
+QUALIFIED = re.compile(r'([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\.\s*$')
+SELF = frozenset(('self', 'cls', 'this'))
+# `x.replace(...)` on a str, list, dict or set: the one `def replace` in the repo is not what it means.
+BUILTIN_METHODS = frozenset(n for t in (str, bytes, list, dict, set) for n in dir(t) if not n.startswith('_'))
+
+
+def resolve(cand, defs, use_path, text=None):
+    """The definition `cand` means, or None. Never one on the very line being
+    looked at (a name defined there is not a use at all). Otherwise the first
+    rung that names exactly one definition:
+
+    (a) one in the same class as the call, else in the same file: for a bare
+        `draw()` or `self.draw()`, never `x.draw()` with any other `x`;
+    (b) one in a module the calling file imports by name (`from x import
+        draw`, or `x.draw()` where `x` is an imported module);
+    (c) the only definition of the name anywhere.
+
+    A rung that finds two stops there: no dive. A missing dive is fine; a
+    wrong one is not. `text` is the calling file's text (without it, (a)
+    goes by file alone and (b) is skipped)."""
     every = defs.get(cand.name, ())
-    if any(d.path == use_path and d.line == cand.line for d in every):
+    if not every or any(d.path == use_path and d.line == cand.line for d in every):
         return None   # the name is being defined here (`function handle(`), not used
-    found = list(every)
-    if not found or len(every) > AMBIGUOUS:
+    lines = text.split('\n') if text is not None else None
+    qual = None
+    if lines is not None and 0 < cand.line <= len(lines):
+        m = QUALIFIED.search(lines[cand.line - 1].expandtabs(highlight.TAB)[:cand.col])
+        qual = m.group(1) if m else None
+    here = lines[cand.line - 1] if lines is not None and 0 < cand.line <= len(lines) else ''
+    if _PY_FROM.match(here) or _PY_IMPORT.match(here) or _JS_IMPORT.match(here):
+        # an import line names a module's own definition, or a module: (b) or nothing
+        hits = [d for d in every if imported(use_path, here)[0].get(cand.name, _Paths()).has(d.path)]
+        return hits[0] if len(hits) == 1 else None
+    # (a) the same class, else the same file
+    if qual is None or qual in SELF:
+        mine = [d for d in every if d.path == use_path]
+        python = lang_of(use_path) == 'Python'
+        if lines is not None and (len(mine) > 1 or qual in SELF or python):
+            classes = [(n, d) for n, ds in defs.items() for d in ds if d.path == use_path and d.kind == 'class']
+            holder = enclosures(lines, sorted(classes, key=lambda nd: nd[1].line))
+
+            def cls(line):
+                return holder[line - 1] if 0 < line <= len(holder) else None
+
+            home = cls(cand.line)
+            same = [d for d in mine if home is not None and cls(d.line) == home]
+            if qual in SELF:   # `self.draw`: a method of this class, nothing else
+                mine = same
+            elif python:   # a bare Python name is never a method: a function it can reach
+                mine = [d for d in mine if cls(d.line) is None and _reaches(lines, d, cand.line)]
+            elif same:   # Java, C++, ...: a bare name reaches its own class's method first
+                mine = same
+            else:
+                mine = [d for d in mine if cls(d.line) is None] or mine
+        if len(mine) == 1:
+            return mine[0]
+        if mine or qual in SELF:
+            return None
+    # (b) a module the file imports, by name or as the `x` of `x.name`
+    if text is not None:
+        names, modules = imported(use_path, text)
+        paths = names.get(cand.name) if qual is None else modules.get(qual)
+        if paths:
+            hits = [d for d in every if paths.has(d.path)]
+            if len(hits) == 1:
+                return hits[0]
+            if hits:
+                return None
+    # (c) the only one there is, and one the call can reach: a bare name a
+    # top-level definition, `x.name` a method (not a str or dict method's name)
+    if len(every) != 1:
         return None
-    return min(found, key=lambda d: (d.path == use_path, d.kind not in FUNCTION_KINDS, d.path, d.line))
+    d = every[0]
+    python = lang_of(use_path) == 'Python'
+    if qual is None:
+        return d if d.owner is None else None
+    if python:   # `x.name` in Python: a method, as top-level functions come through (b)
+        return d if d.owner == 'class' and cand.name not in BUILTIN_METHODS else None
+    return d if d.owner in (None, 'class') else None   # Go's `func (r *T) Read` is top level
+
+
+def _reaches(lines, d, line):
+    """Whether a call on `line` can see `d` by its bare name: `d` is top level,
+    or nested and the call sits after it in the same block (no line between
+    them, nor the call's, is indented less than `d`'s own)."""
+    if d.owner is None:
+        return True
+    if not 0 < d.line < line <= len(lines):
+        return False
+    ind = _indent(lines[d.line - 1].expandtabs(highlight.TAB))
+    return all(not s.strip() or _indent(s.expandtabs(highlight.TAB)) >= ind for s in lines[d.line:line])
+
+
+class _Paths(set):
+    """Paths a module can be; `*/x` also matches x under a source root (src/x)."""
+    def has(self, path):
+        return path in self or any(p.startswith('*/') and path.endswith(p[1:]) for p in self)
+
+
+def _module_paths(use_path, module, level=0, lang='Python'):
+    """The repo paths `module` (as an import statement names it) can be, from `use_path`."""
+    if lang == 'Python':
+        parts = [p for p in module.split('.') if p]
+        base = []
+        if level:
+            base = use_path.split('/')[:-1]
+            if level - 1 > len(base):
+                return set()
+            base = base[:len(base) - (level - 1)]
+        stem = '/'.join(base + parts)
+        if not stem:
+            return set()
+        out = {f'{stem}.py', f'{stem}.pyi', f'{stem}/__init__.py'}
+        return out if level else out | {f'*/{x}' for x in out}
+    if not module.startswith('.'):   # JS: only a relative specifier names a file here
+        return set()
+    parts = use_path.split('/')[:-1]
+    for seg in module.split('/'):
+        if seg == '..':
+            parts = parts[:-1]
+        elif seg not in ('.', ''):
+            parts.append(seg)
+    stem = '/'.join(parts)
+    exts = ('', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts')
+    return {stem + e for e in exts} | {f'{stem}/index{e}' for e in exts[1:]}
+
+
+_PY_FROM = re.compile(r'^\s*from\s+(\.*)([\w.]*)\s+import\s+\(?([^)#]*)')
+_PY_IMPORT = re.compile(r'^\s*import\s+([^#]+)')
+_JS_IMPORT = re.compile(r"""^\s*import\s+(.+?)\s+from\s+['"]([^'"]+)['"]""")
+_JS = frozenset(('JavaScript', 'TypeScript', 'TSX', 'JSX'))
+
+
+def imported(use_path, text):
+    """({name: _Paths}, {module alias: _Paths}) for the file at `use_path`:
+    where each name it imports by name is defined, and the modules it can
+    call into as `alias.name`. Python and JavaScript-like imports."""
+    lang = lang_of(use_path)
+    names, modules = {}, {}
+
+    def add(table, key, paths):
+        if paths:
+            table.setdefault(key, _Paths()).update(paths)
+
+    for line in text.split('\n'):
+        if lang == 'Python':
+            m = _PY_FROM.match(line)
+            if m:
+                level, mod = len(m.group(1)), m.group(2)
+                for part in m.group(3).split(','):
+                    bits = part.split()
+                    if not bits or not bits[0].isidentifier():
+                        continue
+                    name = bits[0]
+                    alias = bits[2] if len(bits) == 3 and bits[1] == 'as' else name
+                    if alias == name:   # `from x import draw`: draw is x's
+                        add(names, name, _module_paths(use_path, mod, level))
+                    # `from pkg import mod [as m]`: mod may be a module, used as `m.f`
+                    add(modules, alias, _module_paths(use_path, f'{mod}.{name}' if mod else name, level))
+                continue
+            m = _PY_IMPORT.match(line)
+            for part in (m.group(1).split(',') if m else ()):
+                bits = part.split()
+                if bits:
+                    alias = bits[2] if len(bits) == 3 and bits[1] == 'as' else bits[0]
+                    add(modules, alias, _module_paths(use_path, bits[0]))
+        elif lang in _JS:
+            m = _JS_IMPORT.match(line)
+            if not m:
+                continue
+            what, paths = m.group(1), _module_paths(use_path, m.group(2), lang=lang)
+            star = re.search(r'\*\s+as\s+([\w$]+)', what)
+            if star:
+                add(modules, star.group(1), paths)
+            braces = re.search(r'\{([^}]*)\}', what)
+            for part in (braces.group(1).split(',') if braces else ()):
+                bits = part.split()
+                if bits and bits[0] == bits[-1]:
+                    add(names, bits[0], paths)
+            default = re.match(r'([\w$]+)\s*(,|$)', what)
+            if default:
+                add(modules, default.group(1), paths)
+    return names, modules
 
 
 def rank_key(cand, d, use_path):
