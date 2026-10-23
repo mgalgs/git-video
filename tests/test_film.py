@@ -535,6 +535,17 @@ class TestFilm(unittest.TestCase):
             type(self)._develop = out
         return self._develop
 
+    def test_speedup_still_avoids_held_fill(self):
+        # a held fill in the middle of the plateau plays near natural speed:
+        # the still goes to the longest stretch at the peak
+        from git_video import edits
+        clk = {'times': [0.0, 1.0, 1.4, 3.0, 3.0001, 4.0, 4.0001, 9.0, 9.4, 10.0],
+               'speeds': [1, 1, 20, 20, 1.2, 1.2, 20, 20, 1, 1]}
+        span = {'times': [1.0, 1.4, 9.0, 9.4]}
+        t = film._peak_moment(span, clk)
+        self.assertAlmostEqual(t, 6.50005, places=3)
+        self.assertEqual(edits.speed_at(t, clk), 20)
+
     def test_develop_keyframes_all_formats(self):
         tours = self.develop_tours()
         labels = {name: [label for _, label in t.film.keyframes] for name, t in tours.items()}

@@ -114,6 +114,20 @@ def _first_col(runs):
     return len(s) - len(s.lstrip())
 
 
+def _peak_moment(span, clk):
+    """The middle of the longest stretch of a fast span's plateau that runs at
+    the peak (a held fill inside the plateau plays near natural speed, and the
+    badge is hidden there)."""
+    a, b = span['times'][1], span['times'][2]
+    pts = [(t, v) for t, v in zip(clk['times'], clk['speeds']) if a - 1e-6 <= t <= b + 1e-6]
+    top = max((v for _, v in pts), default=0.0)
+    best = None
+    for (t0, v0), (t1, v1) in zip(pts, pts[1:]):
+        if v0 >= top * 0.999 and v1 >= top * 0.999 and (best is None or t1 - t0 > best[1] - best[0]):
+            best = (t0, t1)
+    return sum(best) / 2 if best else (a + b) / 2
+
+
 class Tour:
     """A plan made into a film. `film` is the vb.Film; `shot_frames[i]` is the
     first frame of shot i (where a later narration track would hook in)."""
@@ -368,8 +382,7 @@ class Tour:
             out.append((at(kills[0]['at'] + kills[0]['cut'] - 0.08), f'kill {path}'))
         if fast and 'speedup' not in seen:
             seen['speedup'] = 1
-            f = s['fast'][0]
-            out.append((f0 + round((f['times'][1] + f['times'][2]) / 2 * self.fps), f'speedup {path}'))
+            out.append((f0 + round(_peak_moment(s['fast'][0], clk) * self.fps), f'speedup {path}'))
         fills = [st for st in s['steps'] if st['kind'] == 'fill']
         if fills and 'elision' not in seen:
             seen['elision'] = 1
