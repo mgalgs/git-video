@@ -61,10 +61,11 @@ Uses mgalgs/videobuilder
 
 `git video` turns a commit (or a range, as one combined diff) into an MP4
 that walks through the change the way a person would in their editor: it
-opens each changed file, scrolls to each hunk and sweeps a highlighter over
-the new lines, and now and then clicks an identifier and jumps to its
-definition (`M-.`) and back (`M-,`). A side bar keeps the commit message,
-the list of changed files and the xref stack in view.
+opens each changed file, scrolls to each hunk, shows what the hunk replaced
+morphing into what it says now, and now and then clicks an identifier and
+jumps to its definition (`M-.`) and back (`M-,`). The commit message's
+sentences appear beside the code they explain. A side bar keeps the commit
+message, the changed files, a call graph and the xref stack in view.
 
 The editor is not a recording of a real Emacs: it is drawn frame by frame
 with [videobuilder](https://github.com/mgalgs/videobuilder), so a render is
@@ -97,6 +98,27 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
   the map into the first file's tile, which grows into the editor, and
   between files pulls back out and travels to the next one.
 - Syntax highlighting with Pygments.
+- Animated diffs: a hunk that replaces lines opens on the old text, removed
+  words struck through, then morphs into the new: kept words glide to their
+  new place, removed words dissolve, added words decode in and stay
+  underlined. Removed lines with nothing in their place appear as faint
+  ghosts that dissolve and close up. Pure additions get a highlighter sweep,
+  and so do hunks taller than a screenful.
+- Focus: while a hunk is read the rest of the buffer dims (never fully), so
+  the eye lands on the change.
+- Commit-message callouts: the body's sentences (trailers stripped) are
+  matched to the hunks they name (functions, files, identifiers, flags) and
+  shown as a caption card beside the code with a line to the words. For a
+  range, each hunk uses the message of the commit that last touched it
+  (`git blame` within the range).
+- A call graph in the side bar (16:9 and 9:16): the definitions the change
+  touches and the ones the tour dives into, linked by the dives and by calls
+  on changed lines, growing as the tour finds them; each dive runs along its
+  edge, the node on screen is a solid hub and the xref stack is numbered.
+- A minimap at the editor's right edge: the whole file in miniature with
+  `+`/`−` ticks on changed lines and a box that slides with the view.
+- Long scrolls (more than two screens) speed up and slow down instead of
+  crawling, the text leaning and streaking with the speed.
 - Xref without a language server: identifiers on the added lines are looked
   up with `git grep` against per-language definition patterns (Python,
   JavaScript/TypeScript, Go, Rust, C-like languages, shell, Lisps).
@@ -112,9 +134,10 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
   into, and the next commit's subject when the target has one on the
   current branch.
 - Colour is never the only cue: added lines carry a `+` in the fringe,
-  removed lines a `−` marker between lines, the current file in the
-  side bar a `▶`, and a changed tile on the repo map an outline and its
-  `+a −d` label.
+  removed lines a `−` marker between lines, removed words a strike-through,
+  added words an underline, the current file in the side bar a `▶`, the
+  current call-graph node a solid, larger hub, and a changed tile on the
+  repo map an outline and its `+a −d` label.
 
 ## The plan seam
 
@@ -124,10 +147,19 @@ build a film from the plan, render it. The plan is plain JSON
 `editor` or `map`), a `kind` (`title`, `map`, `dive`, `travel`, `open`,
 `hunk`, `xref-push`, `xref-pop`, `end`) and a duration, beside plan-level
 facts: the repo `map` (its tiles, grouped by directory), the `commit`
-(with its `coauthors` from `Co-Authored-By:` trailers), the `files`, the
-`repo` name, and `next`, the commit after the target on the current branch
-(or null). The planner is deterministic heuristics
-for now; the JSON is the shape a later pass (an LLM, say) can rewrite.
+(with its `coauthors` from `Co-Authored-By:` trailers and, per commit, a
+trailer-free `body`), the `files` (each with its `marks`: added line ranges
+and where lines were removed), the `repo` name, `next`, the commit after the
+target on the current branch (or null), and the call `graph` (`nodes` and
+`edges`, each with the `first` shot that discovers it).
+
+A `hunk` shot carries `focus` (its changed line span), `scroll` (`near` or
+`far`), `morph` (null, or when it starts, how long it takes and its
+`segments`: the old lines, how many new lines replace them and word-level
+`ops`), `callouts` (the commit sentences shown, with their times and the
+words they point at) and `node` (its call-graph node). An `xref-push` shot
+carries its `node` and `edge`. The planner is deterministic heuristics for
+now; the JSON is the shape a later pass (an LLM, say) can rewrite.
 
 ## Planned
 
@@ -136,4 +168,4 @@ for now; the JSON is the shape a later pass (an LLM, say) can rewrite.
 - `--series`: each patch of a range on its own.
 - `--voice`: a narration explaining the intent behind the change, voiced
   with videobuilder's `say` (Kokoro voice `bf_isabella` by default).
-- More scenes beside the editor and the map: a call graph, explainer cards.
+- More scenes beside the editor and the map: explainer cards.
