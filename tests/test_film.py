@@ -141,8 +141,10 @@ class TestFilm(unittest.TestCase):
     def test_counter_rolls(self):
         self.assertEqual(film.counter_value(plan.TITLE_ROLL[0], 11), 0)
         self.assertEqual(film.counter_value(plan.TITLE_ROLL[1], 11), 11)
-        self.assertTrue(0 < film.counter_value(plan.TITLE_STILL, 11) < 11)
-        self.assertTrue(plan.TITLE_ROLL[0] < plan.TITLE_STILL < plan.TITLE_ROLL[1] < plan.TITLE_DUR)
+        (n,) = [n for n, label in self.tour.film.keyframes if label == 'title']
+        t = self.tour.at(n)[1]   # the title still's own time: counters mid-roll
+        self.assertTrue(0 < film.counter_value(t, 11) < 11)
+        self.assertTrue(plan.TITLE_ROLL[0] < t < plan.TITLE_ROLL[1] < plan.TITLE_DUR)
 
     def test_title_card_regions(self):
         delete = collect.collect(self.repo, self.sha['delete'])

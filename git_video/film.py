@@ -212,7 +212,7 @@ class Tour:
                 travels += 1
                 out.append((f0 + round(0.6 * s['dur'] * self.fps), f'travel {s["to"]}'))
             elif kind == 'title':
-                out.append((f0 + round(s['dur'] / 2 * self.fps), 'title'))
+                out.append((f0 + round(P.TITLE_STILL * self.fps), 'title'))
             elif kind == 'end':
                 out.append((f0 + round((s['dur'] - 0.6) * self.fps), 'end'))
             elif kind == 'open':
