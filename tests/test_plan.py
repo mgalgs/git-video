@@ -137,6 +137,24 @@ class TestPlan(unittest.TestCase):
         names = [c.name for c in xref.candidates(text, 't.py', [1, 2])]
         self.assertEqual(names, ['helper_call'])
 
+    def test_a_name_defined_on_its_line_is_not_a_use(self):
+        # JS/TS and Go definition sites lex as Name.Other: resolve() must not
+        # redirect `function handle(` on b.js:1 to a.js's handle.
+        from git_video import xref
+        defs = {'handle': [xref.Definition('a.js', 1, 'function'), xref.Definition('b.js', 1, 'function')]}
+        self.assertIsNone(xref.resolve(xref.Candidate(1, 16, 'handle', True), defs, 'b.js'))
+        self.assertEqual(xref.resolve(xref.Candidate(3, 4, 'handle', True), defs, 'b.js').path, 'a.js')
+
+    def test_xref_only_from_columns_every_format_shows(self):
+        repo = self.tmp.name + '/cols'
+        fixtures.init(repo)
+        fixtures.write(repo, 'lib.py', 'def frobnicate(x):\n    return x\n\n\ndef nearby(x):\n    return x\n')
+        fixtures.commit(repo, 'Start')
+        fixtures.write(repo, 'app.py', f'y = {"0 + " * 22}frobnicate(2)\nz = nearby(1)\n')
+        fixtures.commit(repo, 'Call far to the right')
+        names = [s['name'] for s in kinds(plan.plan(collect.collect(repo, 'HEAD'), 3), 'xref-push')]
+        self.assertEqual(names, ['nearby'])
+
     def test_total_duration(self):
         for p in self.plans.values():
             self.assertAlmostEqual(p.total, sum(s['dur'] for s in p.shots), places=6)

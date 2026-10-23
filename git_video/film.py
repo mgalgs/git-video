@@ -9,7 +9,7 @@ once here.
 """
 import bisect
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import videobuilder as vb
 from videobuilder import text as vbtext
@@ -281,7 +281,9 @@ def _ease(t, a, b):
 def draw_editor(tour, cv, box, shot, t, i, st):
     """The editor scene: one function per shot kind, all of the same shape."""
     before, after = tour.views[i]
-    EDITOR_KINDS[shot['kind']](tour, cv, st, shot, t, i, before, after)
+    # Lay out in the box this scene was handed, which a later stage may make
+    # smaller than the stage's main box.
+    EDITOR_KINDS[shot['kind']](tour, cv, replace(st, main=box), shot, t, i, before, after)
 
 
 def _pane(tour, cv, st, view, top=None, **kw):

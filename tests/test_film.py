@@ -128,6 +128,27 @@ class TestFilm(unittest.TestCase):
         self.assertEqual(out, ['one', 'two \u2026'])
         self.assertEqual(sidebar.trim(['a', 'b'], 3, font, 1000), ['a', 'b'])
 
+    def test_commit_without_a_body_draws(self):
+        # A subject-only commit, and a one-commit range (whose body is always
+        # empty), leave the side bar's body section with no lines.
+        for spec in (self.sha['root'], f'{self.sha["root"]}..{self.sha["change"]}'):
+            ch = collect.collect(self.repo, spec)
+            tour = film.Tour(plan.plan(ch, 0), ch, log=io.StringIO())
+            for fmt in ('16x9', '9x16', '1x1'):
+                for n, _ in tour.keyframes():
+                    tour.film.frame(n, fmt)
+
+    def test_editor_scene_draws_into_the_box_it_is_given(self):
+        i, n = self.frame_of('hunk', plan.HUNK_SCROLL + 0.2)
+        from videobuilder.canvas import Canvas
+        from videobuilder.film import FORMATS
+        cv = Canvas(1920, 1080, '#000', format=FORMATS['16x9'])
+        box = vb.Box(300, 200, 700, 500)
+        st = film.stage(cv)
+        t = (n - self.tour.shot_frames[i]) / self.plan.fps
+        film.draw_editor(self.tour, cv, box, self.plan.shots[i], t, i, st)
+        self.assertTrue(box.contains(dict(cv.marks)['editor.text']))
+
     def test_sweep_settles_to_a_wash(self):
         self.assertEqual(film.settle(-1), 1.0)
         self.assertAlmostEqual(film.settle(5), film.SETTLED)

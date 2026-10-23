@@ -125,9 +125,12 @@ def candidates(text, path, lines):
 
 def resolve(cand, defs, use_path):
     """The definition `cand` most likely means, or None: never one on the very
-    line being looked at, preferring another file, then a function or class."""
-    found = [d for d in defs.get(cand.name, ()) if not (d.path == use_path and d.line == cand.line)]
-    if not found or len(defs.get(cand.name, ())) > AMBIGUOUS:
+    line being looked at (a name defined there is not a use at all), preferring another file, then a function or class."""
+    every = defs.get(cand.name, ())
+    if any(d.path == use_path and d.line == cand.line for d in every):
+        return None   # the name is being defined here (`function handle(`), not used
+    found = list(every)
+    if not found or len(every) > AMBIGUOUS:
         return None
     return min(found, key=lambda d: (d.path == use_path, d.kind not in FUNCTION_KINDS, d.path, d.line))
 

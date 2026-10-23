@@ -129,7 +129,9 @@ def _commit(cv, box, commit, F, style):
         else:   # a range: one row per commit
             lines = [_ellipsize(f'{c["short"]} {c["subject"]}', F['body'], box.w)
                      for c in commit.get('commits', [])] if len(commit.get('commits', [])) > 1 else []
-        vbtext.draw(cv, trim(lines, room, F['body'], box.w), F['body'], box.x, y, style.fg)
+        lines = trim(lines, room, F['body'], box.w)
+        if lines:   # a subject-only commit, or a one-commit range, has no body to show
+            vbtext.draw(cv, lines, F['body'], box.x, y, style.fg)
 
 
 def trim(lines, room, font, width):

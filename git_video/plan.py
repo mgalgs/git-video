@@ -18,6 +18,9 @@ PLAN_ROWS = 26            # rows the planner assumes are on screen: the fewest a
 # The film re-scrolls to keep the focus line off the window's last row
 # (film.fit_top), so an xref is only picked from the rows above it.
 XREF_ROWS = PLAN_ROWS - 1
+# The film never scrolls sideways, so an xref is only picked from the columns
+# every format shows: the fewest is 9x16 with a six-digit gutter (default font).
+PLAN_COLS = 64
 MAX_HUNK_SHOTS = 60
 XREF_CAP_PER_HUNK = 3     # --verbose=3
 XREF_CAP_TOTAL = 24       # --verbose=3
@@ -120,6 +123,8 @@ def _hunk_candidates(change, f, top, visible):
     defs = xref.index(change.repo, change.target, lang)
     out = []
     for c in xref.candidates(f.text, f.path, visible):
+        if c.col + len(c.name) > PLAN_COLS:
+            continue
         d = xref.resolve(c, defs, f.path)
         if d is not None and change.text(d.path) is not None:
             out.append((xref.rank_key(c, d, f.path), c, d))

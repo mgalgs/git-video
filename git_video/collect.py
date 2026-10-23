@@ -5,9 +5,6 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 
-EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
-
-
 class GitError(RuntimeError):
     pass
 
@@ -101,6 +98,11 @@ def _verify(repo, rev):
     return sha
 
 
+def empty_tree(repo):
+    """The empty tree's id in this repository's object format (SHA-1 or SHA-256)."""
+    return git(repo, 'hash-object', '-t', 'tree', os.devnull).strip()
+
+
 def short(repo, sha):
     return git(repo, 'rev-parse', '--short', sha).strip()
 
@@ -116,7 +118,7 @@ def resolve(repo, spec):
         return base, target, f'{short(repo, base)}-{short(repo, target)}', True
     target = _verify(repo, spec)
     parents = git(repo, 'rev-list', '--parents', '-n1', target).split()[1:]
-    base = parents[0] if parents else EMPTY_TREE
+    base = parents[0] if parents else empty_tree(repo)
     return base, target, short(repo, target), False
 
 

@@ -22,10 +22,24 @@ class TestCollect(unittest.TestCase):
 
     def test_resolve_root_commit(self):
         base, target, _, _ = collect.resolve(self.repo, self.sha['root'])
-        self.assertEqual((base, target), (collect.EMPTY_TREE, self.sha['root']))
+        self.assertEqual((base, target), ('4b825dc642cb6eb9a060e54bf8d69288fbee4904', self.sha['root']))
         ch = collect.collect(self.repo, self.sha['root'])
         self.assertEqual([(f.path, f.status) for f in ch.files], [('src/lib.py', 'A')])
         self.assertEqual(ch.files[0].hunks[0].added, [[1, 6]])
+
+    def test_root_commit_in_a_sha256_repo(self):
+        repo = self.tmp.name + '/sha256'
+        try:
+            fixtures.git(self.tmp.name, 'init', '-q', '--object-format=sha256', repo)
+        except Exception:
+            self.skipTest('git without SHA-256 support')
+        fixtures.git(repo, 'config', 'user.name', 'Test Person')
+        fixtures.git(repo, 'config', 'user.email', 'test@example.com')
+        fixtures.write(repo, 'a.py', 'x = 1\n')
+        fixtures.commit(repo, 'Start')
+        ch = collect.collect(repo, 'HEAD')
+        self.assertEqual(len(ch.base), 64)
+        self.assertEqual([f.path for f in ch.files], ['a.py'])
 
     def test_resolve_range(self):
         base, target, label, is_range = collect.resolve(self.repo, f'{self.sha["root"]}..HEAD')
