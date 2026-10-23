@@ -142,12 +142,7 @@ class Tour:
         self.patches = list(patches) if patches else [change]   # the change of each --series patch
         self.fps = plan.fps
         self.shots = plan.shots
-        starts, acc = [], 0.0
-        for s in self.shots:
-            starts.append(round(acc * self.fps))
-            acc += s['dur']
-        self.shot_frames = starts
-        self.frames = max(1, round(acc * self.fps))
+        self.shot_frames, self.frames = P.frame_starts(self.shots, self.fps)
         # Buffers by (patch, path, variant); the fringe's +/− marks and tints by
         # (patch, path), from the plan.
         self.buffers, self.marks = {}, {}

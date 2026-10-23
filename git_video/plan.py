@@ -189,9 +189,16 @@ class Plan:
     # One entry per patch performed or toured: the whole change set, or with
     # --series each commit of the range (see `patch_entry`).
     patches: list = field(default_factory=list)
+    # With --voice, the narration (voice.place): the voice, the cache dir its
+    # clips are in, and each phrase's text, shot and times. Left out of the
+    # JSON without --voice, so the plan is the same as without the flag.
+    voice: dict | None = None
 
     def to_json(self):
-        return json.dumps(asdict(self), indent=2, sort_keys=True, ensure_ascii=False)
+        d = asdict(self)
+        if d['voice'] is None:
+            del d['voice']
+        return json.dumps(d, indent=2, sort_keys=True, ensure_ascii=False)
 
     @classmethod
     def from_json(cls, text):
@@ -265,6 +272,21 @@ def hunk_info(change, f, h):
         if e:
             defs.add(e[0])
     return {'path': f.path, 'words': words, 'defs': defs}
+
+
+def hunk_defs(change, f, h):
+    """[(name, Definition, new)]: the definitions holding a hunk's changed
+    lines, each once, in line order; `new` when the definition's own line is
+    one the hunk adds."""
+    lines = f.text.split('\n')
+    holders = xref.enclosures(lines, xref.file_defs(change.repo, change.target, f.path))
+    added = {n for a, b in h.added for n in range(a, b + 1)}
+    out = {}
+    for n in sorted(added | {s[0] for s in h.segments}):
+        e = holders[n - 1] if 0 < n <= len(holders) else None
+        if e and e[1].line not in out:
+            out[e[1].line] = (e[0], e[1], e[1].line in added)
+    return [out[k] for k in sorted(out)]
 
 
 def callout_target(f, word, top, prefer, fallback):
@@ -707,6 +729,36 @@ def build(change, verbose=0, mode='tour', patches=None):
 def plan(change, verbose=0):
     """The tour of `change` as a Plan."""
     return build(change, verbose)
+
+
+def frame_starts(shots, fps):
+    """(first frame of each shot, frames in all): each shot starts on the frame
+    its start in seconds rounds to."""
+    starts, acc = [], 0.0
+    for s in shots:
+        starts.append(round(acc * fps))
+        acc += s['dur']
+    return starts, max(1, round(acc * fps))
+
+
+def shot_key(s):
+    """What a narration phrase is tied to in shot `s` (the same in any plan of
+    the same change, however long its shots): ('title',), ('end',), ('patch',
+    k), ('enter', k, path) for the way into a file, ('hunk', k, path, index),
+    ('xref', k, path, line, col, name); None for a shot nothing is said over.
+    An edit shot's hunks have keys of their own, ('edit', k, path, hunk)."""
+    kind, k = s['kind'], s.get('patch', 0)
+    if kind in ('title', 'end'):
+        return (kind,)
+    if kind == 'patch':
+        return ('patch', k)
+    if kind in ('dive', 'travel', 'open', 'enter'):
+        return ('enter', k, s.get('to', s['path']))
+    if kind == 'hunk':
+        return ('hunk', k, s['path'], s['index'])
+    if kind == 'xref-push':
+        return ('xref', k, s['path'], s['line'], s['col'], s['name'])
+    return None
 
 
 def perf_time(p, k=0):

@@ -172,6 +172,33 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(info['defs'], {'frob'})
         self.assertLessEqual({'return', 'x'}, info['words'])
 
+    def test_hunk_defs(self):
+        lib = self.change.files[2]
+        self.assertEqual([(n, new) for n, _, new in plan.hunk_defs(self.change, lib, lib.hunks[0])], [('frob', False)])
+        app = next(f for f in self.change.files if f.path == 'src/app.py')
+        self.assertEqual([(n, new) for n, _, new in plan.hunk_defs(self.change, app, app.hunks[0])], [('main', True)])
+
+    def test_without_voice_the_json_has_no_voice(self):
+        p = self.plans[0]
+        self.assertIsNone(p.voice)
+        self.assertNotIn('"voice"', p.to_json())
+        self.assertEqual(plan.Plan.from_json(p.to_json()), p)
+
+    def test_frame_starts_and_shot_keys(self):
+        p = self.plans[1]
+        starts, frames = plan.frame_starts(p.shots, p.fps)
+        self.assertEqual(starts[0], 0)
+        self.assertEqual(frames, round(p.total * p.fps))
+        keys = [plan.shot_key(s) for s in p.shots]
+        self.assertEqual(keys[0], ('title',))
+        self.assertEqual(keys[-1], ('end',))
+        self.assertIn(('enter', 0, 'src/app.py'), keys)
+        self.assertIn(('hunk', 0, 'src/app.py', 0), keys)
+        self.assertIn(('xref', 0, 'src/app.py', 5, 11, 'frob'), keys)
+        named = [k for k in keys if k is not None]
+        self.assertEqual(len(named), len(set(named)))   # one shot per key
+        self.assertIsNone(plan.shot_key(kinds(p, 'map')[0]))
+
     def test_far_scroll_flag(self):
         p = plan.plan(collect.collect(fixtures.make_far_repo(self.tmp.name + '/far'), 'HEAD'))
         near, far = kinds(p, 'hunk')
