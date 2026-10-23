@@ -197,7 +197,8 @@ class TestPlan(unittest.TestCase):
         self.assertIn(('xref', 0, 'src/app.py', 5, 11, 'frob'), keys)
         named = [k for k in keys if k is not None]
         self.assertEqual(len(named), len(set(named)))   # one shot per key
-        self.assertIsNone(plan.shot_key(kinds(p, 'map')[0]))
+        self.assertEqual(plan.shot_key(kinds(p, 'map')[0]), ('map',))
+        self.assertIsNone(plan.shot_key(kinds(p, 'xref-pop')[0]))
 
     def test_far_scroll_flag(self):
         p = plan.plan(collect.collect(fixtures.make_far_repo(self.tmp.name + '/far'), 'HEAD'))

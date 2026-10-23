@@ -154,7 +154,7 @@ def sentence_from_subject(subject, lead='This change'):
 _URL = re.compile(r'(?:https?://|www\.)\S+')
 _HASH = re.compile(r'(?<![\w/])(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w/])')
 _ASIDE = re.compile(r'\s*\([^()]*[^()\s][^()]*\)')
-_SYMBOLS = re.compile(r'->|=>|==|!=|<=|>=|:=|&&|\|\||[+*&|#$@%^~<>\\{}\[\]=;]')
+_SYMBOLS = re.compile(r'->|=>|==|!=|<=|>=|:=|&&|\|\||[+*&|#$@%^~<>\\{}\[\]=]')
 _DASH = re.compile(r'\s+[-–—]+\s+|\s*—\s*')
 _TRAILER = re.compile(r'^[A-Za-z0-9][\w]*(?:-[\w]+)+:\s')
 _CODE_CHARS = re.compile(r'[(){}\[\]=;<>|\\]')
@@ -415,11 +415,44 @@ def _opening(plan):
     return out
 
 
+_BEFORE = re.compile(r"\b(?:was|were|could|did|used to|had|wasn't|couldn't|didn't)\b")
+
+
+def _why(plan, patches, used):
+    """What the change is for: the first sentence of the commit body's first
+    paragraph, when no hunk's callout says it and the paragraph is prose
+    rather than a list; one that tells how things were starts "Before,".
+    None for a range."""
+    if plan.is_range or len(patches) != 1:
+        return None
+    return why_line(plan.commit.get('body') or '', used)
+
+
+def why_line(body, used=()):
+    """`_why` of a commit body."""
+    para = re.split(r'\n\s*\n', body.strip())[0]
+    units = callouts_mod.sentences(para)
+    if not units or units[0] in used or callouts_mod.BULLET.match(para):
+        return None
+    s = clean(units[0])
+    if not s:
+        return None
+    if _BEFORE.search(s.split(',')[0]) and not callouts_mod._looks_like_code(s.split()[0]):
+        s = 'Before, ' + s[0].lower() + s[1:]
+    return shorten(s)
+
+
 def script(plan, patches):
     """The narration of `plan` (the change of each patch in `patches`), as
     [Phrase] in the order they are said. Deterministic: the same plan gives
     the same script, however long its shots are."""
     out = [Phrase(t, ('title',)) for t in _opening(plan)]
+    used = {c['text'] for s in plan.shots for c in s.get('callouts') or ()}
+    if plan.mode == 'develop':
+        used |= {t for ch in patches for ts in planmod.develop_sentences(ch).values() for t in ts}
+    why = _why(plan, patches, used)
+    if why:   # over the repo map, or the title card without one
+        out.append(Phrase(why, ('map',) if any(s['kind'] == 'map' for s in plan.shots) else ('title',)))
     lead = _lead_ins(plan.shots)
     said = {}          # (patch, path) -> definitions named there
     dived = set()      # (patch, path) a dive's line was said from
@@ -602,6 +635,8 @@ def anchors(s):
     kind = s['kind']
     if kind == 'title':
         return {('title',): planmod.VOICE_TITLE_AT}
+    if kind == 'map':
+        return {('map',): planmod.VOICE_MAP_AT}
     if kind == 'end':
         return {('end',): planmod.VOICE_END_AT}
     if kind == 'patch':

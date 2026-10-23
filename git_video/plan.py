@@ -40,7 +40,8 @@ END_DUR = 3.0
 END_REVEAL = 1.2          # the closing card's panels fade up one after another over this long
 VOICE_TITLE_AT = 0.6      # with --voice: when the title card's phrases may start ...
 VOICE_END_AT = 0.6        # ... the closing card's
-VOICE_PATCH_AT = 0.5      # ... and a --series card's
+VOICE_PATCH_AT = 0.5      # ... a --series card's
+VOICE_MAP_AT = 0.3        # ... and the repo map's
 
 # Shot timings, shared by the film (what is seen) and the sounds (what is heard).
 PER_CHAR = 0.055          # mean seconds per typed character
@@ -792,7 +793,7 @@ def build(change, verbose=0, mode='tour', patches=None, voice=None):
     shots = [_stretch(shot('card', 'title', TITLE_DUR, patch=0), voice, VOICE_TITLE_AT)]
     lit = [f['path'] for f in files if f['path'] in tiled]   # the changed files' tiles light in tour order
     if lit:   # nothing changed on the map (only deletions): nothing to show there
-        shots.append(shot('map', 'map', MAP_DUR, lit=lit, patch=0))
+        shots.append(_stretch(shot('map', 'map', MAP_DUR, lit=lit, patch=0), voice, VOICE_MAP_AT))
     entries, written = [], {}
     for k, ch in enumerate(patches):
         entries.append(patch_entry(ch, len(shots)))   # from its card, after the first
@@ -837,12 +838,12 @@ def frame_starts(shots, fps):
 
 def shot_key(s):
     """What a narration phrase is tied to in shot `s` (the same in any plan of
-    the same change, however long its shots): ('title',), ('end',), ('patch',
-    k), ('enter', k, path) for the way into a file, ('hunk', k, path, index),
+    the same change, however long its shots): ('title',), ('map',), ('end',),
+    ('patch', k), ('enter', k, path) for the way into a file, ('hunk', k, path, index),
     ('xref', k, path, line, col, name); None for a shot nothing is said over.
     An edit shot's hunks have keys of their own, ('edit', k, path, hunk)."""
     kind, k = s['kind'], s.get('patch', 0)
-    if kind in ('title', 'end'):
+    if kind in ('title', 'end', 'map'):
         return (kind,)
     if kind == 'patch':
         return ('patch', k)

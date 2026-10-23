@@ -73,6 +73,18 @@ class TestScript(unittest.TestCase):
         end = texts(voice.script(p, [ch]), 'end')
         self.assertEqual(end, ["That's the change.", 'The next commit drops the binary.'])
 
+    def test_why(self):
+        repo, sha = fixtures.make_repo(os.path.join(self.tmp.name, 'why'))
+        ch = collect.collect(repo, sha['change'])
+        got = voice.script(plan.build(ch), [ch])
+        self.assertEqual([(p.key, p.text) for p in got][2], (('map',), 'The app doubles instead of incrementing.'))
+        self.assertEqual(voice.why_line('A card was placed by the band alone and could sit over the row being '
+                                        'typed in develop mode, or over the rows.\n\nMore.'),
+                         'Before, a card was placed by the band alone and could sit over the row being typed in '
+                         'develop mode.')
+        self.assertIsNone(voice.why_line('- one thing\n- another'))
+        self.assertIsNone(voice.why_line('Used here.', used={'Used here.'}))
+
     def test_series(self):
         repo, sha = fixtures.make_range_repo(self.tmp.name)
         change, patches = collect.series(repo, f'{sha["a"]}..{sha["c"]}')
