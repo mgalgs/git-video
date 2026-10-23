@@ -101,6 +101,16 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
   up with `git grep` against per-language definition patterns (Python,
   JavaScript/TypeScript, Go, Rust, C-like languages, shell, Lisps).
   `--verbose` sets how many definitions get visited.
+- The xref is a dive: the pointer swells into a disc on the word, the click
+  ripples, the definition opens out of the clicked word in a growing
+  circle, and `M-,` shrinks it back into the word.
+- An opening card: the repo name over the commit subject, `+a −d` rolling
+  up on counters, the author on a name bar, and co-authors (from
+  `Co-Authored-By:` trailers) as a row of initials. A range shows
+  "N commits" and its span of dates.
+- A closing card: a recap of the files visited and the definitions dived
+  into, and the next commit's subject when the target has one on the
+  current branch.
 - Colour is never the only cue: added lines carry a `+` in the fringe,
   removed lines a `−` marker between lines, the current file in the
   side bar a `▶`, and a changed tile on the repo map an outline and its
