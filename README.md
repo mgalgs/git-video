@@ -16,6 +16,9 @@ Options:
 --voice[=<voice-profile>]
            Include voice over. Not reading the code, explaining
            the intent behind it. Like a good coding video online.
+           Spoken by Kokoro (default voice bf_isabella), with
+           captions. Needs the voice extra,
+           pip install 'git-video[voice]', and Kokoro's model files.
 --format   16x9, 9x16, 1x1, all (default 16x9)
 -o, --out  Output MP4 (default git-video-<short-sha>.mp4, or
            git-video-<a>-<b>.mp4 for a range; with --format all,

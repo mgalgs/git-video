@@ -13,6 +13,9 @@ dependencies = [
     "pygments>=2.17",
 ]
 
+[project.optional-dependencies]
+voice = ["videobuilder[speech]"]
+
 [project.scripts]
 git-video = "git_video.cli:main"
 

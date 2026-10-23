@@ -328,6 +328,21 @@ def _match_callouts(change, hunks):
     return chosen
 
 
+def _picks(matched):
+    """The best CALLOUT_MAX_PER_HUNK of a hunk's matched sentences, in the
+    order the message gives them."""
+    return sorted(sorted(matched, key=lambda x: (-x[1], x[0]))[:CALLOUT_MAX_PER_HUNK], key=lambda x: x[0])
+
+
+def develop_sentences(change):
+    """{(path, hunk index): [commit sentence]}: what develop mode's callouts
+    say over each hunk of `change` (before any is dropped for being too
+    short on screen)."""
+    pairs = [(f, hi) for f in order_files(change) if f.text is not None for hi in range(len(f.hunks))]
+    chosen = _match_callouts(change, [(f, f.hunks[hi]) for f, hi in pairs])
+    return {(pairs[k][0].path, pairs[k][1]): [x[3] for x in _picks(v)] for k, v in chosen.items()}
+
+
 def _place_callouts(change, shots, readings):
     """Give each hunk shot the commit sentences that explain it (`callouts`),
     each with its time on screen and the words its line points at, and stretch
@@ -335,8 +350,7 @@ def _place_callouts(change, shots, readings):
     chosen = _match_callouts(change, [(f, h) for _, f, h, _, _ in readings])
     for k, (si, f, h, top, visible) in enumerate(readings):
         s = shots[si]
-        picks = sorted(chosen.get(k, []), key=lambda x: (-x[1], x[0]))[:CALLOUT_MAX_PER_HUNK]
-        picks.sort(key=lambda x: x[0])
+        picks = _picks(chosen.get(k, []))
         morph, far = bool(s['morph']), s['scroll'] == 'far'
         start = scroll_time(s) + (MORPH_HOLD + MORPH_DUR if morph else 0)
         read = hunk_read(visible, len(picks))
@@ -662,8 +676,7 @@ def _develop_body(change, verbose, patch):
                 continue
             a, b = steps[span_h[0]], steps[span_h[1]]
             t0, t1 = on_screen(a['at']), on_screen(b['at'] + b['dur'])
-            picks = sorted(chosen[k], key=lambda x: (-x[1], x[0]))[:CALLOUT_MAX_PER_HUNK]
-            picks.sort(key=lambda x: x[0])
+            picks = _picks(chosen[k])
             # up while its hunk is typed, and no longer: the leader follows the cursor
             slot = min(CALLOUT_EACH, (t1 - t0) / len(picks))
             for n, (_, _, _, text, c) in enumerate(picks):

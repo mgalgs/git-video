@@ -70,8 +70,9 @@ def parser():
                         'long runs; 2 never elides but still speeds up; 3 types everything at natural speed. '
                         'A bare --verbose means 1')
     p.add_argument('--voice', metavar='VOICE-PROFILE',
-                   help=f'--voice[=<voice-profile>]: include a voice over (default profile {DEFAULT_VOICE}; '
-                        'not implemented yet)')
+                   help=f'--voice[=<voice-profile>]: narrate the change, with captions, in a Kokoro voice '
+                        f"(default {DEFAULT_VOICE}); needs the voice extra, pip install 'git-video[voice]', "
+                        'and the Kokoro model files')
     p.add_argument('--format', choices=(*FORMATS, 'all'), default='16x9', help='output shape (default 16x9)')
     p.add_argument('-o', '--out', metavar='FILE',
                    help='output MP4 (default git-video-<short-sha>.mp4, or git-video-<a>-<b>.mp4 for a range)')
@@ -115,8 +116,8 @@ def _fail(msg, code):
 
 def main(argv=None):
     args = parse(sys.argv[1:] if argv is None else argv)
-    if args.voice is not None:
-        return _fail('--voice is not implemented yet', 2)
+    if args.voice is not None and not args.plan_json:
+        return _fail('--voice is not rendered yet; --plan-json shows its script', 2)
     from . import collect, plan
     try:
         if args.series:
@@ -127,6 +128,11 @@ def main(argv=None):
     except collect.GitError as e:
         return _fail(str(e), 1)
     tour = plan.build(change, args.verbose, args.mode, patches)
+    if args.voice is not None:
+        from . import voice
+        shots = voice.shot_index(tour.shots)
+        tour.voice = {'voice': args.voice, 'phrases': [{'text': p.text, 'shot': shots[p.key]}
+                                                       for p in voice.script(tour, patches)]}
     if args.plan_json:
         print(tour.to_json())
         return 0

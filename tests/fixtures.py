@@ -431,3 +431,41 @@ def make_wrap_repo(tmp):
     write(repo, 'wrap.py', ''.join(rows))
     commit(repo, 'Rewrite some long lines')
     return repo
+
+
+VOICE_LIB = RANGE_LIB_A + '''
+
+TABLE = [
+    1,
+    2,
+    3,
+    4,
+]
+'''
+
+VOICE_BODY = '''frob() now doubles, see https://example.com/p and deadbeef1234 for why.
+
+```
+other(2) == 6
+```
+
+The rework of other() keeps every caller working, because it still returns a number of the same kind, and the
+callers never needed to know how it got there in the first place.
+
+Signed-off-by: T <t@example.com>'''
+
+
+def make_voice_repo(tmp):
+    """lib.py defines frob() and other(); HEAD changes both and adds
+    draw_card() at the end, with a body that has a URL and a hash in a
+    sentence naming frob(), a fenced code block and a 35-word sentence naming
+    other(), and a trailer; nothing in it names draw_card. Returns (repo,
+    {'root', 'head'})."""
+    repo = os.path.join(tmp, 'voice')
+    init(repo)
+    write(repo, 'lib.py', VOICE_LIB)
+    root = commit(repo, 'Add the library')
+    write(repo, 'lib.py', VOICE_LIB.replace('x + 1', 'x * 2').replace('x - 1', 'x * 3')
+          + '\n\ndef draw_card(cv):\n    width = 3\n    return width\n')
+    head = commit(repo, 'Add draw_card and rework frob\n\n' + VOICE_BODY)
+    return repo, {'root': root, 'head': head}
