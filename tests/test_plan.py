@@ -520,6 +520,12 @@ class TestSeries(unittest.TestCase):
         killed = [st['text'] for st in ec['steps'] if st['kind'] == 'kill']
         self.assertTrue(any(k.strip() and k.strip() in typed for k in killed), killed)
         self.assertIn('total += k', ''.join(killed))   # B's loop, rewritten by C
+        # each patch has its own call graph: C writes helper() again, so it is in C's
+        ids = {(n['id'], n['patch']) for n in p.graph['nodes']}
+        self.assertIn(('lib.py:helper', 0), ids)
+        self.assertIn(('lib.py:helper@1', 1), ids)
+        from git_video import graph
+        self.assertEqual({n['patch'] for n in graph.part(p.graph, 1)['nodes']}, {1})
 
 
 if __name__ == '__main__':

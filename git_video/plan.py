@@ -627,11 +627,13 @@ def build(change, verbose=0, mode='tour', patches=None):
     shots.append(shot('card', 'end', END_DUR, patch=len(patches) - 1))
     out = _resolve_enters(shots, tiled)   # one shot per shot: each patch's first_shot still holds
     nxt = {'short': change.next.short, 'subject': change.next.subject} if change.next else None
-    if mode == 'develop':
-        call_graph = graphmod.build_develop(patches, out, {i: written[id(s)] for i, s in enumerate(out)
-                                                          if id(s) in written})
-    else:
-        call_graph = graphmod.build(patches, out)
+    def make(ch, sub, k=0):
+        if mode == 'develop':
+            return graphmod.build_develop(ch, sub, {i: written[id(s)] for i, s in enumerate(sub) if id(s) in written})
+        return graphmod.build(ch, sub)
+
+    # With --series each patch has its graph, as it has its commit in the side bar.
+    call_graph = graphmod.by_patch(patches, out, make) if len(patches) > 1 else make(change, out)
     return Plan(VERSION, FPS, change.base, change.target, change.label, change.is_range, _commit_info(change),
                 files, verbose, out, round(sum(s['dur'] for s in out), 3), repo=name, next=nxt,
                 map=tree_map, graph=call_graph, mode=mode, patches=entries)

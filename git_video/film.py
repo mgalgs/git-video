@@ -163,7 +163,8 @@ class Tour:
                     editor.Segment(g['at'], highlight.highlight_lines('\n'.join(g['old']) + '\n', s['path']),
                                    g['new'], tuple(tuple(o) for o in g['ops']))
                     for g in s['morph']['segments'])
-        self.graph_layouts = {}   # the call graph per side-bar box, laid out once
+        self.graph_layouts = {}   # the call graph per side-bar box (and patch), laid out once
+        self.graph_parts = {}
         self.graph_nodes = {n['id'] for n in (plan.graph or {}).get('nodes', ())}
         self.graph_home = []   # per shot: the node of the last hunk shown (or written) in its file
         self.graph_written = {}   # develop: edit shot -> [(at, node id)] it writes, in order
@@ -326,7 +327,7 @@ class Tour:
             elif kind == 'edit':
                 out += self._edit_keyframes(i, s, seen_edit)
             elif kind == 'patch':
-                out.append((f0 + round(P.INTER_REVEAL * 0.5 * self.fps), f'interstitial {s["patch"]}'))
+                out.append((f0 + round((P.INTER_REVEAL + 0.3) * self.fps), f'interstitial {s["patch"]}'))
             elif kind == 'xref-push':
                 out.append((f0 + round((P.XREF_CLICK + 0.12) * self.fps), f'xref {s["name"]} click'))
                 out.append((f0 + round((P.XREF_SWITCH + P.XREF_REVEAL * 0.4) * self.fps), f'xref {s["name"]} dive'))
@@ -405,10 +406,16 @@ class Tour:
                             self.draw_graph(c, box, i, t, path, stack, st.scale)
                     sidebar.draw(cv, st.side, scale=st.scale, graph=graph, beside=st.side.w > st.side.h, **kw)
 
-    def graph_layout(self, box, scale):
-        k = (tuple(box), scale)
+    def graph_part(self, patch):
+        """The call graph the side bar shows during `patch` (its own, with --series)."""
+        if patch not in self.graph_parts:
+            self.graph_parts[patch] = graphmod.part(self.plan.graph, patch)
+        return self.graph_parts[patch]
+
+    def graph_layout(self, box, scale, patch=0):
+        k = (tuple(box), scale, patch)
         if k not in self.graph_layouts:
-            self.graph_layouts[k] = graphmod.layout(self.plan.graph, box, scale)
+            self.graph_layouts[k] = graphmod.layout(self.graph_part(patch), box, scale)
         return self.graph_layouts[k]
 
     def graph_current(self, i, path, stack, t=0.0):
@@ -416,7 +423,7 @@ class Tour:
         edit shot is writing, else the last hunk's node in the file in view."""
         if stack:
             name, p, _ = stack[-1]
-            nid = f'{p}:{name}'
+            nid = graphmod.node_id(p, name, self.shots[i].get('patch', 0))
             return nid if nid in self.graph_nodes else None
         written = [nid for at, nid in self.graph_written.get(i, ()) if at <= t]
         if written:
@@ -424,9 +431,11 @@ class Tour:
         return self.graph_home[i].get(path)
 
     def draw_graph(self, cv, box, i, t, path, stack, scale):
-        trail = [f'{p}:{name}' for name, p, _ in stack]
-        state = graphmod.state_at(self.plan.graph, self.shots, i, t, self.graph_current(i, path, stack, t), trail)
-        graphmod.draw(cv, self.graph_layout(box, scale), self.plan.graph, state, color=THEME.cursor,
+        k = self.shots[i].get('patch', 0)
+        trail = [graphmod.node_id(p, name, k) for name, p, _ in stack]
+        g = self.graph_part(k)
+        state = graphmod.state_at(g, self.shots, i, t, self.graph_current(i, path, stack, t), trail)
+        graphmod.draw(cv, self.graph_layout(box, scale, k), g, state, color=THEME.cursor,
                       accent=THEME.xref_box, bg=sidebar.Style().bg, scale=scale)
 
 
@@ -792,7 +801,7 @@ def _patch_card(tour, cv, box, shot, t):
                         blank=sidebar.Style().border)
     cw, ch = w * DECK_CARD, h * DECK_CARD
     cv.mark('card.deck', (w - cw) / 2, (h - ch) / 2, cw, ch)
-    r = 18 if not portrait else 22
+    r = 22 if not portrait else 26
     labels = [tour.patch_info(j)['commit'].get('short', '') if n <= 6 or j == k else '' for j in range(n)]
     span = w * (0.5 if not portrait else 0.7) if n > 2 else w * 0.3
     x0, x1 = w / 2 - span / 2, w / 2 + span / 2

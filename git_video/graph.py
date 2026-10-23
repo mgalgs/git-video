@@ -52,6 +52,11 @@ def _changes(change):
     return change if isinstance(change, (list, tuple)) else [change]
 
 
+def _patch(changes, s):
+    """The index into `changes` of the change shot `s` reads."""
+    return s.get('patch', 0) if len(changes) > 1 else 0
+
+
 def _changed(h):
     return [n for a, b in h.added for n in range(a, b + 1)]
 
@@ -102,7 +107,7 @@ def build(change, shots):
                         touched_ranges.setdefault((k, f.path), set()).add((e[0], e[1].line))
     source, hunk_of_shot = None, {}
     for i, s in enumerate(shots):
-        k = s.get('patch', 0)
+        k = _patch(changes, s)
         if s['kind'] == 'hunk':
             f, h = _hunk_of(changes[k], s['path'], s['index'])
             defs(k, s['path'])
@@ -129,7 +134,7 @@ def build(change, shots):
         lang = xref.lang_of(s.get('path', '')) if a else None
         if not a or h is None or lang is None:
             continue
-        ch = changes[s.get('patch', 0)]
+        ch = changes[_patch(changes, s)]
         index = xref.index(ch.repo, ch.target, lang)
         for c in xref.candidates(ch.text(s['path']), s['path'], _changed(h)):
             d = xref.resolve(c, index, s['path'])
@@ -173,7 +178,7 @@ def build_develop(change, shots, written):
     for i, s in enumerate(shots):
         if s['kind'] != 'edit' or not written.get(i):
             continue
-        ch = changes[s.get('patch', 0)]
+        ch = changes[_patch(changes, s)]
         text = ch.text(s['path'])
         if not text:
             continue
@@ -209,6 +214,46 @@ def build_develop(change, shots, written):
     ids = {n['id'] for n in kept}
     out_edges = sorted((e for e in edges if e['a'] in ids and e['b'] in ids), key=lambda e: (e['first'], e['at']))
     return {'nodes': kept, 'edges': out_edges}
+
+
+def node_id(path, name, patch=0):
+    """A node's id: `path:name`, marked with its patch past the first of a
+    --series (each patch has a graph of its own)."""
+    return f'{path}:{name}' + (f'@{patch}' if patch else '')
+
+
+def by_patch(changes, shots, make):
+    """One graph per --series patch, joined: `make(change, shots, k)` builds
+    patch k's from its own shots (indices local to them); its nodes get
+    `patch` and ids from `node_id`, `first` becomes a plan shot index, and the
+    shots' `node` and `edge` follow. Each patch keeps up to MAX_NODES."""
+    nodes, edges = [], []
+    for k, ch in enumerate(changes):
+        idx = [i for i, s in enumerate(shots) if s.get('patch', 0) == k]
+        sub = [shots[i] for i in idx]
+        g = make(ch, sub, k)
+
+        def ren(nid, k=k):
+            return nid + (f'@{k}' if k else '')
+
+        base = len(edges)
+        nodes += [{**n, 'id': ren(n['id']), 'first': idx[n['first']], 'patch': k} for n in g['nodes']]
+        edges += [{**e, 'a': ren(e['a']), 'b': ren(e['b']), 'first': idx[e['first']]} for e in g['edges']]
+        for s in sub:
+            if s.get('node') is not None:
+                s['node'] = ren(s['node'])
+            if s.get('edge') is not None:
+                s['edge'] += base
+    return {'nodes': nodes, 'edges': edges}
+
+
+def part(graph, patch):
+    """The graph of one --series patch (all of it without patches)."""
+    if not any('patch' in n for n in graph['nodes']):
+        return graph
+    ids = {n['id'] for n in graph['nodes'] if n.get('patch', 0) == patch}
+    return {'nodes': [n for n in graph['nodes'] if n['id'] in ids],
+            'edges': [e for e in graph['edges'] if e['a'] in ids and e['b'] in ids]}
 
 
 # ---- the film's half ----
