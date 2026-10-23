@@ -111,6 +111,30 @@ def output_paths(label, out, formats):
     return [(f, f'{root}-{f}{ext}') for f in formats]
 
 
+class OutputError(Exception):
+    pass
+
+
+def check_output(path):
+    """Make sure `path` can be written: create its missing parent directories, then
+    open it for appending (removing it again if it did not exist). Raises OutputError
+    naming the path."""
+    parent = os.path.dirname(os.path.abspath(path))
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError as e:
+        raise OutputError(f'cannot create the directory for {path}: {e.strerror}') from e
+    if os.path.isdir(path):
+        raise OutputError(f'cannot write {path}: it is a directory')
+    existed = os.path.exists(path)
+    try:
+        open(path, 'ab').close()
+    except OSError as e:
+        raise OutputError(f'cannot write {path}: {e.strerror}') from e
+    if not existed:
+        os.remove(path)
+
+
 def _fail(msg, code):
     print(f'git video: {msg}', file=sys.stderr)
     return code
@@ -144,15 +168,22 @@ def main(argv=None):
     if args.plan_json:
         print(tour.to_json())
         return 0
-    from . import film
     formats = list(FORMATS) if args.format == 'all' else [args.format]
+    outputs = output_paths(change.label, args.out, formats)
+    if not args.stills:   # before any frame: a bad path should not cost a render
+        try:
+            for _, out in outputs:
+                check_output(out)
+        except OutputError as e:
+            return _fail(str(e), 1)
+    from . import film
     tour = film.Tour(tour, change, formats=formats, font=args.font, patches=patches)
     if args.stills:
         for path in write_stills(tour.film, formats, args.stills):
             print(path)
         return 0
     from videobuilder.render import render
-    for fmt, out in output_paths(change.label, args.out, formats):
+    for fmt, out in outputs:
         render(tour.film, out, format=fmt, jobs=args.jobs)
         print(out)
     return 0

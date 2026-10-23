@@ -82,3 +82,47 @@ class TestCli(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestOutputPath(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from tests import fixtures
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp.name
+        self.repo, self.sha = fixtures.make_repo(os.path.join(self.tmp, 'r'))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_main(self, out):
+        """cli.main with -o out, the film and the render stubbed: (code, err, rendered paths, films built)."""
+        from unittest import mock
+        rendered, built = [], []
+        with mock.patch('git_video.film.Tour', side_effect=lambda *a, **k: built.append(1) or mock.Mock()), \
+                mock.patch('videobuilder.render.render', side_effect=lambda film, path, **k: rendered.append(path)):
+            code, _, err = quiet(cli.main, ['-C', self.repo, '-o', out, self.sha['change']])
+        return code, err, rendered, built
+
+    def test_missing_directory_is_created(self):
+        out = os.path.join(self.tmp, 'new', 'deeper', 'v.mp4')
+        code, err, rendered, _ = self.run_main(out)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(os.path.isdir(os.path.dirname(out)))
+        self.assertFalse(os.path.exists(out))   # the probe leaves nothing behind
+        self.assertEqual(rendered, [out])
+
+    def test_unwritable_path_fails_before_rendering(self):
+        blocker = os.path.join(self.tmp, 'file')
+        open(blocker, 'w').close()
+        bad = [os.path.join(blocker, 'v.mp4'), self.tmp]   # parent is a file; the path is a directory
+        if os.geteuid() != 0:
+            ro = os.path.join(self.tmp, 'ro')
+            os.mkdir(ro, 0o500)
+            bad.append(os.path.join(ro, 'v.mp4'))
+        for out in bad:
+            with self.subTest(out=out):
+                code, err, rendered, built = self.run_main(out)
+                self.assertEqual(code, 1)
+                self.assertIn(out, err)
+                self.assertEqual((rendered, built), ([], []))
