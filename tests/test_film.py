@@ -51,7 +51,8 @@ class TestFilm(unittest.TestCase):
         code, stdout, _ = quiet(cli.main, ['-C', self.repo, self.sha['change'], '--stills', out, '--format', 'all'])
         self.assertEqual(code, 0)
         labels = [label for _, label in self.tour.film.keyframes]
-        for want in ('title', 'open src/app.py', 'hunk src/app.py#1', 'xref frob click', 'xref frob def', 'end'):
+        for want in ('title', 'map', 'dive src/app.py', 'travel tests/test_app.py', 'open src/lib.py',
+                     'hunk src/app.py#1', 'xref frob click', 'xref frob def', 'end'):
             self.assertIn(want, labels)
         for fmt in ('16x9', '9x16', '1x1'):
             self.assertTrue(os.path.isfile(os.path.join(out, f'sheet-{fmt}.png')))
@@ -63,11 +64,67 @@ class TestFilm(unittest.TestCase):
                 self.assertEqual((cv.surface.get_width(), cv.surface.get_height()), (f.width, f.height))
 
     def test_draw_is_pure(self):
-        _, n = self.frame_of('xref-push', plan.XREF_CLICK + 0.1)
-        for fmt in ('16x9', '1x1'):
-            a = self.tour.film.frame(n, fmt).bgra()
-            self.tour.film.frame(n + 7, fmt)
-            self.assertEqual(a, self.tour.film.frame(n, fmt).bgra())
+        frames = [self.frame_of('xref-push', plan.XREF_CLICK + 0.1)[1], self.frame_of('dive', 0.5)[1],
+                  self.frame_of('travel', 0.7)[1], self.frame_of('map', 1.0)[1], self.frame_of('title', 1.5)[1]]
+        for n in frames:
+            for fmt in ('16x9', '1x1'):
+                a = self.tour.film.frame(n, fmt).bgra()
+                self.tour.film.frame(n + 7, fmt)
+                self.assertEqual(a, self.tour.film.frame(n, fmt).bgra())
+
+    def test_map_tiles_inside_main_and_apart(self):
+        _, n = self.frame_of('map', plan.MAP_DUR - 0.1)
+        for fmt in ('16x9', '9x16', '1x1'):
+            cv = self.tour.film.frame(n, fmt)
+            st = film.stage(cv)
+            tiles = [(name, b) for name, b in cv.marks if name.startswith('map.tile ')]
+            side = [b for name, b in cv.marks if name.startswith('sidebar.')]
+            self.assertTrue(side)
+            for k, (name, b) in enumerate(tiles):
+                self.assertTrue(st.main.contains(b), (fmt, name, b))
+                for _, c in tiles[k + 1:]:
+                    self.assertFalse(b.intersects(c), (fmt, name))
+                for c in side:
+                    self.assertFalse(b.intersects(c), (fmt, name))
+            names = {name.split(' ', 1)[1] for name, _ in tiles}
+            self.assertLessEqual({'src/app.py', 'src/lib.py', 'tests/test_app.py', 'bin.dat'}, names)
+            for name, b in cv.marks:   # every changed tile's +a −d label stays on the map
+                if name.startswith('map.label '):
+                    self.assertTrue(st.main.contains(b), (fmt, name))
+
+    def test_dive_lands_on_the_pane(self):
+        i, _ = self.frame_of('dive', 0)
+        last = self.tour.shot_frames[i + 1] - 1
+        first = self.tour.shot_frames[i + 1]
+        a = dict(self.tour.film.frame(last, '16x9').marks)['editor.text']
+        b = dict(self.tour.film.frame(first, '16x9').marks)['editor.text']
+        for x, y in zip(a, b):
+            self.assertAlmostEqual(x, y, delta=1.0)
+        cv = self.tour.film.frame(self.frame_of('dive', 0.5 * plan.DIVE_DUR)[1], '16x9')
+        mid = dict(cv.marks)['editor.text']
+        st = film.stage(cv)
+        self.assertTrue(st.main.contains(mid))
+        self.assertLess(mid.w, b.w - 10)
+
+    def test_travel_leaves_and_lands_on_panes(self):
+        i, _ = self.frame_of('travel', 0)
+        before = dict(self.tour.film.frame(self.tour.shot_frames[i] - 1, '16x9').marks)['editor.text']
+        start = dict(self.tour.film.frame(self.tour.shot_frames[i], '16x9').marks)['editor.text']
+        for x, y in zip(before, start):
+            self.assertAlmostEqual(x, y, delta=1.0)
+        mid = self.tour.film.frame(self.frame_of('travel', 0.6)[1], '16x9')
+        self.assertNotIn('editor.text', dict(mid.marks))   # out on the map between the two
+        self.assertEqual(self.tour.state(self.frame_of('travel', plan.TRAVEL_SWITCH + 0.05)[1])[0],
+                         'tests/test_app.py')
+
+    def test_lit_order_follows_files(self):
+        (m,) = [s for s in self.plan.shots if s['kind'] == 'map']
+        self.assertEqual(m['lit'], ['bin.dat', 'src/app.py', 'src/lib.py', 'tests/test_app.py'])
+        early = film.lit_amounts(m, plan.MAP_LIGHT_START + 0.05)
+        self.assertGreater(early['bin.dat'], 0)
+        self.assertEqual(early['tests/test_app.py'], 0)
+        self.assertEqual(set(film.lit_amounts(m, m['dur']).values()), {1.0})
+        self.assertEqual(set(film.lit_amounts(m, 0).values()), {0.0})
 
     def test_regions_do_not_overlap(self):
         for fmt in ('16x9', '9x16', '1x1'):

@@ -1,5 +1,7 @@
 """The tour's sound effects: keys while the minibuffer types, a mouse click on
-each xref click, a soft tick as a hunk is reached, a whoosh on a buffer switch.
+each xref click, a soft tick as a hunk is reached, a whoosh on a buffer switch,
+a softer whoosh for each camera move over the repo map and a low tick as each
+changed tile lights.
 
 Each sound is an id pair with a role fallback (the pattern of videobuilder's
 terminal log), so a pack without the preferred ids still plays something
@@ -17,6 +19,8 @@ KEY = (('pro_typing_key/tick', 'typing_key/crisp'), ('key', 'typing'), -10.0, 'o
 CLICK = (('pro_click/mouse', 'click/soft'), ('click',), -6.0, 'onset')
 TICK = (('pro_hover_tick/soft', 'hover_tick/detent'), ('tick',), -18.0, 'onset')
 WHOOSH = (('whoosh_fast/tight',), ('whoosh',), -14.0, 'peak')
+WHOOSH_SOFT = (('whoosh_soft/air', 'whoosh_fast/tight'), ('whoosh',), -22.0, 'peak')
+TILE = (('hover_tick/detent', 'pro_hover_tick/soft'), ('tick',), -22.0, 'onset')
 
 
 def pick(bank, ids, roles):
@@ -43,7 +47,15 @@ def cues(shots, shot_frames, fps):
     out = []
     for s, f0 in zip(shots, shot_frames):
         kind = s['kind']
-        if kind == 'open':
+        if kind == 'map':
+            lit = s.get('lit', [])
+            out += [(frame_at(f0, planmod.light_start(k, len(lit)) + planmod.MAP_LIGHT_FADE / 2, fps), 'tile')
+                    for k in range(min(len(lit), planmod.MAP_MAX_TICKS))]
+        elif kind == 'dive':
+            out.append((frame_at(f0, 0.35, fps), 'whoosh-soft'))
+        elif kind == 'travel':
+            out.append((frame_at(f0, 0.6, fps), 'whoosh-soft'))
+        elif kind == 'open':
             keys, letters, ret, _ = planmod.open_timing(s['path'])
             out += [(frame_at(f0, t, fps), 'key') for t in (*keys, *letters, ret)]
             out.append((frame_at(f0, ret, fps), 'whoosh'))
@@ -66,7 +78,7 @@ def sounds_for(shots, shot_frames, fps, log=None):
     except vb.sfx.SfxUnavailable as e:
         print(f'git video: rendering without sound: {e}', file=log or sys.stderr)
         return ()
-    table = {'key': KEY, 'click': CLICK, 'tick': TICK, 'whoosh': WHOOSH}
+    table = {'key': KEY, 'click': CLICK, 'tick': TICK, 'whoosh': WHOOSH, 'whoosh-soft': WHOOSH_SOFT, 'tile': TILE}
     chosen = {name: (pick(bank, ids, roles), gain, align) for name, (ids, roles, gain, align) in table.items()}
     out = []
     for frame, name in cues(shots, shot_frames, fps):

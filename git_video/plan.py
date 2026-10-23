@@ -52,6 +52,27 @@ POP_KEYS = (0.08, 0.18)   # M, ,
 POP_SWITCH = 0.35
 POP_DUR = 1.3
 
+MAP_DUR = 2.2             # the repo map, wide, its changed tiles lighting one by one
+MAP_LIGHT_START = 0.5
+MAP_LIGHT_SPAN = 1.0      # the most the staggered starts spread over
+MAP_LIGHT_STEP = 0.12     # ... and the most between two starts
+MAP_LIGHT_FADE = 0.3      # one tile's lighting
+MAP_MAX_TICKS = 12        # tile ticks heard, at most
+DIVE_DUR = 1.0            # map -> a file's tile -> the editor
+DIVE_CAM = 0.7            # the camera flies to the tile ...
+DIVE_MORPH = (0.3, 0.95)  # ... while the tile grows into the pane (landed a frame before the cut)
+DIVE_SWITCH = 0.5         # the side bar's current file changes
+TRAVEL_DUR = 1.3          # the editor -> back out -> the next file's tile -> the editor
+TRAVEL_SHRINK = 0.4
+TRAVEL_CAM = (0.25, 1.0)
+TRAVEL_GROW = (0.85, 1.25)
+TRAVEL_SWITCH = 0.85
+
+
+def light_start(k, n):
+    """When the k-th of n lit tiles starts to light, seconds into the map shot."""
+    return MAP_LIGHT_START + k * min(MAP_LIGHT_STEP, MAP_LIGHT_SPAN / max(1, n))
+
 
 def open_timing(path):
     """(key times, typed-letter times, RET time, duration) of an `open` shot."""
@@ -147,14 +168,21 @@ def _hunk_candidates(change, f, top, visible):
 
 def plan(change, verbose=0):
     """The tour of `change` as a Plan."""
+    files = [{'path': f.path, 'old_path': f.old_path, 'status': f.status, 'added': f.added,
+              'deleted': f.deleted, 'binary': f.binary, 'lines': f.lines} for f in change.files]
+    name = repo_name(change.repo)
+    tree_map = repomap.tiles(change.tree, files, root=name)
+    tiled = {t['path'] for g in tree_map['groups'] for t in g['tiles'] if 'path' in t}
     shots = [shot('card', 'title', TITLE_DUR)]
+    if tree_map['groups']:
+        # the changed files' tiles light in tour order
+        shots.append(shot('map', 'map', MAP_DUR, lit=[f['path'] for f in files if f['path'] in tiled]))
     hunk_shots = 0
     hunks = []   # (index into shots of the hunk shot, file, candidates)
     for f in change.files:
         if f.text is None:
             continue   # deleted or binary: listed in the side bar, not visited
-        *_, dur = open_timing(f.path)
-        shots.append(shot('editor', 'open', dur, path=f.path, keys=f'C-x C-f {f.path}'))
+        shots.append(shot('map', 'enter', 0, path=f.path))   # resolved below, once the xrefs are known
         for i, h in enumerate(f.hunks):
             if hunk_shots >= MAX_HUNK_SHOTS and i > 0:
                 break
@@ -197,7 +225,18 @@ def plan(change, verbose=0):
                 total -= 1
     tops = {si: top for si, _, top, _ in hunks}
     out = []
+    current, opened = None, set()   # the file on screen; files a definition visit has opened
     for si, s in enumerate(shots):
+        if s['kind'] == 'enter':
+            path = s['path']
+            if path in opened or path not in tiled:   # already seen (or not on the map): open it the editor's way
+                *_, dur = open_timing(path)
+                s = shot('editor', 'open', dur, path=path, keys=f'C-x C-f {path}')
+            elif current is None:
+                s = shot('map', 'dive', DIVE_DUR, path=path)
+            else:
+                s = shot('map', 'travel', TRAVEL_DUR, path=current, to=path)
+            current = path
         out.append(s)
         for c, d in picks.get(si, ()):
             lines = change.text(d.path).count('\n') + 1
@@ -206,11 +245,8 @@ def plan(change, verbose=0):
                             def_top=scroll_top(d.line, lines)))
             out.append(shot('editor', 'xref-pop', POP_DUR, path=s['path'], back_top=tops[si], line=c.line,
                             col=c.col, name=c.name))
+            opened.add(d.path)
 
-    files = [{'path': f.path, 'old_path': f.old_path, 'status': f.status, 'added': f.added,
-              'deleted': f.deleted, 'binary': f.binary, 'lines': f.lines} for f in change.files]
-    name = repo_name(change.repo)
-    tree_map = repomap.tiles(change.tree, files, root=name)
     nxt = {'short': change.next.short, 'subject': change.next.subject} if change.next else None
     return Plan(VERSION, FPS, change.base, change.target, change.label, change.is_range, _commit_info(change),
                 files, verbose, out, round(sum(s['dur'] for s in out), 3), repo=name, next=nxt,

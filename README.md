@@ -91,22 +91,29 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
 ## What works today
 
 - `--mode tour` on a commit or a range, in 16:9, 9:16 and 1:1.
+- A map of the repository opens the tour: every file a tile sized by its
+  size, grouped by top-level directory (small files folded into "N more"
+  tiles), the changed files lit by how much changed. The camera dives from
+  the map into the first file's tile, which grows into the editor, and
+  between files pulls back out and travels to the next one.
 - Syntax highlighting with Pygments.
 - Xref without a language server: identifiers on the added lines are looked
   up with `git grep` against per-language definition patterns (Python,
   JavaScript/TypeScript, Go, Rust, C-like languages, shell, Lisps).
   `--verbose` sets how many definitions get visited.
 - Colour is never the only cue: added lines carry a `+` in the fringe,
-  removed lines a `−` marker between lines, and the current file in the
-  side bar a `▶`.
+  removed lines a `−` marker between lines, the current file in the
+  side bar a `▶`, and a changed tile on the repo map an outline and its
+  `+a −d` label.
 
 ## The plan seam
 
 A tour is built in four steps: collect the git facts, plan a list of shots,
 build a film from the plan, render it. The plan is plain JSON
-(`--plan-json` prints it): a list of shots, each with a `scene` (`card` or
-`editor` today), a `kind` (`title`, `open`, `hunk`, `xref-push`,
-`xref-pop`, `end`) and a duration, beside plan-level facts: the `commit`
+(`--plan-json` prints it): a list of shots, each with a `scene` (`card`,
+`editor` or `map`), a `kind` (`title`, `map`, `dive`, `travel`, `open`,
+`hunk`, `xref-push`, `xref-pop`, `end`) and a duration, beside plan-level
+facts: the repo `map` (its tiles, grouped by directory), the `commit`
 (with its `coauthors` from `Co-Authored-By:` trailers), the `files`, the
 `repo` name, and `next`, the commit after the target on the current branch
 (or null). The planner is deterministic heuristics
@@ -119,5 +126,4 @@ for now; the JSON is the shape a later pass (an LLM, say) can rewrite.
 - `--series`: each patch of a range on its own.
 - `--voice`: a narration explaining the intent behind the change, voiced
   with videobuilder's `say` (Kokoro voice `bf_isabella` by default).
-- More scenes beside the editor: a repo map, a call graph, explainer cards,
-  and camera moves between them.
+- More scenes beside the editor and the map: a call graph, explainer cards.

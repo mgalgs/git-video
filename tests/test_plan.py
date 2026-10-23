@@ -33,6 +33,7 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(doc['target'], self.sha['change'])
         self.assertEqual(doc['repo'], 'repo')
         self.assertIn('next', doc)
+        self.assertLessEqual({'map', 'dive', 'travel'}, {s['kind'] for s in doc['shots']})
         self.assertEqual([g['dir'] for g in doc['map']['groups']], ['repo', 'src', 'tests'])
 
     def test_bad_rev_exit_code(self):
@@ -48,10 +49,15 @@ class TestPlan(unittest.TestCase):
         p = self.plans[0]
         self.assertEqual(p.shots[0]['kind'], 'title')
         self.assertEqual(p.shots[-1]['kind'], 'end')
-        visits = [(s['kind'], s.get('path')) for s in p.shots if s['kind'] in ('open', 'hunk')]
-        self.assertEqual(visits, [('open', 'src/app.py'), ('hunk', 'src/app.py'),
+        self.assertEqual(p.shots[1]['kind'], 'map')
+        visits = [(s['kind'], s.get('to', s.get('path'))) for s in p.shots
+                  if s['kind'] in ('open', 'hunk', 'dive', 'travel')]
+        # src/lib.py was opened by the xref into frob, so it is entered the editor's way
+        self.assertEqual(visits, [('dive', 'src/app.py'), ('hunk', 'src/app.py'),
                                   ('open', 'src/lib.py'), ('hunk', 'src/lib.py'),
-                                  ('open', 'tests/test_app.py'), ('hunk', 'tests/test_app.py')])
+                                  ('travel', 'tests/test_app.py'), ('hunk', 'tests/test_app.py')])
+        (travel,) = kinds(p, 'travel')
+        self.assertEqual(travel['path'], 'src/lib.py')
         self.assertNotIn('bin.dat', [s.get('path') for s in p.shots])
         self.assertIn('bin.dat', [f['path'] for f in p.files])
 
@@ -193,8 +199,13 @@ class TestPlan(unittest.TestCase):
     def test_every_shot_has_scene(self):
         for p in self.plans.values():
             for s in p.shots:
-                self.assertEqual(s['scene'], 'card' if s['kind'] in ('title', 'end') else 'editor')
+                want = {'title': 'card', 'end': 'card', 'map': 'map', 'dive': 'map', 'travel': 'map'}
+                self.assertEqual(s['scene'], want.get(s['kind'], 'editor'))
         self.assertIn('"scene"', self.plans[0].to_json())
+
+    def test_one_file_tour_has_no_travel(self):
+        p = plan.plan(collect.collect(self.repo, self.sha['root']))
+        self.assertEqual([s['kind'] for s in p.shots], ['title', 'map', 'dive', 'hunk', 'end'])
 
     def test_range_coauthors_union(self):
         p = plan.plan(collect.collect(self.repo, f'{self.sha["root"]}..HEAD'))

@@ -1,8 +1,10 @@
-import os
+import itertools
 import tempfile
 import unittest
 
-from git_video import collect, plan, repomap
+import videobuilder as vb
+
+from git_video import collect, film, plan, repomap
 from tests import fixtures
 
 
@@ -62,6 +64,39 @@ class TestRepoMap(unittest.TestCase):
         more = [t for _, t in all_tiles(m) if 'more' in t]
         self.assertTrue(all(t['more'] >= 2 for t in more), more)
         self.assertEqual(sum(t['more'] for t in more) + sum('path' in t for _, t in all_tiles(m)), len(tree))
+
+    def boxes(self):
+        for fmt in ('16x9', '9x16', '1x1'):
+            yield fmt, film.stage(vb.FORMATS[fmt]).main
+
+    def test_tiles_fill_without_overlap(self):
+        for m in (self.small, self.big):
+            for fmt, box in self.boxes():
+                lay = repomap.layout(m, box)
+                self.assertEqual(len(lay.tiles), sum(len(g['tiles']) for g in m['groups']))
+                for g in lay.groups:
+                    self.assertTrue(box.contains(g.box), (fmt, g))
+                for a, b in itertools.combinations([g.box for g in lay.groups], 2):
+                    self.assertFalse(a.intersects(b), fmt)
+                for a, b in itertools.combinations(lay.tiles, 2):
+                    self.assertFalse(a.box.intersects(b.box), (fmt, a.key, b.key))
+                for t in lay.tiles:
+                    self.assertTrue(any(g.box.contains(t.box) and t.box.y >= g.header.bottom - 0.5
+                                        for g in lay.groups), (fmt, t.key))
+                self.assertGreaterEqual(sum(g.box.w * g.box.h for g in lay.groups), 0.9 * box.w * box.h)
+
+    def test_changed_tiles_are_legible(self):
+        for m in (self.small, self.big):
+            for fmt, box in self.boxes():
+                lay = repomap.layout(m, box)
+                for t in lay.tiles:
+                    if t.heat is not None:
+                        self.assertGreaterEqual(min(t.box.w, t.box.h), 32, (fmt, t.key, t.box))
+                for g in m['groups']:
+                    quiet = [t for t in lay.tiles if 'path' in t.info and t.heat is None
+                             and any(t.info is x for x in g['tiles'])]
+                    areas = [t.box.w * t.box.h for t in sorted(quiet, key=lambda t: -t.info['size'])]
+                    self.assertEqual(areas, sorted(areas, reverse=True), (fmt, g['dir']))
 
     def test_many_directories_fold(self):
         tree = [(f'd{i:02d}/f', 10) for i in range(30)]

@@ -10,7 +10,7 @@ from git_video import collect, film, plan, sounds
 from tests import fixtures
 
 FULL = [('pro_typing_key/tick', 'key'), ('pro_click/mouse', 'click'), ('pro_hover_tick/soft', 'tick'),
-        ('whoosh_fast/tight', 'whoosh')]
+        ('whoosh_fast/tight', 'whoosh'), ('whoosh_soft/air', 'whoosh'), ('hover_tick/detent', 'tick')]
 
 
 class TestSounds(unittest.TestCase):
@@ -56,6 +56,11 @@ class TestSounds(unittest.TestCase):
         self.assertEqual(by['pro_click/mouse'], pushes)
         self.assertEqual(by['pro_hover_tick/soft'], sum(s['kind'] == 'hunk' for s in shots))
         self.assertEqual(by['whoosh_fast/tight'], len(opens) + pushes + pops)
+        moves = sum(s['kind'] in ('dive', 'travel') for s in shots)
+        self.assertEqual(by['whoosh_soft/air'], moves)
+        self.assertGreater(moves, 0)
+        (m,) = [s for s in shots if s['kind'] == 'map']
+        self.assertEqual(by['hover_tick/detent'], min(len(m['lit']), plan.MAP_MAX_TICKS))
 
     def test_role_fallback(self):
         with self.pack('clickonly', [('other/clicky', 'click')]):
@@ -68,8 +73,17 @@ class TestSounds(unittest.TestCase):
             self.assertEqual({s.effect for s in f.sounds}, {'other/clicky'})
         with self.pack('roles', [('a/key', 'key'), ('b/tick', 'tick'), ('c/whoosh', 'whoosh'), ('d/c', 'click')]):
             bank = vb.sfx.bank()
-            got = [sounds.pick(bank, *t[:2]) for t in (sounds.KEY, sounds.CLICK, sounds.TICK, sounds.WHOOSH)]
-            self.assertEqual(got, ['a/key', 'd/c', 'b/tick', 'c/whoosh'])
+            got = [sounds.pick(bank, *t[:2]) for t in (sounds.KEY, sounds.CLICK, sounds.TICK, sounds.WHOOSH,
+                                                       sounds.WHOOSH_SOFT, sounds.TILE)]
+            self.assertEqual(got, ['a/key', 'd/c', 'b/tick', 'c/whoosh', 'c/whoosh', 'b/tick'])
+
+    def test_tile_ticks_capped(self):
+        shots = [plan.shot('map', 'map', plan.MAP_DUR, lit=[f'f{i}' for i in range(20)])]
+        cues = sounds.cues(shots, [0], 30)
+        self.assertEqual([c for _, c in cues], ['tile'] * plan.MAP_MAX_TICKS)
+        frames = [f for f, _ in cues]
+        self.assertEqual(frames, sorted(frames))
+        self.assertLess(frames[-1], plan.MAP_DUR * 30)
 
     def test_keystroke_frames_deterministic(self):
         a = sounds.cues(self.plan.shots, [0] * len(self.plan.shots), 30)
