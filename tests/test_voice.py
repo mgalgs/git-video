@@ -313,3 +313,172 @@ class TestVoiceFlag(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestPacing(unittest.TestCase):
+    """Shots stretched to the voice: never overlapping, never crossing a shot's end."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.env = mock.patch.dict(os.environ, {'XDG_CACHE_HOME': os.path.join(cls.tmp.name, 'cache')})
+        cls.env.start()
+        cls.cases = {}
+        repo, sha = fixtures.make_callout_repo(cls.tmp.name)
+        ch = collect.collect(repo, sha['head'])
+        for mode in ('tour', 'develop'):
+            cls.cases['callout', mode] = (ch, [ch], mode)
+        repo, sha = fixtures.make_repo(os.path.join(cls.tmp.name, 'r'))
+        ch = collect.collect(repo, sha['change'])
+        cls.cases['repo', 'tour'] = (ch, [ch], 'tour')
+        cls.cases['repo', 'develop'] = (ch, [ch], 'develop')
+        ch = collect.collect(fixtures.make_budget_repo(
+            cls.tmp.name, 'Grow every function\n\nThe new grown_0() and grown_12() step x seventeen times over, '
+                          'each step adding its own index.'), 'HEAD')
+        cls.cases['budget', 'develop'] = (ch, [ch], 'develop')
+        repo, sha = fixtures.make_range_repo(cls.tmp.name)
+        change, patches = collect.series(repo, f'{sha["a"]}..{sha["c"]}')
+        for mode in ('tour', 'develop'):
+            cls.cases['series', mode] = (change, patches, mode)
+        vrepo, vsha = fixtures.make_voice_repo(cls.tmp.name)
+        ch = collect.collect(vrepo, vsha['head'])
+        for mode in ('tour', 'develop'):
+            cls.cases['voice', mode] = (ch, [ch], mode)
+        cls.plans = {}
+        for name, (ch, patches, mode) in cls.cases.items():
+            plain = plan.build(ch, 0, mode, patches)
+            voiced = voice.narrate(ch, patches, 0, mode, fixtures.FakeEngine(), 'bf_isabella')
+            cls.plans[name] = (plain, voiced)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.env.stop()
+        cls.tmp.cleanup()
+
+    def test_voice_off_is_todays_plan(self):
+        for name, (ch, patches, mode) in self.cases.items():
+            plain, _ = self.plans[name]
+            self.assertEqual(plain.to_json(), plan.build(ch, 0, mode, patches).to_json())
+            self.assertIsNone(plain.voice)
+
+    def test_phrases_fit_their_shots(self):
+        for name, (plain, p) in self.plans.items():
+            phrases = p.voice['phrases']
+            self.assertTrue(phrases, name)
+            starts, frames = plan.frame_starts(p.shots, p.fps)
+            bounds = [x / p.fps for x in starts] + [frames / p.fps]
+            prev = None
+            for q in phrases:
+                i = q['shot']
+                self.assertGreaterEqual(q['start'], bounds[i] - 1e-3, (name, q))
+                self.assertLessEqual(q['end'] + voice.BREATH - 0.05, bounds[i + 1], (name, q))
+                if prev is not None:
+                    self.assertGreaterEqual(q['start'], prev['end'] + voice.GAP - 0.05, (name, prev, q))
+                prev = q
+            for i, s in enumerate(p.shots):
+                mine = [q for q in phrases if q['shot'] == i]
+                if mine:
+                    said = sum(q['end'] - q['start'] for q in mine) + voice.GAP * (len(mine) - 1)
+                    self.assertGreaterEqual(s['dur'], said + voice.BREATH - 0.01, (name, i, s['kind']))
+
+    def test_same_shots_only_longer(self):
+        for name, (plain, p) in self.plans.items():
+            self.assertEqual([(s['kind'], s.get('path'), s.get('to')) for s in plain.shots],
+                             [(s['kind'], s.get('path'), s.get('to')) for s in p.shots], name)
+            spoken = {q['shot'] for q in p.voice['phrases']}
+            for i, (a, b) in enumerate(zip(plain.shots, p.shots)):
+                self.assertGreaterEqual(b['dur'], a['dur'] - 1e-6, (name, i))
+                if i not in spoken:
+                    self.assertEqual(a['dur'], b['dur'], (name, i, a['kind']))
+            self.assertGreater(p.total, plain.total)
+            self.assertEqual(round(sum(s['dur'] for s in p.shots), 3), p.total)
+
+    def test_callouts_follow_the_voice(self):
+        for name, (plain, p) in self.plans.items():
+            starts, _ = plan.frame_starts(p.shots, p.fps)
+            for q in p.voice['phrases']:
+                s = p.shots[q['shot']]
+                if s['kind'] != 'hunk' or not s['callouts']:
+                    continue
+                t = q['start'] - starts[q['shot']] / p.fps
+                shown = [c for c in s['callouts'] if c['at'] - 0.05 <= t < c['until']]
+                self.assertTrue(shown, (name, q['text']))
+                self.assertGreaterEqual(shown[0]['until'], q['end'] - starts[q['shot']] / p.fps - 0.05)
+                self.assertLessEqual(s['callouts'][-1]['until'], s['dur'])
+
+    def test_develop_hunks_wait_for_their_phrases(self):
+        from git_video import edits
+        for name, (plain, p) in self.plans.items():
+            if p.mode != 'develop':
+                continue
+            timed = voice.Timed([voice.Phrase(q['text'], k) for q, k in zip(p.voice['phrases'], self.keys(p))],
+                                [q['end'] - q['start'] for q in p.voice['phrases']])
+            for k, s in enumerate(p.shots):
+                if s['kind'] != 'edit':
+                    continue
+                clk, steps = s['clock'], s['steps']
+                hunks = list(plan._hunk_steps(steps).items())
+                for n, (hi, (i0, i1)) in enumerate(hunks):
+                    need = timed.fit(('edit', s['patch'], s['path'], hi), 0.0)[1]
+                    if not need:
+                        continue
+                    a, b = steps[i0]['at'], steps[i1]['at'] + steps[i1]['dur']
+                    nxt = steps[hunks[n + 1][1][0]]['at'] if n + 1 < len(hunks) else s['natural']
+                    played = edits.shot_time(b, clk) - edits.shot_time(a, clk)
+                    self.assertGreaterEqual(played, min(need, b - a) - 0.02, (name, hi))   # no faster than its phrase
+                    self.assertGreaterEqual(edits.shot_time(nxt, clk) - edits.shot_time(a, clk), need - 0.02,
+                                            (name, hi))
+                    for c in s['callouts']:
+                        if c['hunk'] == hi and c is s['callouts'][-1]:
+                            self.assertGreaterEqual(c['until'], min(s['dur'] - 0.2, need - voice.BREATH) - 0.05)
+            for k, entry in enumerate(p.patches):
+                self.assertAlmostEqual(entry['perf'], plan.perf_time(p, k), places=2)
+
+    def test_a_speedup_slows_to_the_phrase(self):
+        from git_video import edits
+        ch = self.cases['budget', 'develop'][0]
+        plain = plan.build(ch, 0, 'develop')
+        key = ('edit', 0, 'work.py', 0)   # the whole file is one hunk, sped up to fit the budget
+        p = plan.build(ch, 0, 'develop', voice=voice.Timed([voice.Phrase('Long.', key)], [80.0]))
+        a, b = plain.shots[-2], p.shots[-2]
+        self.assertTrue(a['fast'])
+        self.assertLess(a['dur'], 80)
+        self.assertGreaterEqual(b['dur'], 80 + voice.BREATH - 0.01)
+        self.assertLess(b['dur'], 80 + voice.BREATH + 2)   # aimed at the phrase, not slowed to natural pace
+        self.assertEqual(p.patches[0]['perf'], plan.perf_time(p))
+        self.assertGreater(b['fast'][0]['until'], a['fast'][0]['until'])   # the speed-up moved with it
+
+    def test_a_short_hunk_rests_for_its_phrase(self):
+        from git_video import edits
+        ch = self.cases['callout', 'develop'][0]
+        plain = plan.build(ch, 0, 'develop')
+        e = next(s for s in plain.shots if s['kind'] == 'edit')
+        hunks = list(plan._hunk_steps(e['steps']).items())
+        (h0, (i0, i1)), (h1, (j0, _)) = hunks[:2]
+        key = ('edit', 0, 'lib.py', h0)
+        p = plan.build(ch, 0, 'develop', voice=voice.Timed([voice.Phrase('Long.', key)], [6.0]))
+        s = next(x for x in p.shots if x['kind'] == 'edit')
+        clk, st = s['clock'], s['steps']
+        a, b, nxt = st[i0]['at'], st[i1]['at'] + st[i1]['dur'], st[j0]['at']
+        self.assertLess(b - a, 6.0)
+        self.assertAlmostEqual(edits.shot_time(b, clk) - edits.shot_time(a, clk), b - a, delta=0.02)   # natural pace
+        self.assertGreaterEqual(edits.shot_time(nxt, clk) - edits.shot_time(a, clk), 6.0 + voice.BREATH - 0.02)
+        mid = (edits.shot_time(b, clk) + edits.shot_time(nxt, clk)) / 2
+        self.assertLess(edits.speed_at(mid, clk), 1.0)   # point rests while the sentence finishes
+        c = next(c for c in s['callouts'] if c['hunk'] == h0)
+        self.assertGreaterEqual(c['until'], edits.shot_time(a, clk) + 6.0 - 0.05)
+
+    def keys(self, p):
+        """Each placed phrase's key, from its shot (an edit shot's: the hunk it starts at)."""
+        from git_video import edits
+        out = []
+        starts, _ = plan.frame_starts(p.shots, p.fps)
+        for q in p.voice['phrases']:
+            s = p.shots[q['shot']]
+            ks = voice.keys_of(s)
+            if s['kind'] == 'edit':
+                t = q['start'] - starts[q['shot']] / p.fps
+                at = voice.anchors(s)
+                ks = [max((k for k in ks if at[k] <= t + 1e-3), key=lambda k: at[k])]
+            out.append(ks[0])
+        return out

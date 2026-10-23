@@ -576,6 +576,10 @@ class Timed:
     def __contains__(self, key):
         return key in self.by_key
 
+    def slots(self, key):
+        """The slot of each phrase said over `key`, in order (as `fit` returns their spans)."""
+        return [slot for slot, _ in self.by_key.get(key, ())]
+
     def fit(self, key, anchor=0.0):
         spans, end = [], None
         for slot, sec in self.by_key.get(key, ()):
@@ -646,6 +650,10 @@ def narrate(change, patches, verbose, mode, engine, name):
     lexicon = lexicon_for(phrases)
     out_dir = script_dir(phrases, lexicon, name)
     seconds = synth(phrases, lexicon, name, engine, out_dir)
-    final = first
+    # Again, each shot as long as its phrases need: the same shots, so the
+    # same script (its keys do not depend on how long shots are).
+    final = planmod.build(change, verbose, mode, patches, voice=Timed(phrases, seconds))
+    if script(final, patches) != phrases:
+        raise AssertionError('the narrated plan says something else than the plan it was written from')
     final.voice = place(final, phrases, seconds, name, out_dir, lexicon)
     return final

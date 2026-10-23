@@ -344,10 +344,10 @@ def make_develop_repo(tmp):
     return repo
 
 
-def make_budget_repo(tmp):
+def make_budget_repo(tmp, message='Grow every function', name='budget'):
     """work.py with 25 functions; HEAD adds a 20-line function after each: 500
     added lines in 25 hunks, no run of 30."""
-    repo = os.path.join(tmp, 'budget')
+    repo = os.path.join(tmp, name)
     init(repo)
     funcs = [f'def base_{i}(x):\n    return x + {i}\n\n\n' for i in range(25)]
     write(repo, 'work.py', ''.join(funcs))
@@ -358,7 +358,7 @@ def make_budget_repo(tmp):
                ['    return x\n', '\n']
         out += [f, *body]
     write(repo, 'work.py', ''.join(out))
-    commit(repo, 'Grow every function')
+    commit(repo, message)
     return repo
 
 

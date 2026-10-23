@@ -346,10 +346,12 @@ def develop_sentences(change):
     return {(pairs[k][0].path, pairs[k][1]): [x[3] for x in _picks(v)] for k, v in chosen.items()}
 
 
-def _place_callouts(change, shots, readings):
+def _place_callouts(change, shots, readings, voice=None):
     """Give each hunk shot the commit sentences that explain it (`callouts`),
     each with its time on screen and the words its line points at, and stretch
-    the hunk's read to fit them. A range uses each hunk's own commit."""
+    the hunk's read to fit them. A range uses each hunk's own commit. With a
+    `voice` (voice.Timed), the shot lasts at least as long as what is said
+    over it, and each callout comes up as its sentence is said."""
     chosen = _match_callouts(change, [(f, h) for _, f, h, _, _ in readings])
     for k, (si, f, h, top, visible) in enumerate(readings):
         s = shots[si]
@@ -367,6 +369,26 @@ def _place_callouts(change, shots, readings):
                         'at': round(at, 3), 'until': round(at + slot - 0.2, 3)})
         s['callouts'] = out
         s['dur'] = round(hunk_dwell(visible, morph=morph, far=far, callouts=len(picks)), 3)
+        if voice is not None and shot_key(s) in voice:
+            _voice_callouts(s, voice, start)
+
+
+def _voice_callouts(s, voice, read):
+    """A narrated hunk shot: long enough for its phrases (each waits for its
+    callout, or the read's start), each callout up from its phrase's start
+    to just before the next callout or the shot's end."""
+    key = shot_key(s)
+    out = s['callouts']
+    spans, need = voice.fit(key, [c['at'] for c in out] or read)
+    s['dur'] = round(max(s['dur'], need), 3)
+    said = dict(zip(voice.slots(key), spans))
+    floor = 0.0
+    for n, c in enumerate(out):
+        a, z = said.get(n, (max(c['at'], floor), None))
+        c['at'] = round(a, 3)
+        floor = (z if z is not None else a) + 0.35
+    for c, nxt in zip(out, out[1:] + [None]):
+        c['until'] = round((nxt['at'] if nxt else s['dur']) - 0.2, 3)
 
 
 def file_entries(change):
@@ -387,7 +409,7 @@ def patch_entry(change, first_shot):
             'first_shot': first_shot}
 
 
-def _tour_body(change, verbose, patch):
+def _tour_body(change, verbose, patch, voice=None):
     """The tour of one change: per file an `enter` (resolved later) and its hunk
     shots, the commit sentences placed, the xref visits inserted after their
     hunks. Shot indices in the body are its own, from 0."""
@@ -431,7 +453,7 @@ def _tour_body(change, verbose, patch):
             readings.append((len(shots) - 1, f, h, top, len(visible)))
             pickable = [n for n in visible if n <= top + XREF_ROWS]
             hunks.append((len(shots) - 1, f, top, _hunk_candidates(change, f, top, pickable)))
-    _place_callouts(change, shots, readings)
+    _place_callouts(change, shots, readings, voice)
 
     # Xref visits, within the --verbose budget, inserted after their hunk.
     total, per_file, per_hunk = _budget(verbose)
@@ -463,12 +485,20 @@ def _tour_body(change, verbose, patch):
             out.append(shot('editor', 'xref-push', XREF_DUR, path=s['path'], line=c.line, col=c.col, name=c.name,
                             definition={'path': d.path, 'line': d.line, 'kind': d.kind, 'col': d.col},
                             def_top=scroll_top(d.line, lines), patch=patch))
+            _stretch(out[-1], voice, XREF_CLICK)
             out.append(shot('editor', 'xref-pop', POP_DUR, path=s['path'], back_top=tops[si], line=c.line,
                             col=c.col, name=c.name, patch=patch))
     return out
 
 
-def _resolve_enters(shots, tiled):
+def _stretch(s, voice, anchor):
+    """With a voice: shot `s` long enough for its phrases from `anchor` on."""
+    if voice is not None:
+        s['dur'] = round(max(s['dur'], voice.fit(shot_key(s), anchor)[1]), 3)
+    return s
+
+
+def _resolve_enters(shots, tiled, voice=None):
     """Each `enter` becomes the way into its file: a dive from the map for a
     patch's first file, a travel over the map from the file before, or `C-x
     C-f` for a file already seen in the patch (a definition visit opened it) or
@@ -488,6 +518,7 @@ def _resolve_enters(shots, tiled):
             else:
                 s = shot('map', 'travel', TRAVEL_DUR, path=current, to=path, patch=s['patch'])
             current = path
+            _stretch(s, voice, 0.0)
         elif s['kind'] == 'xref-push':
             opened.add(s['definition']['path'])
         out.append(s)
@@ -641,7 +672,38 @@ def _clock(sc, s0, fast):
     return clk, dur, span, added
 
 
-def _develop_body(change, verbose, patch):
+def _hunk_steps(steps):
+    """{hunk: (first step, last step)} of an edit script, in the order it reaches them."""
+    out = {}
+    for k, st in enumerate(steps):
+        a, _ = out.get(st['hunk'], (k, k))
+        out[st['hunk']] = (a, k)
+    return out
+
+
+def _voice_holds(sc, clock, voice, key):
+    """An edit script's clock with each narrated hunk played for at least its
+    phrases before the next hunk starts: first its own steps held to play no
+    faster than natural pace (`edits.hold`), then, if the phrase is longer,
+    the beat after it held while point rests and the sentence finishes."""
+    clk, dur, span, added = clock
+    steps = sc['steps']
+    hunks = list(_hunk_steps(steps).items())
+    for n, (hi, (i0, i1)) in enumerate(hunks):
+        need = voice.fit(key(hi), 0.0)[1]
+        if not need:
+            continue
+        a, b = steps[i0]['at'], steps[i1]['at'] + steps[i1]['dur']
+        nxt = steps[hunks[n + 1][1][0]]['at'] if n + 1 < len(hunks) else sc['natural']
+        clk, span, dur, _ = edits.hold(clk, span, dur, a, b, min(need, b - a))
+        lo = min(b, nxt - 0.05)
+        least = need - (edits.shot_time(lo, clk) - edits.shot_time(a, clk))
+        if edits.shot_time(nxt, clk) - edits.shot_time(a, clk) < need - 1e-6:
+            clk, span, dur, _ = edits.hold(clk, span, dur, lo, nxt, least)
+    return clk, dur, span, added
+
+
+def _develop_body(change, verbose, patch, voice=None):
     """Develop mode for one change: per file (in `order_files` order) an
     `enter` and an `edit` shot playing its edit script, paced to the budget.
     Returns (shots, patch fields, {id(edit shot): {new line: time on screen it
@@ -663,6 +725,9 @@ def _develop_body(change, verbose, patch):
         if abs(budget - held - target) < 1e-4 or budget - held <= 1.0:
             break
         target = budget - held
+    if voice is not None:
+        clocks = [_voice_holds(sc, c, voice, lambda hi, f=f: ('edit', patch, f.path, hi))
+                  for f, sc, c in zip(files, scripts, clocks)]
     chosen = _match_callouts(change, [(f, h) for f in files if f.text is not None for h in f.hunks])
     keys = [(fi, hi) for fi, f in enumerate(files) if f.text is not None for hi in range(len(f.hunks))]
     shots, written, done = [], {}, 0
@@ -682,10 +747,21 @@ def _develop_body(change, verbose, patch):
             picks = _picks(chosen[k])
             # up while its hunk is typed, and no longer: the leader follows the cursor
             slot = min(CALLOUT_EACH, (t1 - t0) / len(picks))
+            said = {}
+            if voice is not None:   # each card up while its sentence is said, the last one till it ends
+                key = ('edit', patch, f.path, hi)
+                said = dict(zip(voice.slots(key), voice.fit(key, t0)[0]))
             for n, (_, _, _, text, c) in enumerate(picks):
                 end = t1 if n == len(picks) - 1 else t0 + (n + 1) * slot - 0.2
-                callouts.append({'text': text, 'commit': c.short, 'hunk': hi, 'at': round(t0 + n * slot, 3),
-                                 'until': round(min(end, t1), 3)})
+                at = t0 + n * slot
+                if said:
+                    at = said[n][0] if n in said else at
+                    if n == len(picks) - 1:
+                        end = max(t1, max(z for _, z in said.values()))
+                    elif n + 1 in said:
+                        end = said[n + 1][0] - 0.2
+                callouts.append({'text': text, 'commit': c.short, 'hunk': hi, 'at': round(at, 3),
+                                 'until': round(end if said else min(end, t1), 3)})
         callouts.sort(key=lambda c: c['at'])
         for c, nxt in zip(callouts, callouts[1:] + [None]):
             c['until'] = round(min(c['until'], dur - 0.2, nxt['at'] - 0.05 if nxt else dur), 3)
@@ -703,15 +779,17 @@ def _develop_body(change, verbose, patch):
                    'perf': perf, 'speed': s0, 'peak': peak}, written
 
 
-def build(change, verbose=0, mode='tour', patches=None):
+def build(change, verbose=0, mode='tour', patches=None, voice=None):
     """The Plan of `change` in `mode`: a tour, or with `patches` (the change's
-    commits as changes of their own, oldest first) one tour per patch."""
+    commits as changes of their own, oldest first) one tour per patch. With a
+    `voice` (voice.Timed: the narration's phrases and their lengths), every
+    shot lasts at least as long as what is said over it."""
     patches = patches or [change]
     files = file_entries(change)
     name = repo_name(change.repo)
     tree_map = repomap.tiles(change.tree, files, root=name)
     tiled = {t['path'] for g in tree_map['groups'] for t in g['tiles'] if 'path' in t}
-    shots = [shot('card', 'title', TITLE_DUR, patch=0)]
+    shots = [_stretch(shot('card', 'title', TITLE_DUR, patch=0), voice, VOICE_TITLE_AT)]
     lit = [f['path'] for f in files if f['path'] in tiled]   # the changed files' tiles light in tour order
     if lit:   # nothing changed on the map (only deletions): nothing to show there
         shots.append(shot('map', 'map', MAP_DUR, lit=lit, patch=0))
@@ -719,16 +797,16 @@ def build(change, verbose=0, mode='tour', patches=None):
     for k, ch in enumerate(patches):
         entries.append(patch_entry(ch, len(shots)))   # from its card, after the first
         if k:
-            shots.append(shot('card', 'patch', INTER_DUR, patch=k))
+            shots.append(_stretch(shot('card', 'patch', INTER_DUR, patch=k), voice, VOICE_PATCH_AT))
         if mode == 'develop':
-            body, fields, w = _develop_body(ch, verbose, k)
+            body, fields, w = _develop_body(ch, verbose, k, voice)
             entries[-1].update(fields)
             written.update(w)
         else:
-            body = _tour_body(ch, verbose, k)
+            body = _tour_body(ch, verbose, k, voice)
         shots += body
-    shots.append(shot('card', 'end', END_DUR, patch=len(patches) - 1))
-    out = _resolve_enters(shots, tiled)   # one shot per shot: each patch's first_shot still holds
+    shots.append(_stretch(shot('card', 'end', END_DUR, patch=len(patches) - 1), voice, VOICE_END_AT))
+    out = _resolve_enters(shots, tiled, voice)   # one shot per shot: each patch's first_shot still holds
     nxt = {'short': change.next.short, 'subject': change.next.subject} if change.next else None
     def make(ch, sub, k=0):
         if mode == 'develop':

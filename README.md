@@ -157,6 +157,31 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
   current call-graph node a solid, larger hub, and a changed tile on the
   repo map an outline and its `+a −d` label.
 
+## --voice
+
+A voice walks you through the change while the film plays, the way a
+colleague would: what the change does (the commit subject as a sentence)
+and how big it is, a word as each file opens, the commit sentence that
+explains a hunk as it is shown or written (cut to a spoken length), a few
+words naming a new definition where no sentence explains it, what a dive
+calls, each patch of a `--series`, and the close. Silence is allowed:
+hunks with nothing worth saying get none. The script is written by
+heuristics from the plan; nothing reads code, trailers, URLs or hashes
+aloud. Identifiers are said as words (`draw_card` as "draw card", `film.py`
+as "film dot pie") and captioned as written.
+
+Shots stretch to the voice: a card or a hunk is held until its phrases and
+a breath are done, and in develop mode a narrated hunk is typed no faster
+than its phrase (down to natural pace), then point rests until the sentence
+ends. Phrases never overlap and never run into the next shot.
+
+The voice is said by videobuilder's `say` (Kokoro, voice `bf_isabella` by
+default) once per script, into `$XDG_CACHE_HOME/git-video/voice/`; a second
+render of the same change runs no model. Nothing is written into the
+repository. Captions follow the voice word by word, under the editor pane
+in 16:9 and in the band below the code in 9:16 and 1:1; the sound effects
+duck under the voice and typing goes quieter still.
+
 ## Develop mode
 
 - Each file is edited from its old text (empty for a new file) into its new
@@ -228,6 +253,13 @@ for `time-remapping`'s `speed_ramp`), its `fast` spans and `elisions` in
 seconds on screen, its `callouts`, and where it stands in the patch's lines
 (`done_before`, `lines`, `total_lines`). The film only plays it: the buffer
 at any frame is a function of the frame, from snapshots of the script.
+
+With `--voice` the plan also carries its `voice`: the Kokoro `voice` and
+`speed`, the cache `dir` its clips are in, the `lexicon` of spoken forms,
+and its `phrases`, each with its `text` (as captioned), the `shot` it is said
+over, its `start` and `end` on the film's clock in seconds, and its `audio`
+clip. Without `--voice` the plan has no `voice` key and is exactly what it
+was.
 
 The planner is deterministic heuristics for now; the JSON is the shape a
 later pass (an LLM, say) can rewrite.
