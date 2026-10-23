@@ -98,6 +98,16 @@ class TestFilm(unittest.TestCase):
                 if name.startswith('map.label '):
                     self.assertTrue(st.main.contains(b), (fmt, name))
 
+    def test_wide_pane_shows_ninety_columns(self):
+        from types import SimpleNamespace
+        for voice in (False, True):
+            st = film.stage(SimpleNamespace(width=1920, height=1080, format='16x9'), voice=voice)
+            for digits in (3, 4):   # a file of up to 9999 lines
+                lay = editor.layout(st.main, st.mono, digits=digits, minimap=True)
+                self.assertGreaterEqual(lay.cols, 90, (voice, digits))
+                self.assertGreaterEqual(lay.rows, plan.PLAN_ROWS, (voice, digits))
+            self.assertGreaterEqual(st.mono.size, 22)   # still easily read at 1080p
+
     def test_dive_lands_on_the_pane(self):
         i, _ = self.frame_of('dive', 0)
         last = self.tour.shot_frames[i + 1] - 1

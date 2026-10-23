@@ -163,7 +163,7 @@ class TestEdits(unittest.TestCase):
                 line = state.cursor[0]
                 if prev is not None and top < prev:
                     self.assertLess(line, prev + m, (rows, cols, t, prev, top))   # only point near the top scrolls back
-                wrapped = [editor.wrap_rows(len(x), cols) for _, x in state.lines]
+                wrapped = [editor.wrap_rows(x, cols) for _, x in state.lines]
                 self.assertLessEqual(top, line, (rows, cols, t))
                 self.assertLessEqual(sum(wrapped[top:line + 1]), rows, (rows, cols, t))   # all of point's line shows
                 prev = top

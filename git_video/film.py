@@ -54,9 +54,12 @@ class Stage:
     caption_font: vb.Font | None = None
 
 
+SIDE_16X9 = 520   # the side bar's width: narrow enough for 90-odd columns of code beside it
+
+
 def _stage_16x9(cv, family):
-    main, side = vb.Box.of(cv).pad(24).row(vb.fr, 600, gap=16)
-    return Stage(main, side, False, vb.Font(family, 26, line_height=1.35), 1.0)
+    main, side = vb.Box.of(cv).pad(24).row(vb.fr, SIDE_16X9, gap=16)
+    return Stage(main, side, False, vb.Font(family, 22, line_height=1.35), 1.0)
 
 
 def _stage_9x16(cv, family):
@@ -73,9 +76,9 @@ LAYOUT = {'16x9': _stage_16x9, '9x16': _stage_9x16, '1x1': _stage_1x1}
 
 # With --voice, per format: the captions' size, and the editor's font made
 # small enough that the main box, less the caption band, still shows
-# plan.PLAN_ROWS rows (16x9 has no rows to spare).
+# plan.PLAN_ROWS rows (1x1 has no rows to spare).
 CAPTION_SIZE = {'16x9': 32, '9x16': 36, '1x1': 30}
-VOICE_MONO = {'16x9': 23, '9x16': 24, '1x1': 21}
+VOICE_MONO = {'16x9': 22, '9x16': 24, '1x1': 21}
 CAPTION_GAP = 16    # between the main box and the caption band
 
 
@@ -1611,7 +1614,7 @@ def _edit(tour, cv, st, shot, t, i, before, after):
             run = next(((a, b) for a, b in _changed_ranges(state.lines) if a <= line <= b + 1), (line, line))
             first, last = where.line_box(min(run[0], line)), where.line_box(max(run[1], line))
             band = vb.Box(first.x, first.y, first.w, last.bottom - first.y)
-            h = col - col % lay.cols   # point's row of its (maybe wrapped) line, from its start to point
+            h = where.geometry.row_start(line, col)   # point's row of its (maybe wrapped) line, from its start to point
             target = where.word_box(line, h, max(1, col - h))
             card = _callout_card(tour, cv, st, where, (i, k), c, t, target, band, point, outline=False)
     _speed_badge(cv, st, where, shot, t, avoid=card)

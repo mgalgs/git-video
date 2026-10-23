@@ -18,7 +18,7 @@ from .collect import is_test
 
 VERSION = 2
 FPS = 30
-PLAN_ROWS = 26            # rows the planner assumes are on screen: the fewest any format shows (16x9)
+PLAN_ROWS = 26            # rows the planner assumes are on screen: the fewest any format shows (1x1 with --voice)
 # The film re-scrolls to keep the focus line off the window's last row
 # (film.fit_top), so an xref is only picked from the rows above it.
 XREF_ROWS = PLAN_ROWS - 1

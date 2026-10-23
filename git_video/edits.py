@@ -40,7 +40,7 @@ from videobuilder.type.typewriter import schedule
 
 from .highlight import TAB
 
-from . import highlight, worddiff
+from . import editor, highlight, worddiff
 
 # Natural timings, seconds: the pace of a person typing at ease.
 PER_CHAR = 0.06           # a typed character, on average (schedule makes it uneven)
@@ -761,7 +761,7 @@ def _fit(top, line, lines, rows, cols, m):
         return top
 
     def wrapped(ln):
-        return max(1, -(-len(lines[ln][1].expandtabs(TAB)) // cols))
+        return editor.wrap_rows(lines[ln][1].expandtabs(TAB), cols)
     for margin, stop in ((m, line - m), (0, line)):
         while top < stop and sum(wrapped(ln) for ln in range(top, line + 1)) + margin > rows:
             top += 1

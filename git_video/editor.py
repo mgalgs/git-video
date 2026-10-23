@@ -13,7 +13,9 @@ Lines and columns are 0-based. `scroll_top` is the (fractional) index of the
 first line at the top of the text area, so scrolling is smooth. Everything is
 clipped to the box; the canvas size is never consulted.
 """
+import bisect
 import contextlib
+import functools
 import math
 from dataclasses import dataclass, field
 from typing import Sequence
@@ -270,13 +272,51 @@ def _clipped(b, area):
     return vb.Box(x0, y0, x1 - x0, y1 - y0) if x1 >= x0 and y1 >= y0 else None
 
 
-def wrap_rows(length, cols):
-    """Screen rows a line of `length` columns takes in a window `cols` wide,
-    as Emacs wraps it (`truncate-lines` nil): one, plus a continuation row
-    per `cols` columns more. A line exactly `cols` wide takes one row, point
-    at its end sitting past the last column (Emacs's
+# Where a row may break, as Emacs's visual-line-mode wraps (`word-wrap` t):
+# after a space, or before punctuation that follows a word (`.`, `(`, an
+# operator), never between two letters of a word. Closing brackets and
+# separators stay with the word before them, so a row never starts with them.
+BREAK_BEFORE = frozenset('.([{=+-*/%<>!&|^~@')
+
+
+def _may_break(text, i):
+    a, b = text[i - 1], text[i]
+    if b == ' ':
+        return False
+    if a == ' ':
+        return True
+    return b in BREAK_BEFORE and a not in BREAK_BEFORE and a not in '([{'
+
+
+@functools.lru_cache(maxsize=8192)
+def wrap_starts(text, cols):
+    """The columns each screen row of `text` starts at in a window `cols`
+    wide (the first is 0), wrapped as Emacs's visual-line-mode does: each row
+    as long as it can be, broken after a space or before punctuation, and
+    mid-word only for a word longer than a row. A line exactly `cols` wide
+    takes one row, point at its end sitting past the last column (Emacs's
     overflow-newline-into-fringe)."""
-    return max(1, -(-length // cols))
+    starts, a, n = [0], 0, len(text)
+    while n - a > cols:
+        b = next((i for i in range(a + cols, a, -1) if _may_break(text, i)), a + cols)
+        starts.append(b)
+        a = b
+    return tuple(starts)
+
+
+def wrap_rows(text, cols):
+    """Screen rows `text` takes in a window `cols` wide (see `wrap_starts`)."""
+    return len(wrap_starts(text, cols))
+
+
+def row_of(starts, col):
+    """(row, column within it) of `col` on a line wrapped at `starts`."""
+    r = bisect.bisect_right(starts, col) - 1
+    return r, col - starts[r]
+
+
+def _plain_text(runs):
+    return ''.join(t for _, t in runs)
 
 
 def line_length(runs):
@@ -307,11 +347,15 @@ class Geometry:
             for ln in range(seg.line, seg.line + seg.new):
                 self.inside[ln] = k
 
-    def rows(self, ln):
+    def starts(self, ln):
+        """The columns `ln`'s screen rows start at (see `wrap_starts`)."""
         r = self._rows.get(ln)
         if r is None:
-            r = self._rows[ln] = wrap_rows(line_length(self.lines[ln]), self.cols) if 0 <= ln < self.n else 1
+            r = self._rows[ln] = wrap_starts(_plain_text(self.lines[ln]), self.cols) if 0 <= ln < self.n else (0,)
         return r
+
+    def rows(self, ln):
+        return len(self.starts(ln))
 
     def offset(self, ln):
         """Screen rows from the top line's first row to `ln`'s first row."""
@@ -334,7 +378,7 @@ class Geometry:
         return self.y0 + self.offset(ln) * self.lay.line_h
 
     def old_rows(self, seg, upto=None):
-        return sum(wrap_rows(line_length(r), self.cols) for r in seg.old[:upto])
+        return sum(wrap_rows(_plain_text(r), self.cols) for r in seg.old[:upto])
 
     def new_rows(self, seg, upto=None):
         return sum(self.rows(seg.line + r) for r in range(seg.new if upto is None else upto))
@@ -362,39 +406,39 @@ class Geometry:
     def at(self, ln, col):
         """(x, y) of column `col` of line `ln` (its end, on a line filling its
         last row exactly, just past that row)."""
-        r, c = divmod(col, self.cols)
-        if c == 0 and r >= self.rows(ln) and r > 0:
-            r, c = r - 1, self.cols
+        r, c = row_of(self.starts(ln), col)
         return self.lay.col_x(c), self.y(ln) + r * self.lay.line_h
+
+    def row_start(self, ln, col):
+        """The column the screen row holding `ln`'s column `col` starts at."""
+        starts = self.starts(ln)
+        return starts[row_of(starts, col)[0]]
 
     def pieces(self, ln, c0, c1):
         """[(x, y, w)]: the columns c0..c1 of `ln`, one piece per screen row."""
-        return [(x, y, (b - a) * self.lay.cell_w) for a, b, x, y in self._split(c0, c1, self.y(ln), self.rows(ln))]
+        return [(x, y, (b - a) * self.lay.cell_w) for a, b, x, y in self._split(c0, c1, self.y(ln), self.starts(ln))]
 
-    def _split(self, c0, c1, y0, rows=None):
-        """[(a, b, x, y)] per screen row. With the line's `rows`, columns past
-        its last row (the newline cell of a line filling it exactly) stay at
-        that row's end, as `at` puts point there."""
-        out, a, cols, lh = [], c0, self.cols, self.lay.line_h
-        while a < c1 or (a == c1 == c0):
-            b = min(c1, (a // cols + 1) * cols)
-            r = a // cols
-            if rows is not None and r >= rows and r > 0 and a % cols == 0:
-                y = y0 + (r - 1) * lh
-                if out and out[-1][3] == y:
-                    out[-1] = (out[-1][0], b, out[-1][2], y)
-                else:
-                    out.append((a, b, self.lay.col_x(cols), y))
-            else:
-                out.append((a, b, self.lay.col_x(a % cols), y0 + r * lh))
-            if b == a:
-                break
-            a = b
-        return out
+    def _split(self, c0, c1, y0, starts):
+        """[(a, b, x, y)] per screen row of a line wrapped at `starts` whose
+        first row is at `y0`. Columns past the last row's start stay on it
+        (the newline cell of a line filling it exactly sits past its end)."""
+        out, lh = [], self.lay.line_h
+        r = row_of(starts, c0)[0]
+        a = c0
+        while True:
+            end = starts[r + 1] if r + 1 < len(starts) else None
+            b = c1 if end is None else min(c1, end)
+            out.append((a, b, self.lay.col_x(a - starts[r]), y0 + r * lh))
+            if end is None or b >= c1:
+                return out
+            a, r = b, r + 1
 
     def box(self, ln, col, length):
         x, y = self.at(ln, col)
-        w = min(length, self.cols - col % self.cols) if length else 0
+        starts = self.starts(ln)
+        r, c = row_of(starts, col)
+        room = (starts[r + 1] - col) if r + 1 < len(starts) else self.cols - c
+        w = min(length, room) if length else 0
         return vb.Box(x, y, max(w, 0) * self.lay.cell_w, self.lay.line_h)
 
 
@@ -516,7 +560,7 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                 for ln in lines:
                     if ln in inside:
                         continue
-                    _draw_runs(cv, lay, buf.lines[ln], y_of(ln), font)
+                    _draw_runs(cv, lay, buf.lines[ln], y_of(ln), font, geo.starts(ln))
                 for k, seg in enumerate(active):
                     _draw_segment(cv, lay, buf, seg, tops[k], p, font, theme, geo)
                 for seg in morphs:   # added words stay underlined once the morph is over
@@ -558,7 +602,7 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                         taken.append((y, y + lh))
                     vbtext.draw(cv, ['−'], small, box.x, y + (lh - sh) / 2, theme.fringe_removed, align='center',
                                 width=lay.fringe_w, alpha=a)
-                    rows = wrap_rows(line_length(old), geo.cols)
+                    rows = wrap_rows(_plain_text(old), geo.cols)
                     for r in range(1, rows):
                         if at + r < h:
                             _continuation(cv, lay, y + r * lh, theme, a)
@@ -779,17 +823,17 @@ def _moving(cv, tb, motion):
     return skewed(cv, tb.cx, tb.cy, motion[0], motion[1])
 
 
-def _draw_runs(cv, lay, runs, y, font):
-    """A line's runs from `y`, wrapped onto continuation rows every `lay.cols` columns."""
-    col, cols, lh = 0, lay.cols, lay.line_h
+def _draw_runs(cv, lay, runs, y, font, starts):
+    """A line's runs from `y`, wrapped onto continuation rows at `starts`."""
+    col, lh = 0, lay.line_h
     for color, s in runs:
         a = 0
         while a < len(s):
-            c = col + a
-            b = min(len(s), a + cols - c % cols)
+            r, c = row_of(starts, col + a)
+            b = len(s) if r + 1 >= len(starts) else min(len(s), starts[r + 1] - col)
             part = s[a:b]
             if part.strip():
-                vbtext.draw(cv, [part], font, lay.col_x(c % cols), y + (c // cols) * lh, color)
+                vbtext.draw(cv, [part], font, lay.col_x(c), y + r * lh, color)
             a = b
         col += len(s)
 
@@ -806,7 +850,7 @@ def _draw_segment(cv, lay, buf, seg, top, p, font, theme, geo):
     """One segment's words at morph progress `p` (see `draw`), kept inside the
     rows the segment has at `p`: a ghost's rows close over it like a shutter, a
     growing segment opens like a drawer. Old and new lines wrap as the buffer's do."""
-    lh, cols = lay.line_h, geo.cols
+    lh = lay.line_h
     rows = geo.seg_rows(seg)
     if rows * lh < 0.5:
         return
@@ -816,6 +860,8 @@ def _draw_segment(cv, lay, buf, seg, top, p, font, theme, geo):
     ghost = seg.new == 0
     old_at = [geo.old_rows(seg, r) for r in range(len(seg.old) + 1)]
     new_at = [geo.new_rows(seg, r) for r in range(seg.new + 1)]
+    old_starts = [wrap_starts(_plain_text(r), geo.cols) for r in seg.old]
+    new_starts = [geo.starts(seg.line + r) for r in range(seg.new)]
 
     def old_y(row):
         return top + old_at[row] * lh
@@ -828,10 +874,14 @@ def _draw_segment(cv, lay, buf, seg, top, p, font, theme, geo):
             if kind != 'equal':
                 continue
             color = _color_at(buf.lines[seg.line + nrow], ncol)
-            whole = ocol % cols + len(text) <= cols and ncol % cols + len(text) <= cols
+            os_, ns_ = old_starts[orow], new_starts[nrow]
+            end = len(text) - 1
+            whole = (row_of(os_, ocol)[0] == row_of(os_, ocol + end)[0]
+                     and row_of(ns_, ncol)[0] == row_of(ns_, ncol + end)[0])
             for i, ch in ([(0, text)] if whole else enumerate(text)):   # a word split by a wrap glides letter by letter
-                vo, co = old_at[orow] + (ocol + i) // cols, (ocol + i) % cols
-                vn, cn = new_at[nrow] + (ncol + i) // cols, (ncol + i) % cols
+                ro, co = row_of(os_, ocol + i)
+                rn, cn = row_of(ns_, ncol + i)
+                vo, vn = old_at[orow] + ro, new_at[nrow] + rn
                 vbtext.draw(cv, [ch], font, lay.col_x(co + (cn - co) * ge), top + (vo + (vn - vo) * ge) * lh, color)
         gone = [o for o in seg.ops if o[0] == 'delete']
         if dq < 1 and gone:
@@ -842,7 +892,7 @@ def _draw_segment(cv, lay, buf, seg, top, p, font, theme, geo):
                 def put(c, words=words, y=y, row=row):
                     for _, _, ocol, _, _, text in words:
                         color = _color_at(seg.old[row], ocol) if ghost else theme.removed_fg
-                        for a, b, x, py in geo._split(ocol, ocol + len(text), y):
+                        for a, b, x, py in geo._split(ocol, ocol + len(text), y, old_starts[row]):
                             vbtext.draw(c, [text[a - ocol:b - ocol]], font, x, py, color,
                                         alpha=theme.ghost_alpha if ghost else 1.0)
 
@@ -850,7 +900,7 @@ def _draw_segment(cv, lay, buf, seg, top, p, font, theme, geo):
                 dither_reveal(cv, vb.Box(lay.text_box.x, y, lay.text_box.w, h), 1 - dq, put,
                               cell=max(3.0, lh * 0.16))
                 for _, c0, c1 in _spans([(row, o[2], o[5]) for o in words]):
-                    for a, b, x, py in geo._split(c0, c1, y):
+                    for a, b, x, py in geo._split(c0, c1, y, old_starts[row]):
                         sy = py + lh * 0.52
                         cv.line(x - 1, sy, x + (b - a) * lay.cell_w + 1, sy, theme.strike, width=2, alpha=1 - dq)
         added = [o for o in seg.ops if o[0] == 'insert']
@@ -862,7 +912,7 @@ def _draw_segment(cv, lay, buf, seg, top, p, font, theme, geo):
             def put(c, words=words, row=row):
                 for _, _, _, nrow, ncol, text in words:
                     color = _color_at(buf.lines[seg.line + nrow], ncol)
-                    for a, b, x, py in geo._split(ncol, ncol + len(text), new_y(nrow)):
+                    for a, b, x, py in geo._split(ncol, ncol + len(text), new_y(nrow), new_starts[nrow]):
                         vbtext.draw(c, [text[a - ncol:b - ncol]], font, x, py, color)
 
             wipe_reveal(cv, put, vb.Box(lay.text_box.x, new_y(row), lay.text_box.w, (new_at[row + 1] - new_at[row]) * lh),
@@ -873,13 +923,13 @@ def _draw_segment(cv, lay, buf, seg, top, p, font, theme, geo):
                     if nrow in fresh:
                         continue
                     color = _color_at(buf.lines[seg.line + nrow], ncol)
-                    for a, b, x, py in geo._split(ncol, ncol + len(text), new_y(nrow)):
+                    for a, b, x, py in geo._split(ncol, ncol + len(text), new_y(nrow), new_starts[nrow]):
                         draw_scramble(cv, text[a - ncol:b - ncol], font, x, py, iq, color, scrambled=theme.underline,
                                       seed=f'{seg.line}:{nrow}:{a}', glyphs=SCRAMBLE_GLYPHS)
         if p >= UNDERLINE_AT:
             ins = [(o[3], o[4], o[5]) for o in added]
             for row, c0, c1 in _spans(ins):
-                for a, b, x, py in geo._split(c0, c1, new_y(row)):
+                for a, b, x, py in geo._split(c0, c1, new_y(row), new_starts[row]):
                     _underline(cv, lay, x, py, (b - a) * lay.cell_w, theme, alpha=_phase(p, (UNDERLINE_AT, 0.75)))
 
 

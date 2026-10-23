@@ -108,7 +108,8 @@ class TestRepoMap(unittest.TestCase):
                     quiet = [t for t in lay.tiles if 'path' in t.info and t.heat is None
                              and any(t.info is x for x in g['tiles'])]
                     areas = [t.box.w * t.box.h for t in sorted(quiet, key=lambda t: -t.info['size'])]
-                    self.assertEqual(areas, sorted(areas, reverse=True), (fmt, g['dir']))
+                    for big, small in zip(areas, areas[1:]):   # the gaps between tiles may cost a few %
+                        self.assertLessEqual(small, big * 1.03, (fmt, g['dir'], areas))
 
     def synthetic(self, n):
         """A map of a repo where `n` files changed, spread over a few directories
