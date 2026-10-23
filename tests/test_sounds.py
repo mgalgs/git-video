@@ -12,7 +12,7 @@ from tests import fixtures
 
 FULL = [('pro_typing_key/tick', 'key'), ('pro_click/mouse', 'click'), ('pro_hover_tick/soft', 'tick'),
         ('whoosh_fast/tight', 'whoosh'), ('whoosh_fast/sleeve', 'whoosh'), ('pro_hover_tick/detent', 'tick'),
-        ('pro_typing_run/fast', 'typing')]
+        ('pro_typing_run/standard', 'typing')]
 
 
 class TestSounds(unittest.TestCase):
@@ -137,7 +137,7 @@ class TestSounds(unittest.TestCase):
         by = {}
         for s in f.sounds:
             by[s.effect] = by.get(s.effect, 0) + 1
-        self.assertGreater(by.get('pro_typing_run/fast', 0), 0)
+        self.assertGreater(by.get('pro_typing_run/standard', 0), 0)
         self.assertGreater(by.get('pro_typing_key/tick', 0), 0)
         fps = p.fps
         for i, s in enumerate(p.shots):

@@ -22,7 +22,7 @@ WHOOSH = (('whoosh_fast/tight',), ('whoosh',), -14.0, 'peak')
 WHOOSH_SOFT = (('whoosh_fast/sleeve', 'whoosh_fast/tight'), ('whoosh',), -22.0, 'peak')
 TILE = (('pro_hover_tick/detent', 'hover_tick/detent'), ('tick',), -22.0, 'onset')
 # A run of typing too fast to hear key by key (a speed-up, an elided run).
-RUN = (('pro_typing_run/fast', 'pro_typing_run/steady'), ('typing',), -14.0, 'onset')
+RUN = (('pro_typing_run/standard', 'pro_typing_run/soft'), ('typing',), -14.0, 'onset')
 
 KEY_GAP = 1 / 14     # develop: a key closer than this to the one before is not heard on its own
 RUN_EVERY = 2.0      # a typing run is cued again this often through a long speed-up
