@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field
 
 from videobuilder.type.typewriter import schedule
 
-from . import xref
+from . import repomap, xref
 
 VERSION = 1
 FPS = 30
@@ -90,6 +90,7 @@ class Plan:
     total: float = 0.0
     repo: str = ''            # the repository's directory name, for the title card's kicker
     next: dict | None = None  # {'short', 'subject'} of the commit after the target on HEAD's line
+    map: dict | None = None   # the repo map's groups and tiles (repomap.tiles)
 
     def to_json(self):
         return json.dumps(asdict(self), indent=2, sort_keys=True, ensure_ascii=False)
@@ -208,6 +209,9 @@ def plan(change, verbose=0):
 
     files = [{'path': f.path, 'old_path': f.old_path, 'status': f.status, 'added': f.added,
               'deleted': f.deleted, 'binary': f.binary, 'lines': f.lines} for f in change.files]
+    name = repo_name(change.repo)
+    tree_map = repomap.tiles(change.tree, files, root=name)
     nxt = {'short': change.next.short, 'subject': change.next.subject} if change.next else None
     return Plan(VERSION, FPS, change.base, change.target, change.label, change.is_range, _commit_info(change),
-                files, verbose, out, round(sum(s['dur'] for s in out), 3), repo=repo_name(change.repo), next=nxt)
+                files, verbose, out, round(sum(s['dur'] for s in out), 3), repo=name, next=nxt,
+                map=tree_map)

@@ -31,6 +31,9 @@ class TestPlan(unittest.TestCase):
         for key in ('version', 'fps', 'target', 'shots', 'total'):
             self.assertIn(key, doc)
         self.assertEqual(doc['target'], self.sha['change'])
+        self.assertEqual(doc['repo'], 'repo')
+        self.assertIn('next', doc)
+        self.assertEqual([g['dir'] for g in doc['map']['groups']], ['repo', 'src', 'tests'])
 
     def test_bad_rev_exit_code(self):
         code, _, err = quiet(cli.main, ['-C', self.repo, 'nope'])

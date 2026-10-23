@@ -139,3 +139,23 @@ def make_edge_repo(tmp):
     write(repo, 'use.go', 'package r\n\nfunc use(r *Reader) int {\n\treturn r.Read(nil)\n}\n')
     commit(repo, 'Add the edge cases')
     return repo
+
+
+TREE_DIRS = 20
+TREE_FILES = 400
+TREE_CHANGED = ('d00/f000.py', 'd00/f020.py', 'd07/f007.py', 'd13/f013.py', 'd13/f033.py')
+
+
+def make_tree_repo(tmp):
+    """A repo of TREE_FILES files spread over TREE_DIRS top-level directories,
+    sizes from 0 to about 40 kB; HEAD changes TREE_CHANGED (in 3 directories)."""
+    repo = os.path.join(tmp, 'tree')
+    init(repo)
+    for i in range(TREE_FILES):
+        write(repo, f'd{i % TREE_DIRS:02d}/f{i:03d}.py', 'x' * ((i * 7919) % 40000))
+    commit(repo, 'Add a lot of files')
+    for path in TREE_CHANGED:
+        with open(os.path.join(repo, path), 'a') as fh:
+            fh.write('\nchanged = True\n')
+    commit(repo, 'Touch five files')
+    return repo
