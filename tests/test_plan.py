@@ -34,7 +34,7 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(doc['repo'], 'repo')
         self.assertIn('next', doc)
         self.assertLessEqual({'map', 'dive', 'travel'}, {s['kind'] for s in doc['shots']})
-        self.assertEqual([g['dir'] for g in doc['map']['groups']], ['repo', 'src', 'tests'])
+        self.assertEqual([g['label'] for g in doc['map']['groups']], ['repo', 'src/', 'tests/'])
 
     def test_bad_rev_exit_code(self):
         code, _, err = quiet(cli.main, ['-C', self.repo, 'nope'])

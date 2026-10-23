@@ -23,27 +23,31 @@ CHANGED_SHARE = 0.5  # ... lowered so the changed tiles' floors never pass this 
 QUIET_FLOOR = 0.012  # a quiet or folded tile's least share
 
 
-def group_of(path, root):
-    """(group label, label inside the group) of a path: grouped by the first
-    directory; files at the top level go in a group named `root`."""
+def group_of(path):
+    """(group key, label inside the group) of a path: grouped by the first
+    directory; files at the top level go in the group keyed `''`, which no
+    directory can be (so a top-level `django/` stays apart from the files
+    beside it in a repo named django)."""
     head, sep, rest = path.partition('/')
-    return (head, rest) if sep else (root, path)
+    return (head, rest) if sep else ('', path)
 
 
 def tiles(tree, files, root):
-    """The map for the plan: `{'files': n, 'groups': [{'dir', 'tiles'}]}`.
+    """The map for the plan: `{'files': n, 'groups': [{'dir', 'label', 'tiles'}]}`.
 
     `tree` is [(path, size)] of every blob at the target; `files` the plan's
     file dicts (the changed files, in tour order). A changed tile is
     `{'path', 'size', 'added', 'deleted'}`, a quiet one `{'path', 'size'}`, a
     folded one `{'more': n, 'size': total}`. Groups holding a changed file
-    come first, in the order of their first changed file, then by size."""
+    come first, in the order of their first changed file, then by size. A
+    group's `dir` is its directory (`''` for the top-level files) and its
+    `label` what the map shows: `dir/`, or `root` for the top level."""
     sizes = dict(tree)
     changed = [f for f in files if f['path'] in sizes]
     order = {f['path']: k for k, f in enumerate(changed)}
     groups = {}
     for path, size in tree:
-        groups.setdefault(group_of(path, root)[0], []).append((path, size))
+        groups.setdefault(group_of(path)[0], []).append((path, size))
 
     def rank(name):
         first = min((order[p] for p, _ in groups[name] if p in order), default=None)
@@ -77,16 +81,17 @@ def tiles(tree, files, root):
     for n in kept:
         entries = groups[n]
         ts = [{'path': f['path'], 'size': sizes[f['path']], 'added': f['added'], 'deleted': f['deleted']}
-              for f in changed if group_of(f['path'], root)[0] == n]
+              for f in changed if group_of(f['path'])[0] == n]
         q = sorted(((s, p) for p, s in entries if p not in order), key=lambda x: (-x[0], x[1]))
         ts += [{'path': p, 'size': s} for s, p in q if p in shown]
         left = [(s, p) for s, p in q if p not in shown]
         if left:
             ts.append({'more': len(left), 'size': sum(s for s, _ in left)})
-        out.append({'dir': n, 'tiles': ts})
+        out.append({'dir': n, 'label': f'{n}/' if n else root, 'tiles': ts})
     if folded:
         n = sum(len(groups[g]) for g in folded)
-        out.append({'dir': f'{len(folded)} more directories',
+        label = f'{len(folded)} more directories'
+        out.append({'dir': label, 'label': label,
                     'tiles': [{'more': n, 'size': sum(s for g in folded for _, s in groups[g])}]})
     return {'files': len(tree), 'groups': out}
 
@@ -171,10 +176,10 @@ def layout(m, box):
         hh = min(HEADER, gb.h * 0.3)
         header = vb.Box(gb.x, gb.y, gb.w, hh)
         inner = vb.Box(gb.x + TILE_GAP, gb.y + hh, max(0.0, gb.w - 2 * TILE_GAP), max(0.0, gb.h - hh - TILE_GAP))
-        out_groups.append(Group(g['dir'], gb, header))
+        out_groups.append(Group(g['label'], gb, header))
         for t, tb in zip(g['tiles'], treemap_layout(vals, *inner, gap=TILE_GAP)):
             if 'path' in t:
-                label = group_of(t['path'], g['dir'])[1]
+                label = group_of(t['path'])[1]
             else:
                 label = f'{t["more"]} more'
             heat = (t['added'] + t['deleted']) / top if 'added' in t else None
@@ -198,7 +203,7 @@ def draw(cv, lay, lit, *, ui='sans-serif', mono='monospace', added='#98be65', re
             cv.rect(*g.box, PANEL, radius=8)
             cv.outline(g.box.x + 0.5, g.box.y + 0.5, g.box.w - 1, g.box.h - 1, PANEL_EDGE, width=1, radius=8)
             if g.header.h >= vbtext.line_height(head) * 0.9:
-                label = ellipsize(g.label if ' ' in g.label else g.label + '/', head, g.header.w - 20)
+                label = ellipsize(g.label, head, g.header.w - 20)
                 vbtext.draw(cv, [label], head, g.header.x + 10,
                             g.header.y + (g.header.h - vbtext.line_height(head)) / 2 + 1, HEAD_INK)
             cv.mark('map.group', *g.box)

@@ -53,9 +53,16 @@ class TestRepoMap(unittest.TestCase):
         paths = sorted(t['path'] for _, t in all_tiles(m))
         self.assertEqual(paths, ['bin.dat', 'src/app.py', 'src/lib.py', 'tests/test_app.py'])
         self.assertFalse([t for _, t in all_tiles(m) if 'more' in t])
-        self.assertEqual([g['dir'] for g in m['groups']], ['repo', 'src', 'tests'])  # bin.dat leads the tour's files
-        self.assertEqual(repomap.group_of('src/app.py', 'repo'), ('src', 'app.py'))
-        self.assertEqual(repomap.group_of('bin.dat', 'repo'), ('repo', 'bin.dat'))
+        self.assertEqual([g['dir'] for g in m['groups']], ['', 'src', 'tests'])  # bin.dat leads the tour's files
+        self.assertEqual([g['label'] for g in m['groups']], ['repo', 'src/', 'tests/'])
+        self.assertEqual(repomap.group_of('src/app.py'), ('src', 'app.py'))
+        self.assertEqual(repomap.group_of('bin.dat'), ('', 'bin.dat'))
+
+    def test_top_level_files_stay_apart_from_a_same_named_directory(self):
+        tree = [('README.md', 10), ('setup.py', 20), ('django/__init__.py', 30)]
+        m = repomap.tiles(tree, [], root='django')
+        groups = {g['label']: sorted(t['path'] for t in g['tiles']) for g in m['groups']}
+        self.assertEqual(groups, {'django': ['README.md', 'setup.py'], 'django/': ['django/__init__.py']})
 
     def test_single_leftover_is_shown_not_folded(self):
         n = repomap.MAX_TILES + 1
@@ -103,7 +110,7 @@ class TestRepoMap(unittest.TestCase):
         m = repomap.tiles(tree, [{'path': 'd29/f', 'added': 1, 'deleted': 1}], 'r')
         self.assertEqual(len(m['groups']), repomap.MAX_GROUPS)
         self.assertEqual(m['groups'][0]['dir'], 'd29')
-        self.assertEqual(m['groups'][-1], {'dir': '21 more directories', 'tiles': [{'more': 21, 'size': 210}]})
+        self.assertEqual(m['groups'][-1], {'dir': '21 more directories', 'label': '21 more directories', 'tiles': [{'more': 21, 'size': 210}]})
 
 
 if __name__ == '__main__':
