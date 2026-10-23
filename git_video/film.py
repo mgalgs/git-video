@@ -592,8 +592,13 @@ def recap(plan):
     For develop: the files edited, and the definitions written."""
     if plan.mode == 'develop':
         files = list(dict.fromkeys(s['path'] for s in plan.shots if s['kind'] == 'edit'))
-        nodes = [n for n in (plan.graph or {}).get('nodes', ()) if n['touched']]
-        return files, [(n['name'], n['path'], n['line']) for n in nodes]
+        # A definition a later --series patch rewrites is listed once, at its
+        # line in the last patch that wrote it.
+        written = {}
+        for n in (plan.graph or {}).get('nodes', ()):
+            if n['touched']:
+                written[n['name'], n['path']] = n['line']
+        return files, [(name, path, line) for (name, path), line in written.items()]
     files, defs = [], []
     for s in plan.shots:
         if s['kind'] in ('dive', 'travel', 'open'):
@@ -760,14 +765,24 @@ def _patch_face(tour, cv, k):
     n = len(tour.patches)
     box = vb.Box(0, 0, w, h).pad(w * 0.09, h * 0.1)
     kicker = vb.Font(UI, 44 if portrait else 40, weight=700, tracking=0.2)
-    title = vb.Font(UI, 92 if portrait else 84, weight=700, line_height=1.16)
-    meta = vb.Font(UI, 36 if portrait else 40)
-    lines = list(vbtext.wrap(c['subject'], title, box.w, balance=True))
-    if len(lines) > 3:
-        lines = lines[:2] + [sidebar.ellipsize(' '.join(lines[2:]), title, box.w)]
     sub = ' · '.join(x for x in (c.get('short'), c.get('author'), (c.get('date') or '')[:10]) if x)
+    # The meta line shrinks to fit before it is cut; the subject takes the
+    # largest size whose wrapped lines fit the room the card has left.
+    for size in (40, 36, 32, 28, 26) if not portrait else (36, 32, 28, 26):
+        meta = vb.Font(UI, size)
+        if vbtext.measure(sub, meta) <= box.w:
+            break
     files = len(info.get('files') or ())
     stats = f'{files} file{"s" if files != 1 else ""}  +{info.get("added", 0)} {sidebar.MINUS}{info.get("deleted", 0)}'
+    fixed = vbtext.line_height(kicker) + 18 + 24 + 2 * vbtext.line_height(meta)
+    for size in range(92 if portrait else 84, 47, -4):
+        title = vb.Font(UI, size, weight=700, line_height=1.16)
+        lines = list(vbtext.wrap(c['subject'], title, box.w, balance=True))
+        if fixed + len(lines) * vbtext.line_height(title) <= box.h:
+            break
+    rows = max(1, int((box.h - fixed) // vbtext.line_height(title)))
+    if len(lines) > rows:
+        lines = lines[:rows - 1] + [sidebar.ellipsize(' '.join(lines[rows - 1:]), title, box.w)]
     heights = [vbtext.line_height(kicker), 18, *[vbtext.line_height(title)] * len(lines), 24,
                vbtext.line_height(meta), vbtext.line_height(meta)]
     boxes, _ = box.stack(heights, gap=0, align='center')

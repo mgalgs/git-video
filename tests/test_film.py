@@ -618,6 +618,15 @@ class TestFilm(unittest.TestCase):
             for name in ('card.header', 'card.visited', 'card.defs'):
                 self.assertIn(name, marks, fmt)
 
+    def test_develop_recap_lists_a_rewritten_definition_once(self):
+        nodes = [{'name': 'frob', 'path': 'lib.py', 'line': 3, 'touched': True},
+                 {'name': 'main', 'path': 'lib.py', 'line': 9, 'touched': True},
+                 {'name': 'helper', 'path': 'util.py', 'line': 1, 'touched': False},
+                 {'name': 'frob', 'path': 'lib.py', 'line': 5, 'touched': True}]
+        p = plan.Plan(version=2, fps=30, base='a', target='c', label='a..c', is_range=True, commit={}, files=[], verbose=0, mode='develop',
+                      graph={'nodes': nodes, 'edges': []})
+        self.assertEqual(film.recap(p)[1], [('frob', 'lib.py', 5), ('main', 'lib.py', 9)])
+
     def test_develop_views_meet_at_the_cuts(self):
         tour = self.develop_tours()['change']
         for i, s in enumerate(tour.shots):
