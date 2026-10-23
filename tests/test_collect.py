@@ -18,6 +18,35 @@ class TestCollect(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
+    def test_old_text_and_series(self):
+        ch = collect.collect(self.repo, self.sha['change'])
+        self.assertEqual(ch.old_text('src/lib.py'), fixtures.LIB_1)
+        self.assertEqual(ch.old_text('src/app.py'), '')
+        self.assertIsNone(ch.old_text('bin.dat'))
+        delete = collect.collect(self.repo, self.sha['delete'])
+        self.assertIsNone(delete.old_text('bin.dat'))   # binary at the base too
+        repo = os.path.join(self.tmp.name, 'rename')
+        fixtures.init(repo)
+        body = ''.join(f'line {i}\n' for i in range(20))
+        fixtures.write(repo, 'a.py', body)
+        fixtures.commit(repo, 'Start')
+        os.remove(os.path.join(repo, 'a.py'))
+        fixtures.write(repo, 'b.py', body.replace('line 3', 'line three'))
+        fixtures.commit(repo, 'Rename')
+        ren = collect.collect(repo, 'HEAD')
+        (f,) = ren.files
+        self.assertEqual((f.status, f.old_path, f.path), ('R', 'a.py', 'b.py'))
+        self.assertEqual(ren.old_text('b.py'), body)
+        # series: one change per commit of a range, oldest first; one for a single rev
+        combined, patches = collect.series(self.repo, f'{self.sha["root"]}..{self.sha["delete"]}')
+        self.assertTrue(combined.is_range)
+        self.assertEqual([p.target for p in patches], [self.sha['change'], self.sha['delete']])
+        self.assertEqual([p.is_range for p in patches], [False, False])
+        self.assertEqual(patches[1].old_text('bin.dat'), None)
+        for spec in (self.sha['change'], f'{self.sha["root"]}..{self.sha["change"]}'):
+            combined, patches = collect.series(self.repo, spec)
+            self.assertEqual(patches, [combined])
+
     def test_resolve_single(self):
         base, target, label, is_range = collect.resolve(self.repo, 'HEAD~1')
         self.assertEqual((base, target, is_range), (self.sha['root'], self.sha['change'], False))

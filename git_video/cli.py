@@ -112,16 +112,20 @@ def main(argv=None):
         return _fail('--voice is not implemented yet', 2)
     from . import collect, plan
     try:
-        change = collect.collect(repo_path(args.C), args.rev)
+        if args.series:
+            change, patches = collect.series(repo_path(args.C), args.rev)
+        else:
+            change = collect.collect(repo_path(args.C), args.rev)
+            patches = [change]
     except collect.GitError as e:
         return _fail(str(e), 1)
-    tour = plan.plan(change, args.verbose)
+    tour = plan.build(change, args.verbose, args.mode, patches)
     if args.plan_json:
         print(tour.to_json())
         return 0
     from . import film
     formats = list(FORMATS) if args.format == 'all' else [args.format]
-    tour = film.Tour(tour, change, formats=formats, font=args.font)
+    tour = film.Tour(tour, change, formats=formats, font=args.font, patches=patches)
     if args.stills:
         for path in write_stills(tour.film, formats, args.stills):
             print(path)

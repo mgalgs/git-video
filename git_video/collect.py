@@ -61,6 +61,7 @@ class Change:
     tree: list = field(default_factory=list)   # [(path, size)] of every blob at the target
     next: 'Commit | None' = None               # the commit after the target on HEAD's line, if any
     _texts: dict = field(default_factory=dict, repr=False)
+    _old_texts: dict = field(default_factory=dict, repr=False)
 
     def text(self, path):
         """The text of any file at the target (a definition's file need not be in
@@ -71,6 +72,21 @@ class Change:
         if path not in self._texts:
             self._texts[path] = blob_text(self.repo, self.target, path)
         return self._texts[path]
+
+    def old_text(self, path):
+        """The text a changed file had at the base (by its old path when it was
+        renamed): '' for a file the change adds, None when it was not a text
+        blob there (binary)."""
+        if path not in self._old_texts:
+            f = next((f for f in self.files if f.path == path), None)
+            if f is not None and f.binary:
+                text = None
+            elif f is not None and f.status == 'A':
+                text = ''
+            else:
+                text = blob_text(self.repo, self.base, f.old_path or path if f is not None else path)
+            self._old_texts[path] = text
+        return self._old_texts[path]
 
 
 def git(repo, *args, ok=(0,)):
@@ -373,3 +389,14 @@ def collect(repo, spec):
     return Change(repo, base, target, label, is_range, commits, files,
                   sum(f.added for f in files), sum(f.deleted for f in files),
                   tree=ls_tree(repo, target), next=next_commit(repo, target))
+
+
+def series(repo, spec):
+    """(the combined change, [one change per commit, oldest first]) for
+    --series: each commit of a range as its own X^..X change, so each plays on
+    top of the one before. A single rev, or a range of one commit, is its own
+    only patch."""
+    combined = collect(repo, spec)
+    if not combined.is_range or len(combined.commits) < 2:
+        return combined, [combined]
+    return combined, [collect(combined.repo, c.sha) for c in combined.commits]
