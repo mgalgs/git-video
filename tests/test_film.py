@@ -251,6 +251,29 @@ class TestFilm(unittest.TestCase):
                     k = next((k for k in range(len(words)) if words[k:k + len(toks)] == toks), None)
                     self.assertIsNotNone(k, (fmt, label, ln))
 
+    def test_end_card_wraps_before_it_cuts_with_long_lists(self):
+        """A recap long enough to fill its panels still leaves the subject the
+        lines it needs (the 1:1 card cut it to one line with room for three)."""
+        subject = 'Build the opening card: kicker, rolling counters, name bar, co-authors'
+        real = film.vbtext.draw
+        for name, tour in self.develop_tours().items():
+            saved = tour.plan.commit['subject']
+            tour.plan.commit['subject'] = subject
+            try:
+                end = next(n for n, label in tour.film.keyframes if label == 'end')
+                for fmt in ('16x9', '9x16', '1x1'):
+                    drawn = []
+
+                    def draw(cv, lines, *a, **kw):
+                        drawn.extend([lines] if isinstance(lines, str) else lines)
+                        return real(cv, lines, *a, **kw)
+                    with mock.patch.object(film.vbtext, 'draw', draw):
+                        tour.film.frame(end, fmt)
+                    title = [ln for ln in drawn if ln and ln.split()[0] in subject.split()]
+                    self.assertEqual(' '.join(title), subject, (name, fmt))
+            finally:
+                tour.plan.commit['subject'] = saved
+
     def test_fit_words(self):
         f = vb.Font(film.UI, 40, weight=700)
         w = sidebar.vbtext.measure('Show co-authors as', f)

@@ -922,10 +922,10 @@ def _end_card(tour, cv, box, shot, t):
             total = header + sum(bodies) + 16 + (16 + link if link else 0)
             return header, bodies, total
 
-        def fits(title, n):   # the lists keep the rows they need (or three), the card the frame
-            header, bodies, total = layout(title, n)
+        def fits(title, n):   # the lists keep the rows they need, or three (they take the room left)
+            _, bodies, _ = layout(title, n)
             need = [min(w, chrome + 3 * rh + 8) for w in want]
-            return total <= box.h and all(b >= w for b, w in zip(bodies, need))
+            return all(b >= w - 1e-6 for b, w in zip(bodies, need))
         base = (52 if not portrait else 46) * k
         titles = [vb.Font(UI, base * f, weight=700, line_height=1.15) for f in (1, 0.9, 0.8, 0.7)]
         title, lines = sidebar.fit_words(plan.commit['subject'], titles, box.w, fits)
