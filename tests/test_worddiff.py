@@ -34,6 +34,16 @@ class TestWordDiff(unittest.TestCase):
         ops = worddiff.ops(['a  =  1'], ['a = 1'])
         self.assertEqual({o[0] for o in ops}, {'equal'})
 
+    def test_words_match_only_within_an_edited_line(self):
+        # line 0 is edited (most words kept); line 1 has nothing to do with the old
+        # line 1 but shares `=` and `(`: those must not fly between the two
+        ops = worddiff.ops(['x = foo(a, b)', 'y = 2'], ['x = bar(a, b)', 'total = compute(q)'])
+        self.assertTrue(all(o[1] == o[3] == 0 for o in by_kind(ops, 'equal')))
+        self.assertEqual([o[5] for o in by_kind(ops, 'insert') if o[3] == 1], ['total', '=', 'compute', '(', 'q', ')'])
+        self.assertEqual([o[5] for o in by_kind(ops, 'delete') if o[1] == 1], ['y', '=', '2'])
+        self.assertEqual(worddiff.pair_rows(['x = foo(a, b)', 'y = 2'], ['x = bar(a, b)', 'total = compute(q)']),
+                         [(0, 0)])
+
     def test_too_many_tokens(self):
         self.assertIsNone(worddiff.ops(['x ' * worddiff.MAX_TOKENS], ['y']))
 

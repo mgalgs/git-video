@@ -106,9 +106,12 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
   between files pulls back out and travels to the next one.
 - Syntax highlighting with Pygments.
 - Animated diffs: a hunk that replaces lines opens on the old text, removed
-  words struck through, then morphs into the new: kept words glide to their
-  new place, removed words dissolve, added words decode in and stay
-  underlined. Removed lines with nothing in their place appear as faint
+  words struck through, then morphs into the new. Words are matched only
+  within a line that was edited (one sharing most of its words with an old
+  line): there, kept words stay put (or glide along their row when the line
+  around them changes length), removed words dissolve and the changed words
+  decode in briefly; a wholly new line wipes in, unscrambled. Added words
+  stay underlined. Removed lines with nothing in their place appear as faint
   ghosts that dissolve and close up. Pure additions get a highlighter sweep,
   and so do hunks taller than a screenful.
 - Focus: while a hunk is read the rest of the buffer dims (never fully), so

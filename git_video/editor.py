@@ -24,6 +24,7 @@ from videobuilder.capabilities.broadcast.spotlight_dim import spotlight_dim
 from videobuilder.capabilities.typography.blinking_cursor import cursor_on
 from videobuilder.capabilities.typography.dither_reveal import dither_reveal
 from videobuilder.capabilities.typography.scramble_decode import draw_scramble
+from videobuilder.capabilities.typography.wipe_reveal import wipe_reveal
 from videobuilder.capabilities.ui.highlighter_swipe import highlighter_swipe
 from videobuilder.capabilities.ui.scroll_progress_bar import scroll_progress
 from videobuilder.capabilities.ui.scroll_velocity_skew import skewed
@@ -211,12 +212,14 @@ class Segment:
 
 
 # The morph's phases, as fractions of its one progress: removed words dissolve,
-# rows and kept words glide old -> new, added words decode, underlined from UNDERLINE_AT.
-# Added words wait until the glide has all but settled: drawn at their final rows,
-# they would otherwise land on kept words still on their way there.
+# rows and kept words glide old -> new, wholly new lines wipe in (ARRIVE), the
+# words changed on an edited line decode briefly (DECODE), all of them underlined
+# from UNDERLINE_AT. Added words wait until the glide has all but settled: drawn
+# at their final rows, they would otherwise land on kept words still on their way.
 DISSOLVE = (0.0, 0.4)
 GLIDE = (0.15, 0.5)
-DECODE = (0.45, 1.0)
+ARRIVE = (0.45, 0.8)
+DECODE = (0.5, 0.78)
 UNDERLINE_AT = 0.6
 
 
@@ -315,7 +318,7 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
         return lay.line_y(ln, scroll_top) + d * lh
 
     def shown(ln):   # how much of a line's decorations show: a segment's new lines arrive with its words
-        return 1.0 if ln not in inside else _phase(p, DECODE)
+        return 1.0 if ln not in inside else _phase(p, ARRIVE)
 
     extra = sum(len(s.old) + s.new for s in active)
     first = max(0, math.floor(scroll_top) - extra)
@@ -626,17 +629,30 @@ def _draw_segment(cv, lay, buf, seg, top, p, font, theme):
                 for _, c0, c1 in _spans([(row, o[2], o[5]) for o in words]):
                     sy = y + lh * 0.52
                     cv.line(lay.col_x(c0) - 1, sy, lay.col_x(c1) + 1, sy, theme.strike, width=2, alpha=1 - dq)
-        if iq > 0:
+        added = [o for o in seg.ops if o[0] == 'insert']
+        fresh = {o[3] for o in added} - {o[3] for o in seg.ops if o[0] == 'equal'}
+        wq = _phase(p, ARRIVE)
+        for row in sorted(fresh) if wq > 0 else ():   # a wholly new line wipes in, never scrambled
+            words = [o for o in added if o[3] == row]
+
+            def put(c, words=words, row=row):
+                for _, _, _, nrow, ncol, text in words:
+                    vbtext.draw(c, [text], font, lay.col_x(ncol), top + nrow * lh,
+                                _color_at(buf.lines[seg.line + nrow], ncol))
+
+            wipe_reveal(cv, put, vb.Box(lay.text_box.x, top + row * lh, lay.text_box.w, lh),
+                        vb.ease_out_quint(wq), softness=0.15)
+        if iq > 0:   # the words changed on an edited line: a short decode in place
             with cv.layer(opacity=vb.clamp01(iq / 0.2)):
-                for kind, _, _, nrow, ncol, text in seg.ops:
-                    if kind == 'insert':
+                for kind, _, _, nrow, ncol, text in added:
+                    if nrow not in fresh:
                         draw_scramble(cv, text, font, lay.col_x(ncol), top + nrow * lh, iq,
                                       _color_at(buf.lines[seg.line + nrow], ncol), scrambled=theme.underline,
                                       seed=f'{seg.line}:{nrow}:{ncol}', glyphs=SCRAMBLE_GLYPHS)
-            if p >= UNDERLINE_AT:
-                ins = [(o[3], o[4], o[5]) for o in seg.ops if o[0] == 'insert']
-                for row, c0, c1 in _spans(ins):
-                    _underline(cv, lay, top + row * lh, c0, c1, theme, alpha=_phase(p, (UNDERLINE_AT, 0.75)))
+        if p >= UNDERLINE_AT:
+            ins = [(o[3], o[4], o[5]) for o in added]
+            for row, c0, c1 in _spans(ins):
+                _underline(cv, lay, top + row * lh, c0, c1, theme, alpha=_phase(p, (UNDERLINE_AT, 0.75)))
 
 
 def _minimap(cv, lay, mm, n, scroll_top, theme):

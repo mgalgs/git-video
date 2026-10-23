@@ -199,6 +199,62 @@ class TestEditor(unittest.TestCase):
         self.assertGreater(ink(1, theme.underline, 0.86), 0)
         self.assertEqual(ink(None, theme.underline, 0.86), 0)
 
+    def morph_case(self, old, new):
+        from git_video import worddiff
+        buf = buffer(new)
+        seg = editor.Segment(0, highlight.highlight_lines(old, 'a.py'), len(new.splitlines()),
+                             tuple(tuple(o) for o in worddiff.ops(old.splitlines(), new.splitlines())))
+        return buf, seg
+
+    def glyphs_at(self, lay, buf, seg, p):
+        """{(x, y): char} of every glyph drawn in the text area at morph progress p."""
+        from unittest import mock
+        drawn = {}
+        real = editor.vbtext.draw
+
+        def record(cv, lines, font, x, y, *a, **kw):
+            for i, ch in enumerate(lines[0] if lines else ''):
+                if ch.strip() and font is lay.font and x >= lay.text_box.x:
+                    drawn[round(x + i * lay.cell_w, 2), round(y, 2)] = ch
+            return real(cv, lines, font, x, y, *a, **kw)
+
+        with mock.patch.object(editor.vbtext, 'draw', record):
+            editor.draw(vb.Canvas(1000, 700, '#000'), lay, buf, 0, morphs=[seg], morph_p=p)
+        return drawn
+
+    def test_morph_keeps_unchanged_words_still(self):
+        # only `foo` -> `bar` changes: every other glyph stays exactly where it is
+        buf, seg = self.morph_case('x = foo(a, b)\nkeep\n', 'x = bar(a, b)\nkeep\n')
+        lay = editor.layout(vb.Box(0, 0, 900, 600), FONT)
+        y = round(lay.line_y(0, 0), 2)
+        want = {(round(lay.col_x(c), 2), y): ch for c, ch in enumerate('x = bar(a, b)') if ch.strip() and not 4 <= c < 7}
+        for k in range(21):
+            got = self.glyphs_at(lay, buf, seg, k / 20)
+            for pos, ch in want.items():
+                self.assertEqual(got.get(pos), ch, (k / 20, pos, ch))
+            # and nothing else is drawn on that row outside the changed word
+            for (x, gy), ch in got.items():
+                if gy == y and (x, gy) not in want:
+                    col = (x - lay.text_box.x) / lay.cell_w
+                    self.assertTrue(4 <= col < 7 and col == round(col), (k / 20, col, ch))
+
+    def test_new_line_wipes_in_without_scrambling(self):
+        from unittest import mock
+        buf, seg = self.morph_case('x = foo(a, b)\n', 'x = bar(a, b)\ntotal = compute(q)\n')
+        lay = editor.layout(vb.Box(0, 0, 900, 600), FONT)
+        scrambled = []
+        real = editor.draw_scramble
+        with mock.patch.object(editor, 'draw_scramble', lambda cv, text, *a, **kw: (scrambled.append(text),
+                                                                                    real(cv, text, *a, **kw))):
+            for k in range(21):
+                editor.draw(vb.Canvas(1000, 700, '#000'), lay, buf, 0, morphs=[seg], morph_p=k / 20)
+        self.assertEqual(set(scrambled), {'bar'})
+        self.assertLessEqual(editor.DECODE[1] - editor.DECODE[0], 0.3)   # about half the old 0.55
+        # the new line is there once the morph is over, and partly there midway
+        done = self.glyphs_at(lay, buf, seg, 1.0)
+        y1 = round(lay.line_y(1, 0), 2)
+        self.assertEqual(''.join(ch for (x, y), ch in sorted(done.items()) if y == y1), 'total=compute(q)')
+
     def test_morph_midway_differs(self):
         frames = [self.morph(p, self.replace())[0].bgra() for p in (0, 0.5, 1)]
         self.assertNotEqual(frames[0], frames[1])

@@ -34,7 +34,7 @@ the video; and `view`, where the window is.
 import bisect
 import difflib
 import math
-from collections import Counter, namedtuple
+from collections import namedtuple
 
 from videobuilder.type.typewriter import schedule
 
@@ -62,7 +62,6 @@ TAIL = 0.6                # the finished file held before the next shot
 ELIDE_HEAD = 4            # an elided run types this many lines before it fills
 FILL_PER_LINE, FILL_MIN, FILL_MAX = 0.03, 0.6, 2.5
 FILL_POUR = 0.85          # a fill's lines are all in this far through it; the rest is a hold
-PAIR_SHARE = 0.4          # an old and a new line sharing this much of their words are one line edited
 SNAP_EVERY = 16
 MARGIN = 3                # rows kept between point and the window's edge
 
@@ -145,23 +144,8 @@ def _diff_blocks(old, new):
 
 def pair_rows(old_rows, new_rows):
     """[(old row, new row)]: the lines of a replaced run that are one line
-    edited (they share at least PAIR_SHARE of their words), in order, most
-    shared words first (worddiff's equal tokens)."""
-    ops = worddiff.ops(old_rows, new_rows)
-    if not ops:
-        return []
-    shared = Counter((o[1], o[3]) for o in ops if o[0] == 'equal')
-
-    def size(line):
-        return sum(1 for m in worddiff.TOKEN.finditer(line) if m.group().strip())
-
-    pairs = []
-    for (i, j), c in sorted(shared.items(), key=lambda kv: (-kv[1], kv[0])):
-        if c < max(1.0, PAIR_SHARE * max(size(old_rows[i]), size(new_rows[j]))):
-            continue
-        if all((pi - i) * (pj - j) > 0 for pi, pj in pairs):
-            pairs.append((i, j))
-    return sorted(pairs)
+    edited (they share at least worddiff.PAIR_SHARE of their words), in order."""
+    return worddiff.pair_rows(old_rows, new_rows)
 
 
 def _clamp(x, a, b):
