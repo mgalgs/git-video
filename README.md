@@ -76,8 +76,10 @@ with [videobuilder](https://github.com/mgalgs/videobuilder), so a render is
 deterministic and needs no display. It looks like Emacs: a dark theme, line
 numbers, a fringe, a mode line and an echo area where the commands are
 typed, with keyboard and mouse sounds. Long lines wrap onto continuation
-rows, as Emacs does by default, with a curly arrow in the fringe and no line
-number on the rows that carry a line on.
+rows at word boundaries, as Emacs's `visual-line-mode` does (a word longer
+than a row is the only one broken), with a curly arrow in the fringe and no
+line number on the rows that carry a line on. In 16:9 the pane shows 90-odd
+columns.
 
 `--mode develop` performs it instead: every file starts from what it was
 and is edited into what it is, on screen, as a person at the keyboard would
@@ -134,13 +136,16 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
   the eye lands on the change.
 - Commit-message callouts: the body's sentences (trailers stripped) are
   matched to the hunks they name (functions, files, identifiers, flags) and
-  shown as a caption card beside the code with a line to the words. For a
+  shown as a caption card beside the code with a line to the words (in
+  develop mode in free space at least three rows from the typing when there
+  is any, else the side bar's free area, else over code away from it). For a
   range, each hunk uses the message of the commit that last touched it
   (`git blame` within the range).
 - A call graph in the side bar (16:9 and 9:16): the definitions the change
   touches and the ones the tour dives into, linked by the dives and by calls
-  on changed lines, growing as the tour finds them; each dive runs along its
-  edge, the node on screen is a solid hub and the xref stack is numbered.
+  on changed lines, growing as the tour finds them; edges run in lanes
+  between the names, never across one; each dive runs along its edge, the
+  node on screen is a solid hub and the xref stack is numbered.
 - A minimap at the editor's right edge: the whole file in miniature with
   `+`/`−` ticks on changed lines and a box that slides with the view.
 - Long scrolls (more than two screens) speed up and slow down instead of
@@ -177,7 +182,11 @@ and how big it is, a word as each file opens, the commit sentence that
 explains a hunk as it is shown or written (cut to a spoken length), a few
 words naming a new definition where no sentence explains it, what a dive
 calls, each patch of a `--series`, and the close. Silence is allowed:
-hunks with nothing worth saying get none. The script is written by
+hunks with nothing worth saying get none, and a commit sentence that is
+mostly identifiers or about the tests is not read out. But no file stays
+quiet for more than about 8 s where a hunk could break the silence: one
+gets a short line on what it changes ("Three new tests for the graph.",
+"Changes to draw and layout."). The script is written by
 heuristics from the plan; nothing reads code, trailers, URLs or hashes
 aloud. Identifiers are said as words (`draw_card` as "draw card", `film.py`
 as "film dot pie") and captioned as written.
