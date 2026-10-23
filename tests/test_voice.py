@@ -10,7 +10,7 @@ from unittest import mock
 import videobuilder as vb
 from videobuilder import speech
 
-from git_video import cli, collect, plan, voice
+from git_video import cli, collect, narrator, plan, voice
 from tests import fixtures
 from tests.test_cli import ROOT, quiet
 
@@ -79,6 +79,9 @@ class TestScript(unittest.TestCase):
                 for x in got:
                     if x.key[0] in ('hunk', 'edit'):
                         self.assertTrue(voice.reason(x.text), (rev, x.text))
+                cut = narrator.trim(got, p)   # as narrate holds it to the limits: never rejected
+                self.assertEqual(narrator.check(cut, p), [], (rev, mode))
+                self.assertEqual((cut[0], cut[-1]), (got[0], got[-1]))
 
     def test_wording_from_this_repos_history(self):
         # test and implementation jargon is not read out; prose around it is

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 from videobuilder import speech
 
-from . import callouts as callouts_mod, edits, plan as planmod, xref
+from . import callouts as callouts_mod, edits, narrator, plan as planmod, xref
 
 SPEED = 1.0         # Kokoro's speaking rate (part of the cache key)
 GAP = 0.35          # seconds between two phrases said over one shot (say's own gap)
@@ -777,18 +777,27 @@ def place(plan, phrases, seconds, voice, out_dir, lexicon):
     return {'voice': voice, 'speed': SPEED, 'dir': out_dir, 'lexicon': lexicon, 'bed': BED, 'phrases': out}
 
 
-def narrate(change, patches, verbose, mode, engine, name):
-    """The plan of `change` narrated in voice `name`: the script written from
-    the plan, said (or found in the cache), and placed on its shots."""
+def narrate(change, patches, verbose, mode, engine, name, phrases=None):
+    """The plan of `change` narrated in voice `name`: the script (`phrases`,
+    else the heuristic's) cut to the narrator limits, said (or found in the
+    cache), and placed on its shots."""
     first = planmod.build(change, verbose, mode, patches)
-    phrases = script(first, patches)
-    lexicon = lexicon_for(phrases)
-    out_dir = script_dir(phrases, lexicon, name)
-    seconds = synth(phrases, lexicon, name, engine, out_dir)
-    # Again, each shot as long as its phrases need: the same shots, so the
-    # same script (its keys do not depend on how long shots are).
-    final = planmod.build(change, verbose, mode, patches, voice=Timed(phrases, seconds))
-    if script(final, patches) != phrases:
-        raise AssertionError('the narrated plan says something else than the plan it was written from')
+    if phrases is None:
+        phrases = script(first, patches)
+    phrases = narrator.trim(phrases, first, strict=False)
+    while True:
+        lexicon = lexicon_for(phrases)
+        out_dir = script_dir(phrases, lexicon, name)
+        seconds = synth(phrases, lexicon, name, engine, out_dir)
+        # Again, each shot as long as its phrases need: the same shots, so the
+        # same keys (they do not depend on how long shots are).
+        final = planmod.build(change, verbose, mode, patches, voice=Timed(phrases, seconds))
+        kept = narrator.trim(phrases, first, seconds, final.total, strict=False)   # too much speech: say less
+        if kept == phrases:
+            break
+        phrases = kept
+    index = shot_index(final.shots)
+    if any(p.key not in index for p in phrases):
+        raise AssertionError('the narrated plan lost a shot the script is said over')
     final.voice = place(final, phrases, seconds, name, out_dir, lexicon)
     return final
