@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 from videobuilder import speech
 
-from . import callouts as callouts_mod, edits, plan as planmod, xref
+from . import callouts as callouts_mod, collect, edits, plan as planmod, xref
 
 SPEED = 1.0         # Kokoro's speaking rate (part of the cache key)
 GAP = 0.35          # seconds between two phrases said over one shot (say's own gap)
@@ -329,29 +329,36 @@ def _kind_word(d):
     return KINDS.get(d.kind, d.kind if d.kind.isalpha() else 'definition')
 
 
-def written_line(change, f, h, said):
-    """What is written in a hunk no commit sentence explains, naming the one
-    definition its changes sit in: "A new function, draw_card." when it adds
-    the definition's own line ("A new test: ..." for a test, by its name's
-    words); "A change to callout_box." the first time a file's existing
-    definition is named, "And _edit." after; else None (silence is better
-    than filler). `said`: the definitions already named in this file."""
-    defs = planmod.hunk_defs(change, f, h)
-    if len(defs) != 1:
-        return None
-    name, d, new = defs[0]
-    if (name, d.line) in said:
-        return None
-    said.add((name, d.line))
-    kind = _kind_word(d)
-    test = re.match(r'test_?(?=[A-Za-z])', name) if name.lower().startswith('test') else None
-    if test and kind in ('function', 'method'):
-        return f'A new test: {_name(name[test.end():])}.' if new else None
-    called = ('the constructor' if name == '__init__' else
-              name if len(name.strip('_')) > 4 or not name.isalpha() else f'the {name} {kind}')
-    if new:
-        return f'A new {kind}, {name}.'
-    return f'A change to {called}.' if len(said) == 1 else f'And {called}.'
+def written_lines(change, f, hunks):
+    """{hunk index: line} for the hunks of `f` no commit sentence explains,
+    each naming the one definition its changes sit in: "A new function,
+    draw_card." for each that adds a definition's own line ("A new test:
+    ..." for a test, by its name's words), and "A change to callout_box." for
+    the biggest of the rest; the others say nothing (silence is better than
+    filler)."""
+    new, changed = {}, []
+    for hi in hunks:
+        defs = planmod.hunk_defs(change, f, f.hunks[hi])
+        if len(defs) != 1:
+            continue
+        name, d, is_new = defs[0]
+        kind = _kind_word(d)
+        test = re.match(r'test_?(?=[A-Za-z])', name) if name.lower().startswith('test') else None
+        if is_new:
+            if test and kind in ('function', 'method'):
+                new[hi] = f'A new test: {_name(name[test.end():])}.'
+            else:
+                new[hi] = f'A new {kind}, {name}.'
+        elif not test:
+            h = f.hunks[hi]
+            size = sum(b - a + 1 for a, b in h.added) + h.old_count
+            changed.append((-size, hi, name, kind))
+    if changed:
+        _, hi, name, kind = min(changed)
+        called = ('the constructor' if name == '__init__' else
+                  name if len(name.strip('_')) > 4 or not name.isalpha() else f'the {name} {kind}')
+        new[hi] = f'A change to {called}.'
+    return new
 
 
 def dive_line(s):
@@ -372,7 +379,8 @@ def _hunk_of(change, path, index):
 def _lead_ins(shots):
     """{enter shot index: its lead-in}: per patch "First, a.py.", "Next, b.py.",
     "Finally, c.py." (of three or more), or for a patch of one file "This is
-    all in a.py."; a file the develop mode deletes "..., which goes."."""
+    all in a.py."; "the tests in t.py" for the first of a run of test files;
+    a file the develop mode deletes "..., which goes."."""
     out = {}
     by_patch = {}
     for i, s in enumerate(shots):
@@ -384,6 +392,8 @@ def _lead_ins(shots):
             nxt = shots[i + 1] if i + 1 < len(shots) else {}
             gone = ', which goes' if nxt.get('kind') == 'edit' and nxt.get('status') == 'D' else ''
             name = base(path)
+            if collect.is_test(path) and not (n and collect.is_test(paths[n - 1])):
+                name = f'the tests in {name}'   # once, for a run of test files
             if len(idx) == 1:
                 line = f'This is all in {name}{gone}.'
             elif n == 0:
@@ -454,39 +464,42 @@ def script(plan, patches):
     if why:   # over the repo map, or the title card without one
         out.append(Phrase(why, ('map',) if any(s['kind'] == 'map' for s in plan.shots) else ('title',)))
     lead = _lead_ins(plan.shots)
-    said = {}          # (patch, path) -> definitions named there
+    develop = {k: planmod.develop_sentences(ch) for k, ch in enumerate(patches)} if plan.mode == 'develop' else {}
+    unmatched = {}     # (patch, path) -> the hunks shown that no sentence explains
+    for s in plan.shots:
+        k = s.get('patch', 0)
+        if s['kind'] == 'hunk' and not s.get('callouts'):
+            unmatched.setdefault((k, s['path']), []).append(s['index'])
+        elif s['kind'] == 'edit' and s.get('status') != 'D':
+            unmatched.setdefault((k, s['path']), []).extend(
+                hi for hi in hunks_in(s['steps']) if not develop[k].get((s['path'], hi)))
+    written = {}
+    for (k, path), hunks in unmatched.items():
+        ch = patches[min(k, len(patches) - 1)]
+        f = next((f for f in ch.files if f.path == path), None)
+        if f is not None and f.text is not None:
+            written[k, path] = written_lines(ch, f, [hi for hi in hunks if hi < len(f.hunks)])
     dived = set()      # (patch, path) a dive's line was said from
-    develop = {}       # patch -> {(path, hunk): [commit sentence]}
     for i, s in enumerate(plan.shots):
         kind, k = s['kind'], s.get('patch', 0)
         key = planmod.shot_key(s)
-        ch = patches[k] if k < len(patches) else patches[-1]
+        here = written.get((k, s.get('path')), {})
         if i in lead:
             out.append(Phrase(lead[i], key))
         elif kind == 'patch':
             out.append(Phrase(sentence_from_subject(plan.patches[k]['commit']['subject'], 'The next patch'), key))
         elif kind == 'hunk':
             lines = [(n, say_sentence(c['text'])) for n, c in enumerate(s.get('callouts') or ())]
-            lines = [(n, t) for n, t in lines if t]
-            if not lines and not s.get('callouts'):
-                f, h = _hunk_of(ch, s['path'], s['index'])
-                t = written_line(ch, f, h, said.setdefault((k, s['path']), set())) if h else None
-                lines = [(0, t)] if t else []
+            lines = [(n, t) for n, t in lines if t] or ([(0, here[s['index']])] if s['index'] in here else [])
             out += [Phrase(t, key, n) for n, t in lines]
         elif kind == 'xref-push' and (k, s['path']) not in dived:
             dived.add((k, s['path']))
             out.append(Phrase(dive_line(s), key))
         elif kind == 'edit' and s.get('status') != 'D':
-            if k not in develop:
-                develop[k] = planmod.develop_sentences(ch)
             for hi in hunks_in(s['steps']):
-                hkey = ('edit', k, s['path'], hi)
                 texts = [t for t in (say_sentence(x) for x in develop[k].get((s['path'], hi), ())) if t]
-                if not texts and not develop[k].get((s['path'], hi)):
-                    f, h = _hunk_of(ch, s['path'], hi)
-                    t = written_line(ch, f, h, said.setdefault((k, s['path']), set())) if h else None
-                    texts = [t] if t else []
-                out += [Phrase(t, hkey, n) for n, t in enumerate(texts)]
+                texts = texts or ([here[hi]] if hi in here else [])
+                out += [Phrase(t, ('edit', k, s['path'], hi), n) for n, t in enumerate(texts)]
         elif kind == 'end':
             out.append(Phrase("That's the series." if len(plan.patches or ()) > 1 else "That's the change.", key))
             if plan.next:

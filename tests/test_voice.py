@@ -102,13 +102,17 @@ class TestScript(unittest.TestCase):
         got = voice.script(plan.build(ch), [ch])
         dives = [(x.key, x.text) for x in got if x.key[0] == 'xref']
         self.assertEqual(dives[0], (('xref', 0, 'src/app.py', 5, 11, 'frob'), 'That calls frob, defined in lib.py.'))
-        self.assertIn('First, app.py.', texts(got, 'enter'))
+        self.assertEqual(texts(got, 'enter'), ['First, app.py.', 'Next, lib.py.', 'Finally, the tests in test_app.py.'])
 
     def test_new_definition_line(self):
         got = voice.script(plan.build(self.vchange), [self.vchange])
         self.assertIn('A new function, draw_card.', texts(got, 'hunk'))
         dev = voice.script(plan.build(self.vchange, 0, 'develop'), [self.vchange])
         self.assertIn('A new function, draw_card.', texts(dev, 'edit'))
+        many = collect.collect(fixtures.make_many_defs_repo(self.tmp.name), 'HEAD')   # 15 bodies changed, no body
+        for mode in ('tour', 'develop'):
+            got = texts(voice.script(plan.build(many, 0, mode), [many]))
+            self.assertEqual(len([t for t in got if t.startswith('A change')]), 1, (mode, got))   # once a file
 
     def test_never_read_out(self):
         for mode in ('tour', 'develop'):
