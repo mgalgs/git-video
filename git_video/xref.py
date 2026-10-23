@@ -156,21 +156,26 @@ def _indent(s):
     return len(s) - len(s.lstrip())
 
 
-def enclosing(lines, defs, line):
-    """The innermost of `defs` ([(name, Definition)] of one file) whose body
-    holds 1-based `line` of `lines` (the file's text, split), as (name,
-    Definition): the nearest definition at or above it with every non-blank
-    line in between, the line included, indented deeper than the
-    definition's own. None at top level or on a blank line."""
-    if not 0 < line <= len(lines) or not lines[line - 1].strip():
-        return None
-    for name, d in sorted((nd for nd in defs if nd[1].line <= line), key=lambda nd: -nd[1].line):
-        if not 0 < d.line <= len(lines):
-            continue
-        base = _indent(lines[d.line - 1].expandtabs(highlight.TAB))
-        if all(not s.strip() or _indent(s.expandtabs(highlight.TAB)) > base for s in lines[d.line:line]):
-            return name, d
-    return None
+def enclosures(lines, defs):
+    """For each 1-based line of `lines` (the file's text, split), at index
+    line - 1, the innermost of `defs` ([(name, Definition)] of one file) whose
+    body holds it, as (name, Definition), or None at top level or on a blank
+    line. A definition holds a line when every non-blank line after its own,
+    up to and including that one, is indented deeper than the definition's
+    own line. One pass, so a whole file costs no more than reading it."""
+    starts = {}
+    for name, d in defs:
+        if 0 < d.line <= len(lines):
+            starts.setdefault(d.line, (name, d))   # the first one listed wins a shared line
+    out, open_ = [], []   # open_: [(base indent, (name, d))] still holding every line so far, by line
+    for n, s in enumerate(lines, 1):
+        if s.strip():
+            ind = _indent(s.expandtabs(highlight.TAB))
+            open_ = [o for o in open_ if ind > o[0]]
+        if n in starts:
+            open_.append((_indent(s.expandtabs(highlight.TAB)), starts[n]))
+        out.append(open_[-1][1] if open_ and s.strip() else None)
+    return out
 
 
 def file_defs(repo, target, path):

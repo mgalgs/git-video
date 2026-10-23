@@ -232,9 +232,10 @@ def hunk_info(change, f, h):
             words.add(w)
             words.update(p for p in re.split(r'-', w) if p)
     fd = xref.file_defs(change.repo, change.target, f.path)
+    holders = xref.enclosures(lines, fd)
     defs = set()
     for n in changed + [s[0] for s in h.segments]:
-        e = xref.enclosing(lines, fd, n)
+        e = holders[n - 1] if 0 < n <= len(holders) else None
         if e:
             defs.add(e[0])
     return {'path': f.path, 'words': words, 'defs': defs}

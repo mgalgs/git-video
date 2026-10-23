@@ -58,18 +58,23 @@ def build(change, shots):
     the definition; `call` from a touched definition to another node whose
     name it uses on a changed line. At most MAX_NODES nodes, by discovery."""
     nodes, edges = {}, []
-    lines_of, defs_of = {}, {}
+    defs_of, holders_of = {}, {}
 
     def defs(path):
         if path not in defs_of:
             text = change.text(path) or ''
-            lines_of[path] = text.split('\n')
             defs_of[path] = xref.file_defs(change.repo, change.target, path)
+            holders_of[path] = xref.enclosures(text.split('\n'), defs_of[path])
         return defs_of[path]
 
+    def enclosing(path, n):
+        hs = holders_of[path]
+        return hs[n - 1] if 0 < n <= len(hs) else None
+
     def holder(path, ns):
+        defs(path)
         for n in ns:
-            e = xref.enclosing(lines_of[path], defs(path), n)
+            e = enclosing(path, n)
             if e:
                 return e
         return None
@@ -81,7 +86,7 @@ def build(change, shots):
         defs(f.path)
         for h in f.hunks:
             for n in _changed(h):
-                e = xref.enclosing(lines_of[f.path], defs_of[f.path], n)
+                e = enclosing(f.path, n)
                 if e:
                     touched_ranges.setdefault(f.path, set()).add((e[0], e[1].line))
     source, hunk_of_shot = None, {}

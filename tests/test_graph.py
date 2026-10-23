@@ -6,7 +6,7 @@ from unittest import mock
 
 import videobuilder as vb
 
-from git_video import collect, film, graph, plan
+from git_video import collect, film, graph, plan, xref
 from tests import fixtures
 
 
@@ -56,6 +56,19 @@ class TestGraph(unittest.TestCase):
         self.assertTrue(call and call[0]['first'] < i, p.graph['edges'])
         e = p.graph['edges'][push['edge']]
         self.assertEqual((e['a'], e['b'], e['kind'], e['first']), ('lib.py:main', 'util.py:helper', 'xref', i))
+
+    def test_enclosures(self):
+        lines = ['class A:', '    def f(self):', '        x = 1', '', '        return x', '    y = 2',
+                 'z = 3', '\tdef g():', '\t\tpass']
+        d = lambda name, line: (name, xref.Definition('a.py', line, 'function'))
+        defs = [d('A', 1), d('f', 2), d('g', 8)]
+        got = [e[0] if e else None for e in xref.enclosures(lines, defs)]
+        self.assertEqual(got, ['A', 'f', 'f', None, 'f', 'A', None, 'g', 'g'])
+        # one pass: a 20,000-line file of small functions is quick
+        big = [s for i in range(5000) for s in (f'def f{i}():', '    return 1', '', f'v{i} = {i}')]
+        bdefs = [d(f'f{i}', 4 * i + 1) for i in range(5000)]
+        out = xref.enclosures(big, bdefs)
+        self.assertEqual((out[1][0], out[3], out[-3][0]), ('f0', None, 'f4999'))
 
     def test_hunk_nodes(self):
         hunks = [s for s in self.plan.shots if s['kind'] == 'hunk']
