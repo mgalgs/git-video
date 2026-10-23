@@ -374,10 +374,13 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                 vbtext.draw(cv, [num], font, gx, y_of(ln), theme.line_no_current if ln == cur_line else theme.line_no,
                             align='right', width=lay.gutter_w - cw * 0.5, alpha=shown(ln))
             added = set(marks_added)
+            taken = []   # (top, bottom) of the fringe glyphs drawn: one mark per row, never two on one
             for ln in lines:
                 if ln in added:
                     y = y_of(ln)
                     a = shown(ln)
+                    if a > 0:
+                        taken.append((y, y + lh))
                     cv.rect(box.x, y, cw * 0.22, lh, theme.fringe_added, alpha=a)
                     vbtext.draw(cv, ['+'], small, box.x + cw * 0.22, y + (lh - vbtext.line_height(small)) / 2,
                                 theme.fringe_added, align='center', width=lay.fringe_w - cw * 0.22, alpha=a)
@@ -388,6 +391,8 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                 sh = vbtext.line_height(small)
                 for r in range(min(len(seg.old), math.ceil(rows))):
                     y = tops[k] + r * lh
+                    if a > 0:
+                        taken.append((y, y + lh))
                     vbtext.draw(cv, ['−'], small, box.x, y + (lh - sh) / 2, theme.fringe_removed, align='center',
                                 width=lay.fringe_w, alpha=a)
             for ln in marks_removed_at:
@@ -399,6 +404,9 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                     y = y_of(ln) if k is None or active[k].new else tops[k]
                     cv.rect(box.x, y - 1.5, lay.fringe_w + lay.gutter_w, 3, theme.fringe_removed, alpha=a)
                     sh = vbtext.line_height(small)
+                    if any(t0 < y + sh / 2 - 1 and y - sh / 2 + 1 < t1 for t0, t1 in taken):
+                        continue   # a + or − already marks a row here: the red rule alone says lines went
+                    taken.append((y - sh / 2, y + sh / 2))
                     cv.rect(box.x, y - sh / 2, lay.fringe_w, sh, theme.fringe_bg, alpha=a)
                     vbtext.draw(cv, ['−'], small, box.x, y - sh / 2, theme.fringe_removed,
                                 align='center', width=lay.fringe_w, alpha=a)

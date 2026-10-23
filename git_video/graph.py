@@ -302,12 +302,19 @@ def layout(graph, box, scale=1.0):
         heads.append((ellipsize(head, head_f, w), x0, box.y, w, tuple(n['id'] for n in members)))
         subs = max(1, math.ceil(len(members) / fit))
         sw = cw / subs
+        bold = vb.Font(label_f.family, label_f.size, weight=700)
         for j, n in enumerate(members):
             nx = x0 + (j // fit) * sw + r * HUB + 2 * scale
             cy = box.y + hh + step * (j % fit + 0.5)
             pos[n['id']] = (nx, cy)
-            labels[n['id']] = (ellipsize(n['name'], label_f, max(0.0, sw - 2 * r * HUB - 10 * scale)),
-                               nx + r * HUB + 4 * scale, cy - lh / 2)
+            # Cut to the room left in its (sub)column, measured in the bold the
+            # node on screen uses, so neither weight runs into the next column.
+            lx = nx + r * HUB + 4 * scale
+            room = min(x0 + (j // fit + 1) * sw, box.right) - lx - 4 * scale
+            text = ellipsize(n['name'], bold, room) if room > 0 else ''
+            if vbtext.measure(text, bold) > room:
+                text = ''   # no room even for a letter and its ellipsis: the node goes unlabelled
+            labels[n['id']] = (text, lx, cy - lh / 2)
     return Layout(box, pos, r, labels, tuple(heads))
 
 
@@ -408,8 +415,10 @@ def draw(cv, lay, graph, state, *, color='#51afef', call='#5b6270', ink='#bbc2cf
             r = lay.r * (HUB if hub else 1.0)
             draw_node(cv, x, y, r, accent if hub else (color if n['touched'] else muted), amount, hub=hub)
             text, lx, ly = lay.labels[n['id']]
-            vbtext.draw(cv, [text], bold if hub else label_f, lx, ly, '#e6e9ef' if hub else ink,
-                        alpha=vb.clamp01(amount))
+            if text:
+                f = bold if hub else label_f
+                vbtext.draw(cv, [text], f, lx, ly, '#e6e9ef' if hub else ink, alpha=vb.clamp01(amount))
+                cv.mark(f'graph.label {n["id"]}', lx, ly, vbtext.measure(text, f), vbtext.line_height(f))
             cv.mark(f'graph.node {n["id"]}', x - r, y - r, 2 * r, 2 * r)
         for depth, nid in enumerate(state.trail):   # the xref stack as a numbered trail
             if nid in lay.pos and state.nodes.get(nid, 0) > 0:

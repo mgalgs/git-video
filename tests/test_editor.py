@@ -255,6 +255,27 @@ class TestEditor(unittest.TestCase):
         y1 = round(lay.line_y(1, 0), 2)
         self.assertEqual(''.join(ch for (x, y), ch in sorted(done.items()) if y == y1), 'total=compute(q)')
 
+    def test_fringe_marks_never_overdraw(self):
+        from unittest import mock
+        lay = editor.layout(vb.Box(0, 0, 900, 600), FONT)
+        glyphs = []
+        real = editor.vbtext.draw
+
+        def record(cv, lines, font, x, y, *a, **kw):
+            if lines and lines[0] in ('+', '−') and x < lay.box.x + lay.fringe_w and kw.get('alpha', 1) > 0:
+                glyphs.append((lines[0], y, y + editor.vbtext.line_height(font)))
+            return real(cv, lines, font, x, y, *a, **kw)
+
+        with mock.patch.object(editor.vbtext, 'draw', record):
+            editor.draw(vb.Canvas(1000, 700, '#000'), lay, buffer(), 0, marks_added=[2, 3, 5, 6, 8, 9],
+                        marks_removed_at=[3, 4, 5, 8, 12])
+        self.assertEqual(sum(g == '+' for g, *_ in glyphs), 6)
+        self.assertIn('−', [g for g, *_ in glyphs])   # the boundary at line 12 is clear of any +
+        spans = sorted((a, b) for _, a, b in glyphs)
+        for (a0, a1), (b0, b1) in zip(spans, spans[1:]):
+            self.assertLessEqual(b0, b1)
+            self.assertGreaterEqual(b0 + 1, a1, spans)
+
     def test_morph_midway_differs(self):
         frames = [self.morph(p, self.replace())[0].bgra() for p in (0, 0.5, 1)]
         self.assertNotEqual(frames[0], frames[1])

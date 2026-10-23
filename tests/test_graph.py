@@ -118,6 +118,33 @@ class TestGraph(unittest.TestCase):
                     self.assertLessEqual(lx + w, box.right + 0.5, (box, nid, text))
                     self.assertGreaterEqual(ly, box.y)
 
+    def test_labels_ellipsize_inside_their_column(self):
+        import itertools
+        nodes = [{'id': f'big.py:{name}', 'path': 'big.py', 'name': name, 'line': k + 1, 'touched': True, 'first': 0}
+                 for k, name in enumerate(f'a_rather_long_function_name_number_{k}' for k in range(30))]
+        nodes += [{'id': 'b.py:short', 'path': 'b.py', 'name': 'short', 'line': 1, 'touched': True, 'first': 0}]
+        g = {'nodes': nodes, 'edges': []}
+        for box, scale in ((vb.Box(40, 40, 548, 300), 1.0), (vb.Box(40, 40, 380, 580), 1.15),
+                           (vb.Box(40, 40, 260, 160), 1.0)):
+            lay = graph.layout(g, box, scale)
+            for current in (None, nodes[3]['id']):
+                cv = vb.Canvas(1000, 800, '#000')
+                st = graph.State({n['id']: 1.0 for n in nodes}, {}, current, (), None)
+                graph.draw(cv, lay, g, st, scale=scale)
+                labels = [(name, b) for name, b in cv.marks if name.startswith('graph.label ')]
+                self.assertTrue(labels, box)
+                for name, b in labels:
+                    self.assertTrue(box.contains(b), (box, name, b))
+                for (na, a), (nb, b) in itertools.combinations(labels, 2):
+                    self.assertFalse(a.intersects(b), (box, na, nb))
+                for name, b in labels:   # never over another node's ring
+                    for nid, (x, y) in lay.pos.items():
+                        if nid != name.split(' ', 1)[1]:
+                            hr = lay.r * graph.HUB
+                            self.assertFalse(b.intersects(vb.Box(x - hr, y - hr, 2 * hr, 2 * hr)), (box, name, nid))
+                cut = [lay.labels[n['id']][0] for n in nodes[:30]]
+                self.assertTrue(all(t == '' or t.endswith('…') or t in {n['name'] for n in nodes} for t in cut))
+
     def test_graph_grows_with_the_tour(self):
         tour = film.Tour(self.plan, self.change, log=io.StringIO())
         labels = dict((label, n) for n, label in tour.film.keyframes)
