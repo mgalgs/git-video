@@ -273,6 +273,7 @@ class Tour:
                     out.append((f0 + round((r0 + 0.6 * (r1 - r0)) * self.fps), f'graph {s["name"]} route'))
                 out.append((f0 + round((P.XREF_SWITCH + P.XREF_REVEAL + P.XREF_SWEEP + 0.4) * self.fps),
                             f'xref {s["name"]} def'))
+        out.sort(key=lambda kf: kf[0])   # stills numbered in the order they are seen
         return tuple((min(n, self.frames - 1), label) for n, label in out)
 
     # ---- drawing ----

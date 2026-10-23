@@ -63,6 +63,10 @@ class TestFilm(unittest.TestCase):
                 f = vb.FORMATS[fmt]
                 self.assertEqual((cv.surface.get_width(), cv.surface.get_height()), (f.width, f.height))
 
+    def test_keyframes_in_time_order(self):
+        frames = [n for n, _ in self.tour.film.keyframes]
+        self.assertEqual(frames, sorted(frames))
+
     def test_draw_is_pure(self):
         i = next(k for k, s in enumerate(self.plan.shots) if s['kind'] == 'hunk' and s['morph'])
         s = self.plan.shots[i]
