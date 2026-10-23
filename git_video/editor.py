@@ -271,9 +271,10 @@ def _clipped(b, area):
 def wrap_rows(length, cols):
     """Screen rows a line of `length` columns takes in a window `cols` wide,
     as Emacs wraps it (`truncate-lines` nil): one, plus a continuation row
-    per `cols` columns; a line exactly `cols` wide gets an empty one for
-    point to sit on at its end."""
-    return 1 if length < cols else length // cols + 1
+    per `cols` columns more. A line exactly `cols` wide takes one row, point
+    at its end sitting past the last column (Emacs's
+    overflow-newline-into-fringe)."""
+    return max(1, -(-length // cols))
 
 
 def line_length(runs):
@@ -357,8 +358,12 @@ class Geometry:
         return self.rows(ln) * self.lay.line_h
 
     def at(self, ln, col):
-        """(x, y) of column `col` of line `ln`."""
-        return self.lay.col_x(col % self.cols), self.y(ln) + (col // self.cols) * self.lay.line_h
+        """(x, y) of column `col` of line `ln` (its end, on a line filling its
+        last row exactly, just past that row)."""
+        r, c = divmod(col, self.cols)
+        if c == 0 and r >= self.rows(ln) and r > 0:
+            r, c = r - 1, self.cols
+        return self.lay.col_x(c), self.y(ln) + r * self.lay.line_h
 
     def pieces(self, ln, c0, c1):
         """[(x, y, w)]: the columns c0..c1 of `ln`, one piece per screen row."""

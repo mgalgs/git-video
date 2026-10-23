@@ -397,6 +397,12 @@ class Tour:
         if fast and 'speedup' not in seen:
             seen['speedup'] = 1
             out.append((f0 + round(_peak_moment(s['fast'][0], clk) * self.fps), f'speedup {path}'))
+        cs = s.get('callouts') or ()
+        if cs and 'callout' not in seen:
+            seen['callout'] = 1
+            c = cs[0]
+            out.append((f0 + round(min(c['at'] + P.CALLOUT_IN + 0.3, (c['at'] + c['until']) / 2) * self.fps),
+                        f'callout {path}'))
         fills = [st for st in s['steps'] if st['kind'] == 'fill']
         if fills and 'elision' not in seen:
             seen['elision'] = 1
@@ -1153,24 +1159,33 @@ def callout_lines(text, font, width):
     return lines
 
 
-def callout_box(area, band, target, w, h, gap):
-    """Where the card goes in `area` (the text area): in the larger room above
-    or below the lit `band` when it fits there, else on the side of the area
-    away from the `target` word; right-aligned, never over the target."""
-    above = band.y - area.y - gap
-    below = area.bottom - band.bottom - gap
+def callout_box(area, band, point, w, h, gap):
+    """Where the card goes in `area` (the text area), right-aligned: never over
+    the `point` row, and never over the `band` (the current hunk's rows)
+    while there is room for it below the band (first) or above it. Only when
+    the hunk fills the screen does it go over code, its own included, at the
+    end of the area away from point."""
     x = area.right - w - gap
-    if max(above, below) >= h:
-        y = band.y - gap - h if above >= below else band.bottom + gap
-    elif target.cy > area.cy:
-        y = area.y + gap
-    else:
-        y = area.bottom - gap - h
-    box = vb.Box(x, y, w, h)
-    if box.intersects(target):   # the band fills the screen: move it clear of the word's row
-        y = target.y - gap - h if target.y - area.y >= area.bottom - target.bottom else target.bottom + gap
-        box = vb.Box(x, max(area.y, min(y, area.bottom - h)), w, h)
-    return box
+    top, bottom = max(band.y, area.y), min(band.bottom, area.bottom)
+    if bottom <= top:   # the hunk is off screen: keep clear of point alone
+        top, bottom = point.y, point.bottom
+    below = area.bottom - bottom - gap
+    above = top - area.y - gap
+    if below >= h:
+        y = bottom + gap
+    elif above >= h:
+        y = top - gap - h
+    else:   # no free room: over code, at the end of the area away from point
+        y = area.y + gap if point.cy > area.cy else area.bottom - gap - h
+        if vb.Box(x, y, w, h).intersects(point):
+            y = point.y - gap - h if point.y - area.y >= area.bottom - point.bottom else point.bottom + gap
+        y = max(area.y, min(y, area.bottom - h))
+    return vb.Box(x, y, w, h)
+
+
+def _union(a, b):
+    x0, y0 = min(a.x, b.x), min(a.y, b.y)
+    return vb.Box(x0, y0, max(a.right, b.right) - x0, max(a.bottom, b.bottom) - y0)
 
 
 def _text_area(lay):
@@ -1191,17 +1206,20 @@ def _callout(tour, cv, st, where, shot, i, k, c, t):
     else:   # a deletion: the gap the lines left, where its − rule is
         gy = where.line_box(c['line'] - 1).y
         target = vb.Box(lay.text_box.x, gy - 2, lay.cell_w * 6, 4)
-    _callout_card(tour, cv, st, where, (i, k), c, t, target, band, outline=bool(c['len']))
+    point = where.line_box(tour.views[i][1].cursor[0])
+    _callout_card(tour, cv, st, where, (i, k), c, t, target, band, point, outline=bool(c['len']))
 
 
-def _callout_card(tour, cv, st, where, key, c, t, target, band, outline=True):
-    """One commit sentence as a caption card beside the code, clear of `band`,
-    a line drawn from it to `target` (callout_line_with_label's leader, called
-    as is, with the label drawn as our card); fading in, then out before
+def _callout_card(tour, cv, st, where, key, c, t, target, band, point, outline=True):
+    """One commit sentence as a caption card beside the code, clear of `band`
+    (the current hunk's rows) and the `point` row (see `callout_box`), a line
+    drawn from it to `target` (callout_line_with_label's leader, called as
+    is, with the label drawn as our card); fading in, then out before
     `until`. `key` names the callout for the wrapped-text cache."""
     lay = where.layout
     area = _text_area(lay)
     kicker_f, font = callout_fonts(st)
+    band = _union(band, vb.Box(area.x, target.y, area.w, target.h))   # the words it points at stay clear too
     pad = 16 if st.compact else 18
     w = min(CALLOUT_W, area.w * 0.62)
     key = (*key, round(w))
@@ -1209,7 +1227,7 @@ def _callout_card(tour, cv, st, where, key, c, t, target, band, outline=True):
         tour.callout_text[key] = callout_lines(c['text'], font, w - 2 * pad - 6)
     lines = tour.callout_text[key]
     h = 2 * pad + vbtext.line_height(kicker_f) + 6 + len(lines) * vbtext.line_height(font)
-    card = callout_box(area, band, target, w, h, lay.line_h * 0.5)
+    card = callout_box(area, band, point, w, h, lay.line_h * 0.5)
     e = vb.ease_out_quint(vb.clamp01((t - c['at']) / 0.3))
     fade = vb.clamp01((c['until'] - t) / 0.25)
     run = vb.clamp01((t - c['at'] - 0.15) / (P.CALLOUT_IN - 0.15))
@@ -1236,6 +1254,10 @@ def _callout_card(tour, cv, st, where, key, c, t, target, band, outline=True):
             vbtext.draw(cv, lines, font, x, y, '#e6e9ef')
     cv.mark('callout.card', *card)
     cv.mark('callout.target', *target)
+    for name, b in (('callout.point', point), ('callout.hunk', band)):   # what it keeps clear of
+        m = editor._clipped(b, area)
+        if m is not None:
+            cv.mark(name, *m)
     return card
 
 
@@ -1490,10 +1512,14 @@ def _edit(tour, cv, st, shot, t, i, before, after):
         if c['at'] <= t < c['until']:
             lay = where.layout
             line, col = state.cursor
-            band = where.line_box(line)
+            point = where.line_box(line)
+            # the hunk being written: the run of changed lines point is in
+            run = next(((a, b) for a, b in _changed_ranges(state.lines) if a <= line <= b + 1), (line, line))
+            first, last = where.line_box(min(run[0], line)), where.line_box(max(run[1], line))
+            band = vb.Box(first.x, first.y, first.w, last.bottom - first.y)
             h = col - col % lay.cols   # point's row of its (maybe wrapped) line, from its start to point
             target = where.word_box(line, h, max(1, col - h))
-            card = _callout_card(tour, cv, st, where, (i, k), c, t, target, band, outline=False)
+            card = _callout_card(tour, cv, st, where, (i, k), c, t, target, band, point, outline=False)
     _speed_badge(cv, st, where, shot, t, avoid=card)
 
 

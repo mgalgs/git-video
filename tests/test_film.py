@@ -679,6 +679,41 @@ class TestFilm(unittest.TestCase):
             self.assertTrue(marks['editor.text'].contains(marks['callout.card']), fmt)
             self.assertFalse(marks['callout.card'].intersects(marks['callout.target']), fmt)
 
+    def test_callout_box_keeps_clear_of_point_and_hunk(self):
+        area = vb.Box(100, 50, 1200, 900)
+        lh, w, h = 35.0, 600, 150
+        for top in range(0, 26):
+            for size in (1, 3, 8, 20, 26):
+                band = vb.Box(area.x, area.y + top * lh, area.w, size * lh)
+                for prow in range(top, min(26, top + size)):
+                    point = vb.Box(area.x, area.y + prow * lh, area.w, lh)
+                    card = film.callout_box(area, band, point, w, h, lh / 2)
+                    self.assertTrue(area.contains(card), (top, size, prow))
+                    self.assertFalse(card.intersects(point), (top, size, prow))
+                    visible = max(0, min(band.bottom, area.bottom) - max(band.y, area.y))
+                    if area.h - visible - lh >= h + lh:   # room above or below: the hunk stays clear
+                        room = max(band.y - area.y, area.bottom - band.bottom)
+                        if room >= h + lh / 2:
+                            self.assertFalse(card.intersects(band), (top, size, prow))
+
+    def test_develop_callout_beside_point(self):
+        tour = self.develop_tours()['callout']
+        (i,) = [k for k, s in enumerate(tour.shots) if s['kind'] == 'edit']
+        s = tour.shots[i]
+        for c in s['callouts']:
+            for dt in (0.4, 1.0, (c['until'] - c['at']) * 0.8):
+                n = tour.shot_frames[i] + round((c['at'] + dt) * tour.fps)
+                for fmt in ('16x9', '9x16', '1x1'):
+                    marks = dict(tour.film.frame(n, fmt).marks)
+                    if 'callout.card' not in marks:
+                        continue
+                    card = marks['callout.card']
+                    self.assertFalse(card.intersects(marks['callout.point']), (fmt, n))
+                    area = marks['editor.text']
+                    hunk = marks['callout.hunk']
+                    if max(hunk.y - area.y, area.bottom - hunk.bottom) >= card.h + 20:
+                        self.assertFalse(card.intersects(hunk), (fmt, n))
+
     def test_develop_draw_is_pure_and_flat(self):
         import time
         ch = collect.collect(fixtures.make_budget_repo(self.tmp.name + '/flat'), 'HEAD')
