@@ -185,6 +185,25 @@ def make_many_defs_repo(tmp, n=15):
     return repo
 
 
+def make_quiet_repo(tmp):
+    """A commit whose message names nothing: graph.py with a docstring, an
+    import and twelve functions far apart, every one changed, and three new
+    tests for it in one hunk of tests/test_graph.py."""
+    repo = os.path.join(tmp, 'quiet')
+    init(repo)
+    body = ''.join(f'def step_{i}(x):\n    return x + {i}\n' + '\n' * 12 for i in range(12))
+    gap = '\n' * 10
+    write(repo, 'graph.py', '"""The graph."""\n' + gap + 'import os\n' + gap + body)
+    write(repo, 'tests/test_graph.py', 'import graph\n\n\ndef test_one():\n    assert graph.step_1(1) == 2\n')
+    commit(repo, 'Start')
+    write(repo, 'graph.py', '"""The call graph, grown as the tour finds it."""\n' + gap + 'import math\nimport os\n'
+          + gap + body.replace('return x + ', 'return x - '))
+    write(repo, 'tests/test_graph.py', 'import graph\n\n\ndef test_one():\n    assert graph.step_1(1) == 2\n'
+          + ''.join(f'\n\ndef test_step_{i}_counts_down():\n    assert graph.step_{i}(5) == {5 - i}\n' for i in (2, 3, 4)))
+    commit(repo, 'Count down instead')
+    return repo
+
+
 FAR_LINES = 300
 
 

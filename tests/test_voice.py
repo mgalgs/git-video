@@ -42,6 +42,39 @@ class TestScript(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
+    def test_hunk_lines(self):
+        ch = collect.collect(fixtures.make_quiet_repo(self.tmp.name), 'HEAD')
+        lines = {}
+        for f in ch.files:
+            for h in f.hunks:
+                lines.setdefault(f.path, []).append(voice.hunk_line(ch, f, h))
+        self.assertEqual(lines['tests/test_graph.py'], ['Three new tests for the graph.'])
+        g = lines['graph.py']
+        self.assertEqual(g[:2], ["The file's opening comment changes.", 'It now imports math.'])
+        self.assertIn('A change to step_5.', g)
+        for line in (x for ls in lines.values() for x in ls):
+            self.assertNotRegex(line, r'(?i)\bsome changes\b|\bchanges here\b')
+
+    def test_quiet_files_get_a_line(self):
+        ch = collect.collect(fixtures.make_quiet_repo(self.tmp.name + '/q'), 'HEAD')
+        for mode in ('tour', 'develop'):
+            with mock.patch.dict(os.environ, {'XDG_CACHE_HOME': os.path.join(self.tmp.name, 'cache')}):
+                p = voice.narrate(ch, [ch], 0, mode, fixtures.FakeEngine(), 'bf_isabella')
+            plain = plan.build(ch, 0, mode)
+            said = [(x['start'], x['end'], x['shot'], x['text']) for x in p.voice['phrases']]
+            fills = [t for *_, t in said if t not in texts(voice.script(plain, [ch]))]
+            if mode == 'tour':   # develop types the file briskly enough to need none
+                self.assertTrue(fills, mode)
+            hunk_lines = {voice.hunk_line(ch, f, h) for f in ch.files for h in f.hunks}
+            self.assertTrue(set(fills) <= hunk_lines, (mode, fills))
+            starts, _ = plan.frame_starts(p.shots, p.fps)
+            enter = [i for i, s in enumerate(p.shots) if s['kind'] in ('dive', 'travel', 'open')]
+            for a, b in zip(enter, enter[1:] + [len(p.shots) - 1]):
+                t0, t1 = starts[a] / p.fps, starts[b] / p.fps
+                ts = [t0] + [x for s0, e0, i, _ in said if a <= i < b for x in (s0, e0)] + [t1]
+                gaps = [y - x for x, y in zip(ts[::2], ts[1::2])]
+                self.assertLessEqual(max(gaps), voice.QUIET + 0.5, (mode, p.shots[a].get('path'), gaps))
+
     def test_develop_slot_is_the_callouts(self):
         # an unsayable first sentence leaves its slot empty: the phrase waits for the second card
         hunk = next(k for k in voice.shot_index(self.develop.shots) if k[0] == 'edit')
