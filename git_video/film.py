@@ -29,6 +29,8 @@ from videobuilder.capabilities.ui.circular_clip_reveal import GROW, circular_rev
 from videobuilder.capabilities.ui.cursor_state_change import draw_cursor as draw_state_cursor, hover_amount
 from videobuilder.capabilities.principles.time_remapping import speed_ramp
 from videobuilder.capabilities.ui.scroll_velocity_skew import scroll_velocity, velocity_skew
+from videobuilder.capabilities.transitions.stacked_card_reveal import stacked_card_reveal
+from videobuilder.capabilities.ui.progress_steps_connector_fill import draw_progress_steps
 
 from . import edits, editor, graph as graphmod, highlight, plan as P, repomap, sidebar, sounds
 
@@ -730,7 +732,81 @@ def _end_card(tour, cv, box, shot, t):
         cv.mark('card.next', *nbox)
 
 
-CARD_KINDS = {'title': _title_card, 'end': _end_card}
+# ---- the card between two patches of a --series ----
+DECK_CARD = 0.62    # the deck's cards, as a fraction of the frame (stacked_card_reveal's `card`)
+DECK_GAP = 26       # px between two cards of the deck
+DECK_DEPTH = 2      # the incoming card and one blank under it
+
+
+def _patch_face(tour, cv, k):
+    """Patch k's card, drawn full frame (the deck shrinks it): `PATCH k/N`
+    over the commit's subject, its short sha, author and date, its size."""
+    w, h = cv.width, cv.height
+    portrait = h > w
+    style = sidebar.Style()
+    cv.fill(style.bg)
+    cv.outline(3, 3, w - 6, h - 6, style.border, width=6)
+    info = tour.patch_info(k)
+    c = info['commit']
+    n = len(tour.patches)
+    box = vb.Box(0, 0, w, h).pad(w * 0.09, h * 0.1)
+    kicker = vb.Font(UI, 44 if portrait else 40, weight=700, tracking=0.2)
+    title = vb.Font(UI, 92 if portrait else 84, weight=700, line_height=1.16)
+    meta = vb.Font(UI, 36 if portrait else 40)
+    lines = list(vbtext.wrap(c['subject'], title, box.w, balance=True))
+    if len(lines) > 3:
+        lines = lines[:2] + [sidebar.ellipsize(' '.join(lines[2:]), title, box.w)]
+    sub = ' · '.join(x for x in (c.get('short'), c.get('author'), (c.get('date') or '')[:10]) if x)
+    files = len(info.get('files') or ())
+    stats = f'{files} file{"s" if files != 1 else ""}  +{info.get("added", 0)} {sidebar.MINUS}{info.get("deleted", 0)}'
+    heights = [vbtext.line_height(kicker), 18, *[vbtext.line_height(title)] * len(lines), 24,
+               vbtext.line_height(meta), vbtext.line_height(meta)]
+    boxes, _ = box.stack(heights, gap=0, align='center')
+    vbtext.draw(cv, [f'PATCH {k + 1} / {n}'], kicker, box.x, boxes[0].y, THEME.cursor, align='center', width=box.w)
+    for ln, b in zip(lines, boxes[2:2 + len(lines)]):
+        vbtext.draw(cv, [ln], title, box.x, b.y, '#e6e9ef', align='center', width=box.w)
+    vbtext.draw(cv, [sidebar.ellipsize(sub, meta, box.w)], meta, box.x, boxes[-2].y, style.muted, align='center',
+                width=box.w)
+    vbtext.draw(cv, [stats], meta, box.x, boxes[-1].y, style.fg, align='center', width=box.w)
+
+
+def series_progress(k, n, t):
+    """The series strip's progress `t` s into the card before patch k of n:
+    the fill runs from patch k-1's marker to patch k's as the card comes in."""
+    e = vb.ease_in_out_quart(vb.clamp01((t - 0.2) / (P.INTER_REVEAL - 0.2)))
+    return ((k - 1) + e) / max(1, n - 1)
+
+
+def _patch_card(tour, cv, box, shot, t):
+    """The card between two patches: the patch just played is the top card of a
+    deck and is flung off, the next one's card coming to the top
+    (stacked_card_reveal, held with the card on the deck), over a strip of the
+    series with the fill running on to the next patch
+    (progress_steps_connector_fill)."""
+    k, n = shot['patch'], len(tour.patches)
+    w, h = cv.width, cv.height
+    portrait = h > w
+    p = 0.75 * vb.clamp01(t / P.INTER_REVEAL)   # stop with the new card on top of the deck
+    stacked_card_reveal(cv, lambda c: _patch_face(tour, c, k - 1), lambda c: _patch_face(tour, c, k), p,
+                        card=DECK_CARD, depth=DECK_DEPTH, gap=DECK_GAP, background=THEME.bg,
+                        blank=sidebar.Style().border)
+    cw, ch = w * DECK_CARD, h * DECK_CARD
+    cv.mark('card.deck', (w - cw) / 2, (h - ch) / 2, cw, ch)
+    r = 18 if not portrait else 22
+    labels = [tour.patch_info(j)['commit'].get('short', '') if n <= 6 or j == k else '' for j in range(n)]
+    span = w * (0.5 if not portrait else 0.7) if n > 2 else w * 0.3
+    x0, x1 = w / 2 - span / 2, w / 2 + span / 2
+    deck_bottom = h / 2 + ch / 2 + DECK_DEPTH * DECK_GAP
+    y = deck_bottom + (h - deck_bottom) * 0.42
+    mono = vb.Font(tour.font, r * 0.95, weight=600)
+    draw_progress_steps(cv, x0, x1, y, series_progress(k, n, t), labels, r=r, track=6, done=THEME.cursor,
+                        todo='#3f444a', ink='#e6e9ef', muted='#9aa3b2', font=vb.Font(UI, r, weight=800),
+                        label_font=mono)
+    lh = vbtext.line_height(mono)
+    cv.mark('card.series', x0 - r * 1.5, y - r * 1.5, x1 - x0 + 3 * r, r * 1.5 + r * 1.9 + lh)
+
+
+CARD_KINDS = {'title': _title_card, 'end': _end_card, 'patch': _patch_card}
 
 
 def _stats_line(cv, box, s, font, align='center'):

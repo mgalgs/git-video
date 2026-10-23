@@ -453,5 +453,74 @@ class TestDevelopPlan(unittest.TestCase):
         self.assertLessEqual(a['until'], b['at'])
 
 
+
+class TestSeries(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.range_repo, cls.range_sha = fixtures.make_range_repo(cls.tmp.name)
+        cls.rewrite_repo, cls.rewrite_sha = fixtures.make_rewrite_repo(cls.tmp.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def series(self, repo, a, b, mode):
+        combined, patches = collect.series(repo, f'{a}..{b}')
+        return plan.build(combined, 0, mode, patches), combined, patches
+
+    def test_series_assembly(self):
+        for repo, sha in ((self.range_repo, self.range_sha), (self.rewrite_repo, self.rewrite_sha)):
+            for mode in ('tour', 'develop'):
+                p, combined, patches = self.series(repo, sha['a'], sha['c'], mode)
+                n = len(patches)
+                self.assertEqual(n, 2)
+                kinds_ = [s['kind'] for s in p.shots]
+                self.assertEqual((kinds_[0], kinds_[1], kinds_[-1]), ('title', 'map', 'end'))
+                self.assertEqual(kinds_.count('title') + kinds_.count('end') + kinds_.count('map'), 3)
+                self.assertEqual(kinds_.count('patch'), n - 1)
+                stamps = [s['patch'] for s in p.shots]
+                self.assertEqual(stamps, sorted(stamps))
+                cards = [i for i, s in enumerate(p.shots) if s['kind'] == 'patch']
+                self.assertEqual([p.shots[i]['patch'] for i in cards], list(range(1, n)))
+                self.assertEqual([e['commit']['short'] for e in p.patches], [c.short for c in combined.commits])
+                self.assertEqual([e['first_shot'] for e in p.patches[1:]], cards)
+                body = 'edit' if mode == 'develop' else 'hunk'
+                for k in range(n):
+                    self.assertTrue([s for s in p.shots if s['kind'] == body and s['patch'] == k], (mode, k))
+        # a single rev: --series changes nothing
+        repo, sha = self.rewrite_repo, self.rewrite_sha
+        for mode in ('tour', 'develop'):
+            combined, patches = collect.series(repo, sha['c'])
+            self.assertEqual(plan.build(combined, 0, mode, patches).to_json(),
+                             plan.build(collect.collect(repo, sha['c']), 0, mode).to_json())
+
+    def test_series_tour_per_commit(self):
+        p, combined, patches = self.series(self.range_repo, self.range_sha['a'], self.range_sha['c'], 'tour')
+        seq = [(s['kind'], s['patch']) for s in p.shots if s['kind'] in ('hunk', 'patch')]
+        self.assertEqual(seq, [('hunk', 0), ('patch', 1), ('hunk', 1)])
+        b, c = kinds(p, 'hunk')
+        self.assertEqual([x['text'] for x in b['callouts']], ['frob() now doubles its input.'])
+        self.assertEqual([x['commit'] for x in b['callouts']], [patches[0].commits[0].short])
+        self.assertEqual([x['commit'] for x in c['callouts']], [patches[1].commits[0].short])
+        self.assertEqual(b['index'], 0)
+        self.assertEqual(c['index'], 0)
+        self.assertEqual(b['focus_line'], 2)   # each hunk against its own commit
+        self.assertEqual(c['focus_line'], 13)
+
+    def test_series_scripts_chain(self):
+        from git_video import edits
+        repo, sha = self.rewrite_repo, self.rewrite_sha
+        p, combined, patches = self.series(repo, sha['a'], sha['c'], 'develop')
+        texts = [edits.split_lines(collect.blob_text(repo, sha[x], 'lib.py')) for x in 'abc']
+        (eb,), (ec,) = ([s for s in p.shots if s['kind'] == 'edit' and s['patch'] == k] for k in (0, 1))
+        self.assertEqual(edits.apply(texts[0], eb['steps']), texts[1])
+        self.assertEqual(edits.apply(texts[1], ec['steps']), texts[2])
+        typed = ''.join(st['text'] for st in eb['steps'] if st['kind'] in ('type', 'fill'))
+        killed = [st['text'] for st in ec['steps'] if st['kind'] == 'kill']
+        self.assertTrue(any(k.strip() and k.strip() in typed for k in killed), killed)
+        self.assertIn('total += k', ''.join(killed))   # B's loop, rewritten by C
+
+
 if __name__ == '__main__':
     unittest.main()

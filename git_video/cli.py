@@ -18,10 +18,16 @@ tour    A solid xref session in an Emacs-looking editor.
         amount of side exploration.
 
 develop   A pair programming session of the entire change set from top
-          to bottom (not implemented yet).
+          to bottom. Including rewrites when --series is provided (each
+          patch builds on the last). Programming as a performance art
+          where the code is the main character (credit: bisqwit).
+          Can control elision and frequency of speed-up sequences with
+          --verbose. Default is to aim for roughly 60s per 500 lines of
+          code.
 
 A single rev X shows the change X^..X (a root commit is shown against the
-empty tree); A..B shows the combined diff of the range.
+empty tree); A..B shows the combined diff of the range, or with --series
+each of its commits in turn.
 """
 
 
@@ -55,11 +61,14 @@ def parser():
                    help='a commit (shown as X^..X) or a range A..B (default HEAD)')
     p.add_argument('--mode', choices=('tour', 'develop'), default='tour', help='tour (default) or develop')
     p.add_argument('--series', action='store_true',
-                   help='treat the patches in the range separately; does not apply to tour, which ignores it')
+                   help="treat a range's patches separately: one tour or one performance per commit, each on "
+                        'top of the one before, with a card between them (a single rev is unchanged)')
     p.add_argument('--verbose', type=int, choices=(1, 2, 3), default=0, metavar='N',
-                   help='--verbose[=1,2,3]: side exploration (xref visits). Unset: one visit in the whole '
-                        'tour; 1: up to one per file; 2: up to one per hunk; 3: every resolvable identifier '
-                        '(capped). A bare --verbose means 1')
+                   help='--verbose[=1,2,3]: tour: side exploration (xref visits). Unset: one visit in the '
+                        'whole tour; 1: up to one per file; 2: up to one per hunk; 3: every resolvable identifier '
+                        '(capped). develop: unset elides long typed runs and speeds up freely; 1 elides only very '
+                        'long runs; 2 never elides but still speeds up; 3 types everything at natural speed. '
+                        'A bare --verbose means 1')
     p.add_argument('--voice', metavar='VOICE-PROFILE',
                    help=f'--voice[=<voice-profile>]: include a voice over (default profile {DEFAULT_VOICE}; '
                         'not implemented yet)')

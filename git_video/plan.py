@@ -614,9 +614,9 @@ def build(change, verbose=0, mode='tour', patches=None):
         shots.append(shot('map', 'map', MAP_DUR, lit=lit, patch=0))
     entries, written = [], {}
     for k, ch in enumerate(patches):
+        entries.append(patch_entry(ch, len(shots)))   # from its card, after the first
         if k:
             shots.append(shot('card', 'patch', INTER_DUR, patch=k))
-        entries.append(patch_entry(ch, len(shots)))
         if mode == 'develop':
             body, fields, w = _develop_body(ch, verbose, k)
             entries[-1].update(fields)

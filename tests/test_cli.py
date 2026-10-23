@@ -49,11 +49,15 @@ class TestCli(unittest.TestCase):
             self.assertEqual(code, 0, err)
             self.assertIn('"mode": "develop"', out)
 
-    def test_series_ignored_by_tour(self):
+    def test_series_help(self):
         a = cli.parse(['--series', 'A..B'])
         self.assertTrue(a.series)
         self.assertEqual(a.mode, 'tour')
-        self.assertIn('does not apply to tour', ' '.join(cli.parser().format_help().split()))
+        h = ' '.join(cli.parser().format_help().split())
+        self.assertNotIn('ignores it', h)
+        self.assertNotIn('not implemented yet). ', h)
+        self.assertIn('one tour or one performance per commit', h)
+        self.assertIn('Programming as a performance art', h)
 
     def test_help_lists_options(self):
         h = cli.parser().format_help()

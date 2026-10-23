@@ -9,8 +9,8 @@ Options:
 
 --mode     tour, develop
 --series   Indicates that the patches in the range should be
-           treated separated. Doesn't apply to all modes (tour
-           ignores it).
+           treated separately: one tour or one performance per
+           commit, each on top of the one before.
 --verbose=1,2,3
            1 means verbose. 3 means absolutely everything.
 --voice[=<voice-profile>]
@@ -59,8 +59,9 @@ Uses mgalgs/videobuilder
 
 ## What it is
 
-`git video` turns a commit (or a range, as one combined diff) into an MP4
-that walks through the change the way a person would in their editor: it
+`git video` turns a commit (or a range, as one combined diff, or with
+`--series` commit by commit) into an MP4. `--mode tour` walks through the
+change the way a person would in their editor: it
 opens each changed file, scrolls to each hunk, shows what the hunk replaced
 morphing into what it says now, and now and then clicks an identifier and
 jumps to its definition (`M-.`) and back (`M-,`). The commit message's
@@ -73,8 +74,13 @@ deterministic and needs no display. It looks like Emacs: a dark theme, line
 numbers, a fringe, a mode line and an echo area where the commands are
 typed, with keyboard and mouse sounds.
 
+`--mode develop` performs it instead: every file starts from what it was
+and is edited into what it is, on screen, as a person at the keyboard would
+-- a pair programming session where the code is the main character.
+
 A single rev `X` means the change `X^..X` (a root commit is shown against
-the empty tree); `A..B` means the combined diff of the range.
+the empty tree); `A..B` means the combined diff of the range, or with
+`--series` each of its commits in turn.
 
 ## Install
 
@@ -91,7 +97,8 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
 
 ## What works today
 
-- `--mode tour` on a commit or a range, in 16:9, 9:16 and 1:1.
+- `--mode tour` and `--mode develop` on a commit or a range, with or
+  without `--series`, in 16:9, 9:16 and 1:1.
 - A map of the repository opens the tour: every file a tile sized by its
   size, grouped by top-level directory (small files folded into "N more"
   tiles), the changed files lit by how much changed. The camera dives from
@@ -139,13 +146,51 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
   current call-graph node a solid, larger hub, and a changed tile on the
   repo map an outline and its `+a −d` label.
 
+## Develop mode
+
+- Each file is edited from its old text (empty for a new file) into its new
+  one, hunk by hunk: the lines to remove are marked (shaded and outlined)
+  and killed, the new text typed in with an uneven, human cadence, point
+  moving as a real one would. A line that keeps most of its words is edited
+  in place -- the changed words killed, the new ones typed -- rather than
+  retyped. A far hunk is reached with `M-g g N` in the echo area, the view
+  scrolling there; a deleted file goes with `C-x h C-w`.
+- Files go top to bottom: a file whose change writes a definition that
+  another changed file's new lines use goes first, tests last, otherwise
+  diff order. The camera pulls back to the repo map and dives into the next
+  file (or `C-x C-f` for one the map does not show).
+- Pacing: about 60 s per 500 changed lines (added + removed), never under
+  15 s, plus the cards and camera moves. Typing runs up to four times its
+  natural pace; past that, each file after its first moments is a speed-up
+  sequence with a `▶▶ ×N` badge, ramped in and out, the keystrokes thinned to
+  a typing run. A long new block (30 lines or more) is typed for a few lines,
+  then pours in behind a fold marker (`… 37 lines`) counting down.
+  `--verbose`: unset elides and speeds up freely; `1` elides only very long
+  blocks (80 lines); `2` never elides but still speeds up; `3` types
+  everything at natural speed, however long that takes.
+- The side bar and stage are the tour's: the files (current one marked), the
+  commit, the call graph growing as definitions are written, the minimap
+  filling in. The commit sentence that explains a hunk sits beside point
+  while it is written, and the mode line counts the lines done.
+
+## --series
+
+Every commit of the range plays in order on top of the one before, so a
+later patch visibly rewrites what an earlier one wrote (in develop mode) or
+is toured on its own (in tour mode). Between two patches the next commit's
+card comes to the top of a deck, over a strip of the series with the
+current patch marked, and the side bar follows the patch. One opening and
+one closing card frame the whole. A single rev is the same with or without
+`--series`.
+
 ## The plan seam
 
 A tour is built in four steps: collect the git facts, plan a list of shots,
 build a film from the plan, render it. The plan is plain JSON
 (`--plan-json` prints it): a list of shots, each with a `scene` (`card`,
 `editor` or `map`), a `kind` (`title`, `map`, `dive`, `travel`, `open`,
-`hunk`, `xref-push`, `xref-pop`, `end`) and a duration, beside plan-level
+`hunk`, `xref-push`, `xref-pop`, `edit`, `patch`, `end`), the `patch` it
+belongs to and a duration, beside plan-level
 facts: the repo `map` (its tiles, grouped by directory), the `commit`
 (with its `coauthors` from `Co-Authored-By:` trailers and, per commit, a
 trailer-free `body`), the `files` (each with its `marks`: added line ranges
@@ -158,14 +203,24 @@ A `hunk` shot carries `focus` (its changed line span), `scroll` (`near` or
 `segments`: the old lines, how many new lines replace them and word-level
 `ops`), `callouts` (the commit sentences shown, with their times and the
 words they point at) and `node` (its call-graph node). An `xref-push` shot
-carries its `node` and `edge`. The planner is deterministic heuristics for
-now; the JSON is the shape a later pass (an LLM, say) can rewrite.
+carries its `node` and `edge`.
+
+The plan also says its `mode` and lists its `patches` (one without
+`--series`): each with its `commit`, `files` and, for develop, the `lines`
+performed, the `budget`, and the `natural` and played (`perf`) seconds. A
+develop `edit` shot carries its file's edit script as `steps` (`move`,
+`jump`, `kill`, `type`, `fill`, each with its times in natural seconds),
+the `clock` that maps the shot's seconds to the script's (speed keyframes
+for `time-remapping`'s `speed_ramp`), its `fast` spans and `elisions` in
+seconds on screen, its `callouts`, and where it stands in the patch's lines
+(`done_before`, `lines`, `total_lines`). The film only plays it: the buffer
+at any frame is a function of the frame, from snapshots of the script.
+
+The planner is deterministic heuristics for now; the JSON is the shape a
+later pass (an LLM, say) can rewrite.
 
 ## Planned
 
-- `--mode develop`: the change typed in from top to bottom, with rewrites
-  when `--series` is given.
-- `--series`: each patch of a range on its own.
 - `--voice`: a narration explaining the intent behind the change, voiced
   with videobuilder's `say` (Kokoro voice `bf_isabella` by default).
 - More scenes beside the editor and the map: explainer cards.

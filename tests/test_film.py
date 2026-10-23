@@ -629,6 +629,33 @@ class TestFilm(unittest.TestCase):
             for x, y in zip(a, b):
                 self.assertAlmostEqual(x, y, delta=1.0)
 
+    def test_interstitial_all_formats(self):
+        repo, sha = fixtures.make_rewrite_repo(self.tmp.name + '/inter')
+        combined, patches = collect.series(repo, f'{sha["a"]}..{sha["c"]}')
+        for mode in ('tour', 'develop'):
+            tour = film.Tour(plan.build(combined, 0, mode, patches), combined, patches=patches, log=io.StringIO())
+            (n,) = [n for n, label in tour.film.keyframes if label == 'interstitial 1']
+            i, t = tour.at(n)
+            self.assertEqual(tour.shots[i]['kind'], 'patch')
+            for fmt in ('16x9', '9x16', '1x1'):
+                cv = tour.film.frame(n, fmt)
+                marks = dict(cv.marks)
+                frame = vb.Box.of(cv)
+                for name in ('card.deck', 'card.series'):
+                    self.assertTrue(frame.contains(marks[name]), (mode, fmt, name))
+                self.assertFalse(marks['card.deck'].intersects(marks['card.series']), (mode, fmt))
+            # the side bar follows the patch: the shot after the card shows commit 2
+            j = i + 1
+            after = tour.shot_frames[j] + 20
+            self.assertEqual(tour.shots[j]['patch'], 1)
+            cv = tour.film.frame(after, '16x9')
+            self.assertEqual(tour.patch_info(1)['commit']['short'], patches[1].commits[0].short)
+            self.assertIn('sidebar.commit', dict(cv.marks))
+        self.assertEqual(film.series_progress(1, 2, 0), 0)
+        self.assertEqual(film.series_progress(1, 2, plan.INTER_DUR), 1)
+        self.assertEqual(film.series_progress(2, 3, plan.INTER_DUR), 1)
+        self.assertEqual(film.series_progress(1, 3, plan.INTER_DUR), 0.5)
+
     @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'needs ffmpeg')
     def test_render_develop_smoke(self):
         from videobuilder.render import render
