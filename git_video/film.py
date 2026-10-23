@@ -8,6 +8,7 @@ is pure: everything it shows is derived from the shot list and tables built
 once here.
 """
 import bisect
+import re
 from dataclasses import dataclass
 
 import videobuilder as vb
@@ -129,9 +130,11 @@ class Tour:
                             keyframes=self.keyframes())
 
     def _def_col(self, path, line, name):
+        """Where `name` sits on its definition line: the first whole-word match
+        (a hand-written plan may lack the definition's `col`)."""
         runs = self.buffers[path].lines[line - 1] if 0 < line <= len(self.buffers[path].lines) else ()
-        col = ''.join(t for _, t in runs).find(name)
-        return max(0, col)
+        m = re.search(rf'(?<![\w$]){re.escape(name)}(?![\w$])', ''.join(t for _, t in runs))
+        return m.start() if m else 0
 
     def _views(self):
         """[(before, after)] View per shot."""
@@ -150,7 +153,8 @@ class Tour:
                 d = s['definition']
                 dl = d['line'] - 1
                 entry = (s['name'], d['path'], d['line'])
-                cur = View(d['path'], s['def_top'], dl, (dl, self._def_col(d['path'], d['line'], s['name'])),
+                col = d['col'] if 'col' in d else self._def_col(d['path'], d['line'], s['name'])
+                cur = View(d['path'], s['def_top'], dl, (dl, col),
                            cur.stack + (entry,))
             elif kind == 'xref-pop':
                 ln = s['line'] - 1

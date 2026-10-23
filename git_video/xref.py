@@ -58,6 +58,7 @@ class Definition:
     path: str
     line: int
     kind: str
+    col: int = 0     # 0-based column of the name, tabs expanded
 
 
 @dataclass(frozen=True)
@@ -98,7 +99,8 @@ def index(repo, target, lang):
             m = p.match(text)
             if m and m.group('name') not in KEYWORDS:
                 kind = m.groupdict().get('kind') or 'function'
-                defs.setdefault(m.group('name'), []).append(Definition(path, int(line), kind))
+                col = len(text[:m.start('name')].expandtabs(highlight.TAB))
+                defs.setdefault(m.group('name'), []).append(Definition(path, int(line), kind, col))
                 break
     _indexes[key] = defs
     return defs

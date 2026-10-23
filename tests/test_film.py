@@ -85,6 +85,21 @@ class TestFilm(unittest.TestCase):
             for c in sb:
                 self.assertTrue(st.side.contains(c), (fmt, c))
 
+    def test_planned_rows_fit_every_format(self):
+        for fmt in ('16x9', '9x16', '1x1'):
+            cv = self.tour.film.frame(0, format=fmt)
+            st = film.stage(cv)
+            self.assertGreaterEqual(film.editor.layout(st.main, st.mono).rows, plan.PLAN_ROWS, fmt)
+
+    def test_definition_cursor_lands_on_the_name(self):
+        ch = collect.collect(fixtures.make_edge_repo(self.tmp.name + '/go'), 'HEAD')
+        p = plan.plan(ch, 3)
+        tour = film.Tour(p, ch, log=io.StringIO())
+        i = next(k for k, s in enumerate(p.shots) if s['kind'] == 'xref-push' and s['name'] == 'Read')
+        self.assertEqual(tour.views[i][1].cursor, (4, len('func (r *Reader) ')))
+        # a plan without the definition's col still finds the whole word
+        self.assertEqual(tour._def_col('reader.go', 5, 'Read'), len('func (r *Reader) '))
+
     def test_sidebar_current_marker(self):
         i, n = self.frame_of('hunk', 1.0, nth=1)
         path, _ = self.tour.state(n)

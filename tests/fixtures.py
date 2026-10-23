@@ -113,3 +113,27 @@ def fake_pack(root, sounds):
     with open(os.path.join(root, 'index.json'), 'w') as fh:
         json.dump({'schema': 1, 'pack': 'test', 'sounds': entries}, fh)
     return root
+
+
+def make_edge_repo(tmp):
+    """A repo whose HEAD adds:
+    lib.py   two functions;
+    app.py   calls near_call() on the last row the film keeps in view (line
+             plan.XREF_ROWS) and far_call() two rows below it;
+    reader.go  a Go method `func (r *Reader) Read(...)`, and use.go calling it.
+    """
+    from git_video import plan
+    repo = os.path.join(tmp, 'edge')
+    init(repo)
+    write(repo, 'README', 'edge\n')
+    commit(repo, 'Start')
+    write(repo, 'lib.py', 'def near_call():\n    return 1\n\n\ndef far_call():\n    return 2\n')
+    rows = [f'x{i} = {i}\n' for i in range(40)]
+    rows[plan.XREF_ROWS - 1] = 'y = near_call()\n'
+    rows[plan.XREF_ROWS + 1] = 'z = far_call()\n'
+    write(repo, 'app.py', ''.join(rows))
+    write(repo, 'reader.go', 'package r\n\ntype Reader struct{}\n\nfunc (r *Reader) Read(p []byte) int {\n'
+                             '\treturn 0\n}\n')
+    write(repo, 'use.go', 'package r\n\nfunc use(r *Reader) int {\n\treturn r.Read(nil)\n}\n')
+    commit(repo, 'Add the edge cases')
+    return repo

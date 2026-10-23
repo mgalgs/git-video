@@ -63,7 +63,7 @@ class TestPlan(unittest.TestCase):
         i = next(i for i, s in enumerate(p.shots) if s['kind'] == 'xref-push')
         push, pop = p.shots[i], p.shots[i + 1]
         self.assertEqual((push['path'], push['name']), ('src/app.py', 'frob'))
-        self.assertEqual(push['definition'], {'path': 'src/lib.py', 'line': 1, 'kind': 'def'})
+        self.assertEqual(push['definition'], {'path': 'src/lib.py', 'line': 1, 'kind': 'def', 'col': 4})
         self.assertEqual((push['line'], push['col']), (5, 11))
         self.assertEqual(pop['kind'], 'xref-pop')
         self.assertEqual((pop['path'], pop['line'], pop['col']), ('src/app.py', 5, 11))
@@ -118,6 +118,17 @@ class TestPlan(unittest.TestCase):
         # main() is defined on app.py line 4 and only visited from the test file
         mains = [s for s in kinds(self.plans[3], 'xref-push') if s['name'] == 'main']
         self.assertEqual([s['path'] for s in mains], ['tests/test_app.py'])
+
+    def test_xref_only_from_rows_the_film_keeps_in_view(self):
+        ch = collect.collect(fixtures.make_edge_repo(self.tmp.name + '/rows'), 'HEAD')
+        names = {s['name']: s['line'] for s in kinds(plan.plan(ch, 3), 'xref-push') if s['path'] == 'app.py'}
+        self.assertEqual(names, {'near_call': plan.XREF_ROWS})
+
+    def test_definition_column_is_the_name(self):
+        from git_video import xref
+        ch = collect.collect(fixtures.make_edge_repo(self.tmp.name + '/col'), 'HEAD')
+        (d,) = xref.index(ch.repo, ch.target, 'Go')['Read']
+        self.assertEqual((d.line, d.col), (5, len('func (r *Reader) ')))
 
     def test_definition_sites_are_not_candidates(self):
         # `def tearDown` names a definition, not a use: never an xref from there.

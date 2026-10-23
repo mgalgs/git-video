@@ -14,7 +14,10 @@ from . import xref
 
 VERSION = 1
 FPS = 30
-PLAN_ROWS = 28            # rows the planner assumes are on screen; the film clamps to its own
+PLAN_ROWS = 26            # rows the planner assumes are on screen: the fewest any format shows (16x9)
+# The film re-scrolls to keep the focus line off the window's last row
+# (film.fit_top), so an xref is only picked from the rows above it.
+XREF_ROWS = PLAN_ROWS - 1
 MAX_HUNK_SHOTS = 60
 XREF_CAP_PER_HUNK = 3     # --verbose=3
 XREF_CAP_TOTAL = 24       # --verbose=3
@@ -149,7 +152,8 @@ def plan(change, verbose=0):
                     shown.append([n, n])
             shots.append(shot('editor', 'hunk', hunk_dwell(len(visible)), path=f.path, index=i, top=top,
                               added=shown, removed_at=list(h.removed_at), focus_line=focus))
-            hunks.append((len(shots) - 1, f, top, _hunk_candidates(change, f, top, visible)))
+            pickable = [n for n in visible if n <= top + XREF_ROWS]
+            hunks.append((len(shots) - 1, f, top, _hunk_candidates(change, f, top, pickable)))
     shots.append(shot('card', 'end', END_DUR))
 
     # Xref visits, within the --verbose budget, inserted after their hunk.
@@ -180,7 +184,7 @@ def plan(change, verbose=0):
         for c, d in picks.get(si, ()):
             lines = change.text(d.path).count('\n') + 1
             out.append(shot('editor', 'xref-push', XREF_DUR, path=s['path'], line=c.line, col=c.col, name=c.name,
-                            definition={'path': d.path, 'line': d.line, 'kind': d.kind},
+                            definition={'path': d.path, 'line': d.line, 'kind': d.kind, 'col': d.col},
                             def_top=scroll_top(d.line, lines)))
             out.append(shot('editor', 'xref-pop', POP_DUR, path=s['path'], back_top=tops[si], line=c.line,
                             col=c.col, name=c.name))
