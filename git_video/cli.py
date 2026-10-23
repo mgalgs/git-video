@@ -101,4 +101,13 @@ def main(argv=None):
         return _fail('--mode develop is not implemented yet', 2)
     if args.voice is not None:
         return _fail('--voice is not implemented yet', 2)
-    return _fail('tour: not wired yet', 2)
+    from . import collect, plan
+    try:
+        change = collect.collect(repo_path(args.C), args.rev)
+    except collect.GitError as e:
+        return _fail(str(e), 1)
+    tour = plan.plan(change, args.verbose)
+    if args.plan_json:
+        print(tour.to_json())
+        return 0
+    return _fail('rendering is not wired yet', 2)

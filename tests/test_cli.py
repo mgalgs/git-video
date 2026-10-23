@@ -55,11 +55,6 @@ class TestCli(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('git video <rev|range>', r.stdout)
 
-    def test_tour_placeholder(self):
-        code, _, err = quiet(cli.main, ['HEAD'])
-        self.assertEqual(code, 2)
-        self.assertIn('not wired yet', err)
-
     def test_output_names(self):
         self.assertEqual(cli.output_paths('abc1234', None, ['16x9']), [('16x9', 'git-video-abc1234.mp4')])
         self.assertEqual(cli.output_paths('a1-b2', 'x/out.mp4', ['16x9']), [('16x9', 'x/out.mp4')])
