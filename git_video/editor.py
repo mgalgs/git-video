@@ -278,9 +278,8 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
     area dims by `focus_amount` (0 -> 1) of `theme.dim_strength`; the band
     follows the morph (it covers any segment inside it).
 
-    `motion`: (degrees, stretch, streak px) while the view scrolls fast: the
-    text leans and stretches by the first two, and a faint copy trails
-    `streak` px behind it.
+    `motion`: (degrees, stretch) while the view scrolls fast: the text leans
+    and stretches by them (no trailing copy, which reads as double vision).
 
     `region`: ((line, col), (line, col)) the marked region, shaded and
     outlined. `folds`: (line, count) rows drawn under `line` over what is
@@ -354,11 +353,6 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                         highlighter_swipe(cv, lay.col_x(c0) - cw * 0.25, y + lh * 0.1, (c1 - c0 + 0.5) * cw,
                                           lh * 0.8, sp, color=theme.sweep, alpha=theme.sweep_alpha * fade, seed=ln)
             with cv.clip(*tb.pad(0, 0, -lh, 0)), _moving(cv, tb, motion):
-                if motion and motion[2]:
-                    with cv.layer(opacity=0.16, dy=motion[2]):
-                        for ln in lines:
-                            if ln not in inside:
-                                _draw_runs(cv, lay, buf.lines[ln], y_of(ln), font)
                 for ln in lines:
                     if ln in inside:
                         continue

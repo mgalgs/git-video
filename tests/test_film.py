@@ -9,7 +9,7 @@ from unittest import mock
 
 import videobuilder as vb
 
-from git_video import cli, collect, film, plan, sidebar
+from git_video import cli, collect, editor, film, plan, sidebar
 from tests import fixtures
 from tests.test_cli import quiet
 
@@ -391,12 +391,21 @@ class TestFilm(unittest.TestCase):
         cv = Canvas(1920, 1080, '#000', format=FORMATS['16x9'])
         film._pane(tour, cv, st, tour.views[i][1])
         self.assertEqual(dict(cv.marks)['editor.viewport'], moved)
-        # mid-scroll the text leans and streaks: unlike the same frame without motion
+        # mid-scroll the text leans: unlike the same frame without motion
         mid = tour.film.frame(n, '16x9').bgra()
-        with mock.patch.object(film, 'velocity_skew', lambda v, **kw: (0.0, 0.0)), \
-                mock.patch.object(film, 'STREAK', 0.0):
+        with mock.patch.object(film, 'velocity_skew', lambda v, **kw: (0.0, 0.0)):
             still = tour.film.frame(n, '16x9').bgra()
         self.assertNotEqual(mid, still)
+        # and is never drawn twice: no ghost copy trails it
+        cv = Canvas(1920, 1080, '#000', format=FORMATS['16x9'])
+        lay = editor.layout(st.main, st.mono, minimap=True)
+        buf = editor.Buffer('a.py', [[('#fff', 'x = 1')]] * 40)
+        editor.draw(cv, lay, buf, 0.0, motion=(1.5, 0.015))
+        ref = Canvas(1920, 1080, '#000', format=FORMATS['16x9'])
+        calls = []
+        with mock.patch.object(editor, '_draw_runs', lambda *a: calls.append(a[3])):
+            editor.draw(ref, lay, buf, 0.0, motion=(1.5, 0.015))
+        self.assertEqual(len(calls), len(set(calls)))
 
     def test_ellipsize_words(self):
         font = vb.Font('sans-serif', 22)

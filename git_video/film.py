@@ -908,10 +908,10 @@ def _open(tour, cv, st, shot, t, i, before, after):
 
 
 # A far scroll's speed ramps up, holds and ramps down (time_remapping's
-# speed_ramp, called as is), the text leaning with its speed.
+# speed_ramp, called as is), the text leaning with its speed. No trailing
+# copy: offset by whole fractions of a row, one read as double vision.
 RAMP = (0.0, 0.35, 0.65, 1.0)   # where the speed keyframes sit, as fractions of the scroll
-MOTION_DEGREES, MOTION_PER_DEGREE, MOTION_STRETCH = 2.0, 500.0, 0.02
-STREAK = 0.01   # the trailing copy's offset, seconds of travel at the current speed
+MOTION_DEGREES, MOTION_PER_DEGREE, MOTION_STRETCH = 1.5, 500.0, 0.015
 
 
 def scroll_at(t, a, b, dur):
@@ -924,6 +924,13 @@ def scroll_at(t, a, b, dur):
     times = [x * dur for x in RAMP]
     full = 1 / (dur * (RAMP[2] - RAMP[1] + RAMP[1] / 2 + (1 - RAMP[2]) / 2))   # the area under the ramp is 1
     return a + (b - a) * min(1.0, speed_ramp(t, times, [0, full, full, 0]))
+
+
+def scroll_motion(a, b, t, dur, line_h):
+    """(degrees, stretch) the text leans and stretches by `t` s into a far
+    scroll from `a` to `b` taking `dur`, following its speed."""
+    v = scroll_velocity(lambda x: scroll_at(x, a, b, dur), t) * line_h
+    return velocity_skew(v, max_degrees=MOTION_DEGREES, per_degree=MOTION_PER_DEGREE, max_stretch=MOTION_STRETCH)
 
 
 def morph_progress(shot, t):
@@ -954,10 +961,7 @@ def _hunk(tour, cv, st, shot, t, i, before, after):
     if shot.get('scroll') == 'far':
         top = scroll_at(t, a, b, landed)
         if 0 < t < landed:
-            v = scroll_velocity(lambda x: scroll_at(x, a, b, landed), t) * lay.line_h
-            deg, stretch = velocity_skew(v, max_degrees=MOTION_DEGREES, per_degree=MOTION_PER_DEGREE,
-                                         max_stretch=MOTION_STRETCH)
-            motion = (deg, stretch, math.copysign(min(lay.line_h * 0.8, abs(v) * STREAK), v))
+            motion = scroll_motion(a, b, t, landed, lay.line_h)
     else:
         top = vb.interpolate(t, [0, landed], [a, b], vb.ease_in_out_quart)
     segs = tour.segments.get(i, ())
@@ -1277,10 +1281,7 @@ def _edit_pane(tour, cv, st, i, src, **kw):
         if far:
             top = scroll_at(into, a, b, dur)
             if 0 < into < dur:
-                v = scroll_velocity(lambda x: scroll_at(x, a, b, dur), into) * lay.line_h
-                deg, stretch = velocity_skew(v, max_degrees=MOTION_DEGREES, per_degree=MOTION_PER_DEGREE,
-                                             max_stretch=MOTION_STRETCH)
-                motion = (deg, stretch, math.copysign(min(lay.line_h * 0.8, abs(v) * STREAK), v))
+                motion = scroll_motion(a, b, into, dur, lay.line_h)
         else:
             top = vb.interpolate(into, [0, dur], [a, b], vb.ease_in_out_quart)
     ranges = _changed_ranges(state.lines)

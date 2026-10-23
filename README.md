@@ -125,7 +125,7 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
 - A minimap at the editor's right edge: the whole file in miniature with
   `+`/`−` ticks on changed lines and a box that slides with the view.
 - Long scrolls (more than two screens) speed up and slow down instead of
-  crawling, the text leaning and streaking with the speed.
+  crawling, the text leaning with the speed.
 - Xref without a language server: identifiers on the added lines are looked
   up with `git grep` against per-language definition patterns (Python,
   JavaScript/TypeScript, Go, Rust, C-like languages, shell, Lisps).
