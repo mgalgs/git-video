@@ -521,48 +521,114 @@ def counter_value(t, n):
     return n * (1 - (1 - p) ** 3)
 
 
+def _title_lines(text, box_w, sizes, most, line_height=1.18):
+    """(font, lines) of the title: the largest of `sizes` whose wrap fits in
+    `most` lines, else the smallest with its last line ellipsized."""
+    for size in sizes:
+        font = vb.Font(UI, size, weight=700, line_height=line_height)
+        lines = list(vbtext.wrap(text, font, box_w, balance=True))
+        if len(lines) <= most and all(vbtext.measure(ln, font) <= box_w for ln in lines):
+            return font, lines
+    lines = lines[:most]
+    lines[-1] = sidebar.ellipsize(' '.join(lines[most - 1:]) + ' …', font, box_w)
+    return font, [ln if vbtext.measure(ln, font) <= box_w else sidebar.ellipsize(ln, font, box_w) for ln in lines]
+
+
+def _name_bar(cv, text, t, shot, x, bottom, width, title_f, sub_f, pad=28):
+    """The author's name bar (lower_third_slide_in_bar), its two lines cut to
+    fit the bar so a long name never runs past its end."""
+    room = width - 8 - 2 * pad
+    return lower_third_bar(cv, sidebar.ellipsize(text['name'], title_f, room),
+                           sidebar.ellipsize(text['subtitle'], sub_f, room), (t - P.TITLE_BAR_IN) / 0.5,
+                           (t - (shot['dur'] - P.TITLE_BAR_OUT)) / 0.3, x=x, bottom=bottom, width=width,
+                           title_font=title_f, subtitle_font=sub_f, color='#1c1f24', accent=THEME.cursor,
+                           ink='#e6e9ef', muted='#9aa3b2', pad=pad)
+
+
+def _bar_height(title_f, sub_f, pad=28):
+    return pad * 2 + vbtext.line_height(title_f) + 8 + vbtext.line_height(sub_f)
+
+
+def _coauthors(cv, names, t, cx, top, r, align='center', right=None):
+    """The co-authors' initials as an avatar stack under a CO-AUTHORS caption,
+    centred on `cx` (or ending at `right`), the caption's top at `top`."""
+    a = vb.clamp01((t - P.TITLE_AVATARS) / 0.25)
+    spread = vb.ease_out_back(vb.clamp01((t - P.TITLE_AVATARS) / 0.4))
+    av = avatars(names)
+    row_w = 2 * r * 1.12 + (len(av) - 1) * 2 * r * 1.3
+    caption = vb.Font(UI, 17 if r < 30 else 20, weight=700, tracking=0.16)
+    cw = vbtext.measure('CO-AUTHORS', caption)
+    with cv.layer(opacity=a):
+        if right is not None:
+            vbtext.draw(cv, ['CO-AUTHORS'], caption, right - max(row_w, cw), top, '#9aa3b2')
+            cx = right - row_w / 2
+        else:
+            vbtext.draw(cv, ['CO-AUTHORS'], caption, cx - cw / 2, top, '#9aa3b2')
+        draw_avatar_stack(cv, av, cx, top + vbtext.line_height(caption) + 14 + r, spread, r=r, ring=THEME.bg)
+
+
 def _title_card(tour, cv, box, shot, t):
     """Repo name over the subject (a two-tier kicker and title), `+a −d` rolling
-    up on odometers, the author on a name bar sliding in, co-authors beside it."""
+    up on odometers, the author on a name bar sliding in, co-authors beside it.
+    Portrait frames get a layout of their own (`_title_card_portrait`)."""
+    if cv.height > cv.width:
+        _title_card_portrait(tour, cv, box, shot, t)
+        return
     plan, text = tour.plan, card_text(tour.plan)
-    portrait = cv.height > cv.width
-    title_f = vb.Font(UI, 60 if portrait else 66, weight=700, line_height=1.18)
     kicker_f = vb.Font(UI, 26, weight=700, tracking=0.2)
     meta_f = vb.Font(UI, 30)
     digits = vb.Font(tour.font, 44, weight=700)
     # The name bar first: the title stack is centred in the room above it.
     bar_w = min(640, box.w * 0.55)
-    bar = lower_third_bar(cv, text['name'], text['subtitle'], (t - P.TITLE_BAR_IN) / 0.5,
-                          (t - (shot['dur'] - P.TITLE_BAR_OUT)) / 0.3, x=box.x, bottom=box.bottom, width=bar_w,
-                          title_font=vb.Font(UI, 36, weight=700), subtitle_font=vb.Font(UI, 22), color='#1c1f24',
-                          accent=THEME.cursor, ink='#e6e9ef', muted='#9aa3b2')
     names = plan.commit.get('coauthors') or []
+    bar_f, sub_f = vb.Font(UI, 36, weight=700), vb.Font(UI, 22)
+    bar = _name_bar(cv, text, t, shot, box.x, box.bottom, bar_w, bar_f, sub_f)
     if names:
-        a = vb.clamp01((t - P.TITLE_AVATARS) / 0.25)
-        spread = vb.ease_out_back(vb.clamp01((t - P.TITLE_AVATARS) / 0.4))
-        av = avatars(names)
-        r = 26
-        row_w = 2 * r * 1.12 + (len(av) - 1) * 2 * r * 1.3
-        with cv.layer(opacity=a):
-            caption = vb.Font(UI, 17, weight=700, tracking=0.16)
-            cw = vbtext.measure('CO-AUTHORS', caption)
-            vbtext.draw(cv, ['CO-AUTHORS'], caption, box.right - max(row_w, cw), bar.y - 4, '#9aa3b2')
-            draw_avatar_stack(cv, av, box.right - row_w / 2, bar.y + bar.h / 2 + 10, spread, r=r, ring=THEME.bg)
+        _coauthors(cv, names, t, 0, bar.y - 4, 26, right=box.right)
     room = vb.Box(box.x, box.y, box.w, max(0.0, bar.y - box.y - 24))
-    lines = list(vbtext.wrap(text['title'], title_f, box.w * (0.84 if portrait else 0.8), balance=True))
-    if len(lines) > 3:
-        lines = lines[:3]
-        lines[-1] = sidebar.ellipsize(lines[-1] + ' …', title_f, box.w * 0.84)
-    k, rise = kicker_title_progress(t / 1.2)
-    th = vbtext.line_height(title_f)
+    title_f, lines = _title_lines(text['title'], box.w * 0.8, (66, 58, 50), 3)
     cell_h = vbtext.line_height(digits) * 1.15
-    heights = [vbtext.line_height(kicker_f), *[th] * len(lines), 10, cell_h]
+    heights = [vbtext.line_height(kicker_f), *[vbtext.line_height(title_f)] * len(lines), 10, cell_h]
     boxes, _ = room.stack(heights, gap=12, align='center')
-    kb, tbs, cb = boxes[0], boxes[1:1 + len(lines)], boxes[-1]
+    _title_stack(cv, box, t, text, kicker_f, title_f, lines, boxes[0], boxes[1:1 + len(lines)])
+    _counters(cv, boxes[-1], plan, t, meta_f, digits, cell_h)
+
+
+def _title_card_portrait(tour, cv, box, shot, t):
+    """The title card laid out for a tall frame: one column centred top to
+    bottom, the title as large as its length allows, the counters, then the
+    name bar across the column and the co-authors under it."""
+    plan, text = tour.plan, card_text(tour.plan)
+    names = plan.commit.get('coauthors') or []
+    kicker_f = vb.Font(UI, 34, weight=700, tracking=0.2)
+    meta_f = vb.Font(UI, 40)
+    digits = vb.Font(tour.font, 72, weight=700)
+    title_f, lines = _title_lines(text['title'], box.w, (112, 100, 88, 76, 66, 58), 5)
+    bar_f, sub_f = vb.Font(UI, 46, weight=700), vb.Font(UI, 28)
+    cell_h = vbtext.line_height(digits) * 1.15
+    r = 34
+    co_h = (vbtext.line_height(vb.Font(UI, 20)) + 14 + 2 * r) if names else 0
+    th = vbtext.line_height(title_f)
+    heights = [vbtext.line_height(kicker_f), 24, *[th] * len(lines), 64, cell_h, 110,
+               _bar_height(bar_f, sub_f), 56 if names else 0, co_h]
+    boxes, _ = box.stack(heights, gap=0, align='center')
+    kb, tbs = boxes[0], boxes[2:2 + len(lines)]
+    cb, bb, ab = boxes[3 + len(lines)], boxes[5 + len(lines)], boxes[-1]
+    _title_stack(cv, box, t, text, kicker_f, title_f, lines, kb, tbs)
+    _counters(cv, cb, plan, t, meta_f, digits, cell_h)
+    _name_bar(cv, text, t, shot, box.x, bb.bottom, box.w, bar_f, sub_f)
+    if names:
+        _coauthors(cv, names, t, box.cx, ab.y, r)
+
+
+def _title_stack(cv, box, t, text, kicker_f, title_f, lines, kb, tbs):
+    """The kicker sliding in over the title's lines rising into place."""
+    k, rise = kicker_title_progress(t / 1.2)
+    kicker = sidebar.ellipsize(text['kicker'], kicker_f, kb.w - 48)
     with cv.layer(opacity=k):
-        vbtext.draw(cv, [text['kicker']], kicker_f, kb.x - 24 * (1 - k), kb.y, THEME.cursor, align='center',
+        vbtext.draw(cv, [kicker], kicker_f, kb.x - 24 * (1 - k), kb.y, THEME.cursor, align='center',
                     width=kb.w)
-    kw = vbtext.measure(text['kicker'], kicker_f)
+    kw = vbtext.measure(kicker, kicker_f)
     cv.mark('card.kicker', kb.cx - kw / 2, kb.y, kw, kb.h)
     for ln, b in zip(lines, tbs):
         if rise > 0:
@@ -571,7 +637,6 @@ def _title_card(tour, cv, box, shot, t):
     if tbs:
         tw = max(vbtext.measure(ln, title_f) for ln in lines)
         cv.mark('card.title', box.cx - tw / 2, tbs[0].y, tw, tbs[-1].bottom - tbs[0].y)
-    _counters(cv, cb, plan, t, meta_f, digits, cell_h)
 
 
 def _counters(cv, b, plan, t, meta_f, digits, cell_h):
@@ -580,18 +645,23 @@ def _counters(cv, b, plan, t, meta_f, digits, cell_h):
     deleted = sum(f['deleted'] for f in plan.files)
     n = len(plan.files)
     head = f'{n} file{"s" if n != 1 else ""}'
-    cw = vbtext.measure('0', digits) * 1.5
-    gap = cw * 0.12
-    sign_f = vb.Font(digits.family, digits.size, weight=700)
+    while True:   # the wheels shrink until the whole row fits its box
+        cw = vbtext.measure('0', digits) * 1.5
+        gap = cw * 0.12
+        sign_f = vb.Font(digits.family, digits.size, weight=700)
 
-    def wheels(v):
-        p = len(str(v))
-        return p * cw + (p - 1) * gap
+        def wheels(v):
+            p = len(str(v))
+            return p * cw + (p - 1) * gap
 
-    parts = [(head, meta_f, '#9aa3b2', None), ('  +', sign_f, THEME.fringe_added, None),
-             (None, None, THEME.fringe_added, added), ('  ' + sidebar.MINUS, sign_f, THEME.fringe_removed, None),
-             (None, None, THEME.fringe_removed, deleted)]
-    widths = [vbtext.measure(s, f) + 8 if s else wheels(v) for s, f, _, v in parts]
+        parts = [(head, meta_f, '#9aa3b2', None), ('  +', sign_f, THEME.fringe_added, None),
+                 (None, None, THEME.fringe_added, added), ('  ' + sidebar.MINUS, sign_f, THEME.fringe_removed, None),
+                 (None, None, THEME.fringe_removed, deleted)]
+        widths = [vbtext.measure(s, f) + 8 if s else wheels(v) for s, f, _, v in parts]
+        if sum(widths) <= b.w or digits.size <= 20:
+            break
+        digits = vb.Font(digits.family, digits.size * 0.9, weight=digits.weight)
+        meta_f = vb.Font(meta_f.family, meta_f.size * 0.9)
     x = b.cx - sum(widths) / 2
     a = vb.clamp01((t - P.TITLE_ROLL[0] + 0.3) / 0.3)
     with cv.layer(opacity=a):
@@ -679,21 +749,39 @@ def _end_card(tour, cv, box, shot, t):
     plan, style = tour.plan, sidebar.Style()
     portrait = cv.height > cv.width
     files, defs = recap(plan)
-    F = {'head': vb.Font(UI, 19, weight=700, tracking=0.14), 'row': vb.Font(tour.font, 24, line_height=1.5)}
-    rh = vbtext.line_height(F['row'])
-    chrome = 2 * 22 + vbtext.line_height(F['head']) + 12
-    kicker = vb.Font(UI, 24, weight=700, tracking=0.2)
-    title = vb.Font(UI, 52 if not portrait else 46, weight=700, line_height=1.15)
-    lines = list(vbtext.wrap(plan.commit['subject'], title, box.w))
-    if len(lines) > 2:
-        lines = [lines[0], sidebar.ellipsize(' '.join(lines[1:]), title, box.w)]
-    header = vbtext.line_height(kicker) + 8 + len(lines) * vbtext.line_height(title) + 6 + 40 + 16 + 20
-    link = 84 if plan.next else 0
-    body_room = box.h - header - (16 + link if link else 0)
-    cap = (body_room - 16) / 2 if portrait else body_room
-    bodies = [min(chrome + max(1, n) * rh + 8, cap) for n in (len(files), 2 * len(defs))]
-    if not portrait:
-        bodies = [max(bodies)] * 2
+
+    def sized(k):
+        """The card's type and boxes with every size scaled by k."""
+        F = {'head': vb.Font(UI, 19 * k, weight=700, tracking=0.14),
+             'row': vb.Font(tour.font, 24 * k, line_height=1.5)}
+        rh = vbtext.line_height(F['row'])
+        chrome = 2 * 22 + vbtext.line_height(F['head']) + 12
+        kicker = vb.Font(UI, 24 * k, weight=700, tracking=0.2)
+        title = vb.Font(UI, (52 if not portrait else 46) * k, weight=700, line_height=1.15)
+        lines = list(vbtext.wrap(plan.commit['subject'], title, box.w))
+        if len(lines) > 2:
+            lines = [lines[0], sidebar.ellipsize(' '.join(lines[1:]), title, box.w)]
+        lines = [ln if vbtext.measure(ln, title) <= box.w else sidebar.ellipsize(ln, title, box.w) for ln in lines]
+        header = vbtext.line_height(kicker) + 8 + len(lines) * vbtext.line_height(title) + 6 + 40 * k + 16 + 20
+        link = 84 * k if plan.next else 0
+        body_room = box.h - header - (16 + link if link else 0)
+        cap = (body_room - 16) / 2 if portrait else body_room
+        want = [chrome + max(1, n) * rh + 8 for n in (len(files), 2 * len(defs))]
+        bodies = [min(w, cap) for w in want]
+        if not portrait:
+            bodies = [max(bodies)] * 2
+        total = header + sum(bodies) + 16 + (16 + link if link else 0)
+        return F, rh, kicker, title, lines, header, link, bodies, total, bodies == want
+
+    # A tall frame scales the whole card up until it fills most of the column
+    # (never past what its lists need), rather than leaving bands above and below.
+    k = 1.0
+    if portrait:
+        for k in (1.6, 1.5, 1.4, 1.3, 1.2, 1.1, 1.0):
+            *_, total, whole = sized(k)
+            if whole and total <= box.h * 0.8:
+                break
+    F, rh, kicker, title, lines, header, link, bodies, _, _ = sized(k)
     hb, vbox, dbox, nbox = _end_slots(box, portrait, header, bodies, link)
     stats = {f['path']: f for f in plan.files}
     p = t / P.END_REVEAL
@@ -708,8 +796,8 @@ def _end_card(tour, cv, box, shot, t):
                     THEME.cursor)
         ty = hb.y + vbtext.line_height(kicker) + 8
         vbtext.draw(cv, lines, title, hb.x, ty, '#e6e9ef')
-        sb = vb.Box(hb.x, ty + len(lines) * vbtext.line_height(title) + 6, hb.w, 40)
-        _stats_line(cv, sb, _stats(plan), vb.Font(tour.font, 28), align='left')
+        sb = vb.Box(hb.x, ty + len(lines) * vbtext.line_height(title) + 6, hb.w, 40 * k)
+        _stats_line(cv, sb, _stats(plan), vb.Font(tour.font, 28 * k), align='left')
     cv.mark('card.header', *hb)
 
     def file_row(path, x, y, w):
@@ -729,7 +817,7 @@ def _end_card(tour, cv, box, shot, t):
 
     def def_row(d, x, y, w):   # the name, and under it where it is defined
         name, path, line = d
-        bold = vb.Font(tour.font, 24, weight=700, line_height=1.5)
+        bold = vb.Font(tour.font, 24 * k, weight=700, line_height=1.5)
         vbtext.draw(cv, [sidebar.ellipsize(name, bold, w)], bold, x, y, style.strong)
         vbtext.draw(cv, [sidebar.ellipsize_left(f'→ {path}:{line}', F['row'], w - 24)], F['row'], x + 24, y + rh,
                     style.muted)
@@ -748,10 +836,10 @@ def _end_card(tour, cv, box, shot, t):
         with layer:
             _panel(cv, nbox, style)
             inner = nbox.pad(0, 30)
-            small = vb.Font(UI, 19, weight=700, tracking=0.14)
-            row = vb.Font(UI, 28, weight=700)
+            small = vb.Font(UI, 19 * k, weight=700, tracking=0.14)
+            row = vb.Font(UI, 28 * k, weight=700)
             kb = vbtext.draw(cv, ['NEXT'], small, inner.x, inner.cy - vbtext.line_height(small) / 2, THEME.cursor)
-            short = vb.Font(tour.font, 26)
+            short = vb.Font(tour.font, 26 * k)
             sx = kb.right + 24
             s_box = vbtext.draw(cv, [plan.next['short']], short, sx, inner.cy - vbtext.line_height(short) / 2,
                                 style.muted)

@@ -171,6 +171,45 @@ class TestFilm(unittest.TestCase):
                     for b in names[k + 1:]:
                         self.assertFalse(marks[a].intersects(marks[b]), (rev, fmt, a, b))
 
+    def test_cards_fit_any_subject_and_name(self):
+        import copy
+        from git_video.film import vbtext
+        p = copy.deepcopy(self.plan)
+        p.commit['subject'] = 'Rework the whole thing ' * 14 + 'Supercalifragilisticexpialidocious' * 3
+        p.commit['author'] = 'Maximiliana Wolfeschlegelsteinhausenbergerdorff-Von Ziegenhals Esq.'
+        p.repo = 'an-extremely-long-repository-name-that-goes-on-and-on-forever'
+        tour = film.Tour(p, self.change, log=io.StringIO())
+        bars = []
+        real = film.lower_third_bar
+
+        def bar(cv, title, subtitle, *a, width=640, title_font=None, subtitle_font=None, pad=28, **kw):
+            bars.append((vbtext.measure(title, title_font), vbtext.measure(subtitle, subtitle_font), width - 8 - 2 * pad))
+            return real(cv, title, subtitle, *a, width=width, title_font=title_font, subtitle_font=subtitle_font,
+                        pad=pad, **kw)
+
+        end = next(n for n, label in tour.film.keyframes if label == 'end')
+        with mock.patch.object(film, 'lower_third_bar', bar):
+            for fmt in ('16x9', '9x16', '1x1'):
+                for n in (round(2.2 * p.fps), end):
+                    cv = tour.film.frame(n, fmt)
+                    frame = vb.Box.of(cv)
+                    for name, b in cv.marks:
+                        if name.startswith('card.') or name == 'lower-third':
+                            self.assertTrue(frame.pad(20).contains(b), (fmt, name, b))
+                    if n != end:
+                        self.assertLess(dict(cv.marks)['card.title'].w, frame.w - 100)
+        self.assertTrue(bars)
+        for name_w, sub_w, room in bars:
+            self.assertLessEqual(max(name_w, sub_w), room)
+
+    def test_portrait_title_card_fills_the_column(self):
+        cv = self.tour.film.frame(round(plan.TITLE_STILL * self.plan.fps), '9x16')
+        marks = dict(cv.marks)
+        top, bottom = marks['card.kicker'].y, marks['lower-third'].bottom
+        self.assertGreater(bottom - top, 0.4 * cv.height)   # one column, no empty band down the middle
+        self.assertLess(marks['card.counters'].bottom, marks['lower-third'].y)
+        self.assertLess(marks['lower-third'].y - marks['card.counters'].bottom, 0.12 * cv.height)
+
     def test_card_text(self):
         c = film.card_text(self.plan)
         self.assertEqual((c['kicker'], c['title'], c['name']), ('REPO', 'Use the library from an app', 'Test Person'))
