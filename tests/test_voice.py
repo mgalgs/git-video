@@ -118,6 +118,20 @@ class TestScript(unittest.TestCase):
                                             'Lisp names have. It now accepts `[A-Za-z_][\\w-]*\\w`.'),
                          'The identifier check rejected hyphens, which most Lisp names have.')
         self.assertIsNone(voice.say_sentence('pyproject.toml declared `license = MIT`, but the repo has no LICENSE file.'))
+        # a sentence about the code itself (two code names, or a part "called as is") is not read out ...
+        for about_code in ('The kicker and title use kicker_title_progress for timing but are drawn here: '
+                           'draw_kicker_title draws one left-aligned line, and the subject is wrapped and centred.',
+                           'The per-frame keep_in_view calls in _edit_pane are gone.',
+                           "The box's travel is scroll_progress_bar's scroll_progress, called as is; "
+                           "the strip itself is ours.",
+                           'The dim is spotlight_dim, called as is, clipped to the text area.'):
+            self.assertIsNone(voice.say_sentence(about_code), about_code)
+        # ... but one naming a single definition, a file or flags is
+        self.assertEqual(voice.say_sentence('The title card now reads as a broadcast opener.'),
+                         'The title card now reads as a broadcast opener.')
+        for kept in ('--mode develop is accepted for --plan-json; rendering it lands with the film in the next commit.',
+                     'The film.py title card now draws_kicker over the subject.'):
+            self.assertIsNotNone(voice.say_sentence(kept), kept)
 
     def test_develop_slot_is_the_callouts(self):
         # an unsayable first sentence leaves its slot empty: the phrase waits for the second card

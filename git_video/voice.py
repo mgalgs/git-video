@@ -358,6 +358,7 @@ def fragment(text):
 # Words that make a sentence about the tests or the tooling rather than the change.
 _TEST_WORDS = {'test', 'tests', 'keyframe', 'keyframes', 'stills', 'fixture', 'fixtures', 'assert', 'asserts',
                'mock', 'mocks', 'pinned', 'pins', 'snapshot', 'snapshots', 'testcase', 'unittest'}
+_AS_IS = re.compile(r'\bcalled as is\b', re.I)   # "X's Y, called as is": where code comes from
 _STILL = re.compile(r"\b(?:the|a|its|one|each|every|[\w-]+-[\w-]+)\s+still\b", re.I)   # the noun, not the adverb
 
 
@@ -365,16 +366,21 @@ def jargon(text):
     """Whether a commit sentence is mostly test or implementation detail,
     which reads badly aloud ("A keyframe at the first dive's route mid-way is
     the graph-mid-dive still."): mostly identifiers, hyphenated names, or
-    about tests and stills by name. Judged on what would be said."""
+    about tests and stills by name; or about the code itself rather than
+    what the change does: two code names ("draw_kicker_title draws ..."
+    after kicker_title_progress) or a library part "called as is". One
+    name, the definition changed, is fine. Judged on what would be said."""
     text = re.sub(r'`[^`\w]+`', ' ', _ASIDE.sub('', text))   # what is said: no aside, no lone symbol
     words = re.findall(r"[\w'`.()/-]+", text)
     if not words:
         return False
     names = [w for w in words if callouts_mod._looks_like_code(w.strip('`.,()')) or w.count('-') >= 2
              or '`' in w]
+    code = {w.strip("`.,()'").removesuffix("'s") for w in words if callouts_mod._looks_like_code(w.strip('`.,()'))
+            and '/' not in w and not w.startswith('-') and not re.search(r'\.(?:py|el|toml|md|txt|json|sh)\W*$', w)}
     tests = [w for w in words if w.lower().strip('.,') in _TEST_WORDS] + _STILL.findall(text)
     return (len(names) >= 3 or len(names) >= 0.3 * len(words) or len(tests) >= 2
-            or bool(tests) and bool(names))
+            or bool(tests) and bool(names) or len(code) >= 2 or bool(_AS_IS.search(text)))
 
 
 def say_sentence(text):
