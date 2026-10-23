@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -146,3 +147,34 @@ class TestLimits(unittest.TestCase):
             said = sum(q['end'] - q['start'] for q in p.voice['phrases'])
             self.assertLessEqual(said, 0.45 * p.total + 0.01, mode)
             self.assertLessEqual(len(p.voice['phrases']), narrator.limits(plan.build(ch, 0, mode))[0])
+
+
+class TestBrief(unittest.TestCase):
+    def test_filled_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, sha = fixtures.make_callout_repo(tmp)   # its body ends in a Signed-off-by: trailer
+            ch = collect.collect(repo, sha['head'])
+            p = plan.build(ch, 0, 'tour')
+            text = narrator.brief(ch, p, [ch])
+        self.assertIn(f'commit {ch.target} Change both', text)
+        self.assertIn('frob() now doubles its input.', text)
+        self.assertNotIn('Signed-off-by', text)
+        self.assertNotIn('t@example.com', text)
+        self.assertIn(f'git diff {ch.base}..{ch.target}', text)
+        most, speech = narrator.limits(p)
+        self.assertIn(f'at most\n{most} phrases', text)
+        self.assertIn(f'about {speech}\nseconds', text)
+        self.assertIn(narrator.shot_table(narrator.shot_rows(p, [ch])), text)
+        self.assertNotRegex(text, r'\{(range|commits|base|tip|max_phrases|max_speech_s|shot_table)\}')
+        self.assertIn('{"phrases": [{"shot": "<shot id>", "text": "<what to say>"}]}', text)
+        self.assertIn('Do not change or\ncommit anything', text)
+
+    def test_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, sha = fixtures.make_range_repo(tmp)
+            change, patches = collect.series(repo, f'{sha["a"]}..{sha["c"]}')
+            p = plan.build(change, 0, 'tour', patches)
+            text = narrator.brief(change, p, patches)
+        self.assertIn(f'2 commits {change.base}..{change.target}', text)
+        self.assertEqual(len(re.findall(r'(?m)^commit [0-9a-f]{40}$', text)), 2)
+        self.assertIn('card: patch 2 of 2', text)

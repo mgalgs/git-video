@@ -11,6 +11,7 @@ voiced film. How a phrase is said (spoken forms, captions) and how the shots
 stretch to it is voice's job, the same for both.
 """
 import json
+import os
 import re
 from dataclasses import dataclass
 
@@ -285,3 +286,32 @@ def timed_script(plan):
         out.append(f'{q["start"]:7.2f}-{q["end"]:7.2f}  [{s["kind"]} {s.get("path", "")}]'.replace(' ]', ']')
                    + f'  {q["text"]}')
     return '\n'.join(out)
+
+
+# ---- the brief ----
+BRIEF = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'narrator_brief.md')
+_SLOT = re.compile(r'\{(range|commits|base|tip|max_phrases|max_speech_s|shot_table)\}')
+
+
+def _indent(text, by='    '):
+    return '\n'.join(by + ln if ln.strip() else '' for ln in text.split('\n'))
+
+
+def brief(change, plan, patches):
+    """The narrator's handoff: narrator_brief.md with the change (its range
+    and commit messages, trailers removed), the limits, and the shot table
+    of `plan` (unvoiced) filled in."""
+    commits = change.commits
+    if change.is_range:
+        what = f'{len(commits)} commit{"s" if len(commits) != 1 else ""} {change.base}..{change.target}'
+    else:
+        what = f'commit {change.target} {commits[-1].subject}'
+    msgs = '\n\n'.join(f'commit {c.sha}\n{_indent(c.subject)}' + (f'\n\n{_indent(c.body)}' if c.body.strip() else '')
+                       for c in commits)
+    most, speech = limits(plan)
+    slots = {'range': what, 'commits': msgs, 'base': change.base, 'tip': change.target,
+             'max_phrases': str(most), 'max_speech_s': str(speech),
+             'shot_table': shot_table(shot_rows(plan, patches))}
+    with open(BRIEF, encoding='utf-8') as f:
+        template = f.read()
+    return _SLOT.sub(lambda m: slots[m.group(1)], template)

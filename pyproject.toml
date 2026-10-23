@@ -21,3 +21,6 @@ git-video = "git_video.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["git_video*"]
+
+[tool.setuptools.package-data]
+git_video = ["narrator_brief.md"]
