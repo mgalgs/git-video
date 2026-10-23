@@ -996,7 +996,7 @@ def _pane(tour, cv, st, view, top=None, **kw):
     buf = tour.buffer(view)
     lay = _layout(st, buf)
     if top is None:
-        top = fit_top(view.top, view.focus, lay.rows, len(buf.lines) + view.extra)
+        top = _fitted(tour, st, view)
     added, removed, tints = tour.marks.get((view.patch, view.path), ((), (), ()))
     kw.setdefault('cursor', view.cursor)
     return editor.draw(cv, lay, buf, top, marks_added=added, marks_removed_at=removed, tints=tints,
@@ -1004,9 +1004,12 @@ def _pane(tour, cv, st, view, top=None, **kw):
 
 
 def _fitted(tour, st, view):
+    """The view's top fitted to this format's rows, moved on if long lines
+    above its focus wrap it off the bottom."""
     buf = tour.buffer(view)
     lay = _layout(st, buf)
-    return fit_top(view.top, view.focus, lay.rows, len(buf.lines) + view.extra)
+    return editor.keep_in_view(lay, buf.lines, fit_top(view.top, view.focus, lay.rows, len(buf.lines) + view.extra),
+                               view.focus)
 
 
 def _open(tour, cv, st, shot, t, i, before, after):
@@ -1152,12 +1155,12 @@ def _callout(tour, cv, st, where, shot, i, k, c, t):
     lay = where.layout
     area = _text_area(lay)
     f0, f1 = shot['focus']
-    band = vb.Box(area.x, where.layout.line_y(f0 - 1, where.scroll_top), area.w,
-                  max(lay.line_h, (f1 - f0 + 1) * lay.line_h))
+    a, b = where.line_box(f0 - 1), where.line_box(max(f0, f1) - 1)
+    band = vb.Box(area.x, a.y, area.w, max(lay.line_h, b.bottom - a.y))
     if c['len']:
         target = where.word_box(c['line'] - 1, c['col'], c['len'])
     else:   # a deletion: the gap the lines left, where its − rule is
-        gy = lay.line_y(c['line'] - 1, where.scroll_top)
+        gy = where.line_box(c['line'] - 1).y
         target = vb.Box(lay.text_box.x, gy - 2, lay.cell_w * 6, 4)
     _callout_card(tour, cv, st, where, (i, k), c, t, target, band, outline=bool(c['len']))
 
@@ -1228,7 +1231,8 @@ def _reveal(cv, box, a, b, p, center, r0):
 
 def _word_box(tour, st, view, line, col, n):
     """Where a word lands in the pane showing `view`, without drawing it."""
-    return _layout(st, tour.buffer(view)).word_box(line, col, n, _fitted(tour, st, view))
+    buf = tour.buffer(view)
+    return editor.Geometry(_layout(st, buf), buf.lines, _fitted(tour, st, view)).box(line, col, n)
 
 
 def _xref_source(tour, cv, st, shot, t, before):
@@ -1368,19 +1372,6 @@ def _changed_ranges(lines):
 
 
 ECHO_PROMPT = 'Goto line: '
-HSCROLL_MARGIN = 4   # columns kept clear right of point before the window scrolls sideways
-
-
-def hscroll_for(col, cols):
-    """Columns scrolled off the left with point at `col` in a window `cols`
-    wide: none while point is clear of the right edge, else half windows at a
-    time, as Emacs's automatic hscroll recentres point (a function of `col`
-    alone, so a frame never depends on the one before)."""
-    room = cols - HSCROLL_MARGIN
-    if col < room:
-        return 0
-    step = max(1, cols // 2)
-    return ((col - room) // step + 1) * step
 
 
 def _edit_pane(tour, cv, st, i, src, **kw):
@@ -1403,8 +1394,9 @@ def _edit_pane(tour, cv, st, i, src, **kw):
                 motion = scroll_motion(a, b, into, dur, lay.line_h)
         else:
             top = vb.interpolate(into, [0, dur], [a, b], vb.ease_in_out_quart)
+    if state.cursor:   # long lines wrap (no sideways scroll): keep all of point's line in view
+        top = editor.keep_in_view(lay, buf.lines, top, state.cursor[0])
     ranges = _changed_ranges(state.lines)
-    kw.setdefault('hscroll', hscroll_for(state.cursor[1] if state.cursor else 0, lay.cols))
     bars = editor.minimap_bars(buf.lines[k] for k in range(len(state.lines)))
     done = s['done_before'] + state.done
     kw.setdefault('echo', state.echo)
@@ -1470,7 +1462,7 @@ def _edit(tour, cv, st, shot, t, i, before, after):
             lay = where.layout
             line, col = state.cursor
             band = where.line_box(line)
-            h = lay.hscroll
+            h = col - col % lay.cols   # point's row of its (maybe wrapped) line, from its start to point
             target = where.word_box(line, h, max(1, col - h))
             card = _callout_card(tour, cv, st, where, (i, k), c, t, target, band, outline=False)
     _speed_badge(cv, st, where, shot, t, avoid=card)

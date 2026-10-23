@@ -44,24 +44,84 @@ class TestEditor(unittest.TestCase):
             for name, b in cv.marks:
                 self.assertTrue(box.contains(b), (box, name, b))
 
-    def test_hscroll_keeps_point_in_view(self):
-        from git_video import film
-        text = 'x = [' + ', '.join(str(i) for i in range(60)) + ']\n'
+    def drawn_text(self, lay, buf, top, **kw):
+        """[(text, x, y, font)] of every vbtext.draw call of a frame."""
+        from unittest import mock
+        calls = []
+        real = editor.vbtext.draw
+
+        def record(cv, lines, font, x, y, *a, **k):
+            calls.append((lines[0] if lines else '', x, y, font, k))
+            return real(cv, lines, font, x, y, *a, **k)
+
+        cv = vb.Canvas(1000, 700, '#000')
+        with mock.patch.object(editor.vbtext, 'draw', record):
+            where = editor.draw(cv, lay, buf, top, **kw)
+        return calls, where, cv
+
+    def test_long_lines_wrap_instead_of_scrolling_sideways(self):
+        long = 'x = [' + ', '.join(str(i) for i in range(60)) + ']'
+        text = 'def f(verbose=3):\n' + long + '\n' + 'return 1\n'
         lay = editor.layout(vb.Box(0, 0, 900, 600), FONT, minimap=True)
-        col = len(text) - 2
-        self.assertGreater(col, lay.cols)
-        h = film.hscroll_for(col, lay.cols)
-        self.assertEqual(film.hscroll_for(3, lay.cols), 0)
-        self.assertTrue(0 < h <= col < h + lay.cols - film.HSCROLL_MARGIN)
-        cv = vb.Canvas(1000, 700, '#000')
-        where = editor.draw(cv, lay, buffer(text), 0, cursor=(0, col), region=((0, 1), (0, col)), hscroll=h)
+        self.assertGreater(len(long), 2 * lay.cols)
+        col = len(long) - 2
+        buf = buffer(text)
+        calls, where, cv = self.drawn_text(lay, buf, 0, cursor=(1, col), region=((1, 1), (1, col)),
+                                           marks_added=[1], boxes=[(1, lay.cols - 2, 6)])
         tb = lay.text_box
+        code = [(t, x, y) for t, x, y, f, _ in calls if f is lay.font and x >= tb.x - 1 and y < tb.bottom]
+        # no text starts left of the text area or runs past its right edge: nothing is chopped
+        for t, x, y in code:
+            self.assertGreaterEqual(x, tb.x - 0.01, t)
+            self.assertLessEqual(x + len(t) * lay.cell_w, tb.right + 0.01, t)
+        # every line starts at its first column, on its own first row
+        rows = editor.wrap_rows(len(long), lay.cols)
+        self.assertEqual(rows, len(long) // lay.cols + 1)
+        y0, y1, y2 = (round(lay.line_y(k, 0), 2) for k in (0, 1, 2))
+        starts = {round(y, 2): min(x for _, x, yy in code if round(yy, 2) == round(y, 2)) for _, _, y in code}
+        self.assertAlmostEqual(starts[y1], lay.col_x(0))
+        glyphs = {}
+        for t, x, y in code:   # by letter, as point redraws the one under it
+            for i, ch in enumerate(t):
+                glyphs[round(y, 1), round(x + i * lay.cell_w, 1)] = ch
+        row_text = ''.join(ch for (y, x), ch in sorted(glyphs.items()) if y1 - 0.5 < y < y1 + rows * lay.line_h - 0.5)
+        self.assertEqual(row_text.replace(' ', ''), long.replace(' ', ''))
+        # the line after it sits below all its rows
+        ret = [y for t, x, y in code if t == 'return']
+        self.assertAlmostEqual(ret[0], lay.line_y(1 + rows, 0))
+        # line numbers on first rows only: 1, 2, 3 at the rows each line starts on
+        nums = {t: round(y, 2) for t, x, y, f, k in calls if t.isdigit() and k.get('align') == 'right'}
+        self.assertEqual(nums, {'1': y0, '2': y1, '3': round(lay.line_y(1 + rows, 0), 2)})
+        # point, the region and a word split by the wrap follow the rows
         self.assertTrue(tb.contains(where.cursor_box), (tb, where.cursor_box))
-        self.assertTrue(tb.contains(where.word_box(0, h, col - h)))
-        self.assertGreaterEqual(dict(cv.marks)['editor.region'].x, tb.x - lay.cell_w)
-        cv = vb.Canvas(1000, 700, '#000')
-        where = editor.draw(cv, lay, buffer(text), 0, cursor=(0, col))
-        self.assertGreater(where.cursor_box.x, tb.right)
+        self.assertAlmostEqual(where.cursor_box.y, lay.line_y(1 + col // lay.cols, 0))
+        self.assertTrue(lay.box.contains(dict(cv.marks)['editor.region']))
+        parts = where.word_boxes(1, lay.cols - 2, 6)
+        self.assertEqual([round(b.w / lay.cell_w) for b in parts], [2, 4])
+        self.assertEqual(where.line_box(1).h, rows * lay.line_h)
+
+    def test_continuation_rows_have_a_glyph_and_no_number(self):
+        from unittest import mock
+        long = 'y = ' + 'abc + ' * 60
+        lay = editor.layout(vb.Box(0, 0, 900, 600), FONT)
+        rows = editor.wrap_rows(len(long), lay.cols)
+        drawn = []
+        with mock.patch.object(editor, '_continuation', lambda cv, lay, y, theme, a=1.0: drawn.append(round(y, 2))):
+            calls, _, _ = self.drawn_text(lay, buffer('a = 1\n' + long + '\nb = 2\n'), 0, marks_added=[1])
+        self.assertEqual(drawn, [round(lay.line_y(1 + r, 0), 2) for r in range(1, rows)])
+        numbered = {round(y, 2) for t, x, y, f, k in calls if t.isdigit() and k.get('align') == 'right'}
+        self.assertFalse(numbered & set(drawn))
+        self.assertEqual(sum(t == '+' and f is not lay.font for t, x, y, f, k in calls), 1)   # on its first row only
+
+    def test_keep_in_view_with_wrapped_lines(self):
+        lay = editor.layout(vb.Box(0, 0, 900, 600), FONT)
+        long = 'z' * (lay.cols * 4)
+        lines = buffer('\n'.join([long] * 10) + '\n').lines
+        top = editor.keep_in_view(lay, lines, 0.0, 6)
+        geo = editor.Geometry(lay, lines, top)
+        self.assertGreaterEqual(geo.offset(6), 0)
+        self.assertLessEqual(geo.offset(6) + geo.rows(6), lay.rows)
+        self.assertEqual(editor.keep_in_view(lay, lines, 0.0, 0), 0.0)
 
     def test_region_fold_progress_marks(self):
         for box in (vb.Box(0, 0, 1256, 1032), vb.Box(300, 200, 700, 500)):
@@ -237,6 +297,23 @@ class TestEditor(unittest.TestCase):
                 if gy == y and (x, gy) not in want:
                     col = (x - lay.text_box.x) / lay.cell_w
                     self.assertTrue(4 <= col < 7 and col == round(col), (k / 20, col, ch))
+
+    def test_morph_follows_wrapped_lines(self):
+        lay = editor.layout(vb.Box(0, 0, 900, 600), FONT)
+        tail = ', '.join(f'arg{i}' for i in range(40)) + ')'
+        old, new = 'x = foo(' + tail, 'x = bar(' + tail
+        self.assertGreater(len(new), 2 * lay.cols)
+        buf, seg = self.morph_case(old + '\nkeep\n', new + '\nkeep\n')
+        want = {(round(lay.col_x(c % lay.cols), 2), round(lay.line_y(c // lay.cols, 0), 2)): ch
+                for c, ch in enumerate(new) if ch.strip() and not 4 <= c < 7}
+        for k in range(11):
+            got = self.glyphs_at(lay, buf, seg, k / 10)
+            for pos, ch in want.items():
+                self.assertEqual(got.get(pos), ch, (k / 10, pos, ch))
+        # the line after it starts below every row of the wrapped one
+        rows = editor.wrap_rows(len(new), lay.cols)
+        got = self.glyphs_at(lay, buf, seg, 1.0)
+        self.assertEqual(got.get((round(lay.col_x(0), 2), round(lay.line_y(rows, 0), 2))), 'k')
 
     def test_new_line_wipes_in_without_scrambling(self):
         from unittest import mock

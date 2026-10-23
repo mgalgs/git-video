@@ -72,7 +72,9 @@ The editor is not a recording of a real Emacs: it is drawn frame by frame
 with [videobuilder](https://github.com/mgalgs/videobuilder), so a render is
 deterministic and needs no display. It looks like Emacs: a dark theme, line
 numbers, a fringe, a mode line and an echo area where the commands are
-typed, with keyboard and mouse sounds.
+typed, with keyboard and mouse sounds. Long lines wrap onto continuation
+rows, as Emacs does by default, with a curly arrow in the fringe and no line
+number on the rows that carry a line on.
 
 `--mode develop` performs it instead: every file starts from what it was
 and is edited into what it is, on screen, as a person at the keyboard would

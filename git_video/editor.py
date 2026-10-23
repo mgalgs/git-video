@@ -15,7 +15,7 @@ clipped to the box; the canvas size is never consulted.
 """
 import contextlib
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Sequence
 
 import videobuilder as vb
@@ -92,7 +92,6 @@ class Layout:
     modeline_box: vb.Box
     echo_box: vb.Box
     minimap_box: vb.Box | None = None   # the strip at the text area's right edge, when asked for
-    hscroll: int = 0                    # columns scrolled off the left edge
 
     @property
     def cols(self):
@@ -104,7 +103,7 @@ class Layout:
         return self.text_box.y + (line - scroll_top) * self.line_h
 
     def col_x(self, col):
-        return self.text_box.x + (col - self.hscroll) * self.cell_w
+        return self.text_box.x + col * self.cell_w
 
     def line_box(self, line, scroll_top):
         """The full-width text row of `line`."""
@@ -124,7 +123,7 @@ class Layout:
         tb = self.text_box
         if not (tb.x <= x < tb.right and tb.y <= y < tb.bottom):
             return None
-        return math.floor((y - tb.y) / self.line_h + scroll_top), math.floor((x - tb.x) / self.cell_w) + self.hscroll
+        return math.floor((y - tb.y) / self.line_h + scroll_top), math.floor((x - tb.x) / self.cell_w)
 
 
 def layout(box, font, digits=3, minimap=False):
@@ -172,17 +171,33 @@ def minimap_bars(lines, width=80):
 
 @dataclass(frozen=True)
 class Placement:
-    """What one drawn frame showed, for overlays and cameras to target."""
+    """What one drawn frame showed, for overlays and cameras to target: with
+    `geometry`, where wrapped lines put each word."""
     layout: Layout
     scroll_top: float
     visible: range
     cursor_box: vb.Box | None = field(default=None)
+    geometry: 'Geometry | None' = field(default=None, compare=False, repr=False)
 
     def word_box(self, line, col, length):
-        return self.layout.word_box(line, col, length, self.scroll_top)
+        """The word's box; a word a wrap splits: its first row's part."""
+        if self.geometry is None:
+            return self.layout.word_box(line, col, length, self.scroll_top)
+        return self.geometry.box(line, col, length)
+
+    def word_boxes(self, line, col, length):
+        """One box per screen row the word is on."""
+        if self.geometry is None:
+            return [self.word_box(line, col, length)]
+        lh = self.layout.line_h
+        return [vb.Box(x, y, w, lh) for x, y, w in self.geometry.pieces(line, col, col + length)]
 
     def line_box(self, line):
-        return self.layout.line_box(line, self.scroll_top)
+        """The full-width text rows of `line`, continuation rows and all."""
+        if self.geometry is None:
+            return self.layout.line_box(line, self.scroll_top)
+        tb = self.layout.text_box
+        return vb.Box(tb.x, self.geometry.y(line), tb.w, self.geometry.height(line))
 
 
 def _text_extent(runs):
@@ -253,11 +268,143 @@ def _clipped(b, area):
     return vb.Box(x0, y0, x1 - x0, y1 - y0) if x1 >= x0 and y1 >= y0 else None
 
 
+def wrap_rows(length, cols):
+    """Screen rows a line of `length` columns takes in a window `cols` wide,
+    as Emacs wraps it (`truncate-lines` nil): one, plus a continuation row
+    per `cols` columns; a line exactly `cols` wide gets an empty one for
+    point to sit on at its end."""
+    return 1 if length < cols else length // cols + 1
+
+
+def line_length(runs):
+    return sum(len(t) for _, t in runs)
+
+
+class Geometry:
+    """Where buffer lines sit on screen with long lines wrapped onto
+    continuation rows. `scroll_top` stays in buffer lines: its fraction
+    scrolls through the rows of the line at the top. `active`/`p`: morph
+    segments shown at progress p, which change the rows they take and push
+    the lines below them."""
+
+    def __init__(self, lay, lines, scroll_top, active=(), p=1.0):
+        self.lay, self.lines, self.n = lay, lines, len(lines)
+        self.cols = lay.cols
+        self.scroll_top = scroll_top
+        self.base = math.floor(scroll_top)
+        self._rows, self._off = {}, {self.base: 0}
+        lh = lay.line_h
+        self.y0 = lay.text_box.y - (scroll_top - self.base) * self.rows(self.base) * lh
+        self.active, self.p = list(active), p
+        self.tops, self.shifts, self.inside, acc = [], [], {}, 0.0
+        for k, seg in enumerate(self.active):
+            self.tops.append(self._plain(seg.line) + acc * lh)
+            acc += self.seg_rows(seg) - self.new_rows(seg)
+            self.shifts.append((seg.line + seg.new, acc))
+            for ln in range(seg.line, seg.line + seg.new):
+                self.inside[ln] = k
+
+    def rows(self, ln):
+        r = self._rows.get(ln)
+        if r is None:
+            r = self._rows[ln] = wrap_rows(line_length(self.lines[ln]), self.cols) if 0 <= ln < self.n else 1
+        return r
+
+    def offset(self, ln):
+        """Screen rows from the top line's first row to `ln`'s first row."""
+        off = self._off
+        if ln not in off:
+            k = ln
+            step = -1 if ln > self.base else 1
+            while k not in off:   # back to the nearest one known, then forward again
+                k += step
+            while k != ln:
+                if step < 0:
+                    off[k + 1] = off[k] + self.rows(k)
+                    k += 1
+                else:
+                    off[k - 1] = off[k] - self.rows(k - 1)
+                    k -= 1
+        return off[ln]
+
+    def _plain(self, ln):
+        return self.y0 + self.offset(ln) * self.lay.line_h
+
+    def old_rows(self, seg, upto=None):
+        return sum(wrap_rows(line_length(r), self.cols) for r in seg.old[:upto])
+
+    def new_rows(self, seg, upto=None):
+        return sum(self.rows(seg.line + r) for r in range(seg.new if upto is None else upto))
+
+    def seg_rows(self, seg):
+        e = vb.ease_in_out_quart(_phase(self.p, GLIDE))
+        o = self.old_rows(seg)
+        return o + (self.new_rows(seg) - o) * e
+
+    def y(self, ln):
+        """Top of `ln`'s first row."""
+        k = self.inside.get(ln)
+        if k is not None:
+            seg = self.active[k]
+            return self.tops[k] + self.new_rows(seg, ln - seg.line) * self.lay.line_h
+        d = 0.0
+        for thr, cum in self.shifts:
+            if ln >= thr:
+                d = cum
+        return self._plain(ln) + d * self.lay.line_h
+
+    def height(self, ln):
+        return self.rows(ln) * self.lay.line_h
+
+    def at(self, ln, col):
+        """(x, y) of column `col` of line `ln`."""
+        return self.lay.col_x(col % self.cols), self.y(ln) + (col // self.cols) * self.lay.line_h
+
+    def pieces(self, ln, c0, c1):
+        """[(x, y, w)]: the columns c0..c1 of `ln`, one piece per screen row."""
+        return [(x, y, (b - a) * self.lay.cell_w) for a, b, x, y in self._split(c0, c1, self.y(ln))]
+
+    def _split(self, c0, c1, y0):
+        out, a, cols, lh = [], c0, self.cols, self.lay.line_h
+        while a < c1 or (a == c1 == c0):
+            b = min(c1, (a // cols + 1) * cols)
+            out.append((a, b, self.lay.col_x(a % cols), y0 + (a // cols) * lh))
+            if b == a:
+                break
+            a = b
+        return out
+
+    def box(self, ln, col, length):
+        x, y = self.at(ln, col)
+        w = min(length, self.cols - col % self.cols) if length else 0
+        return vb.Box(x, y, max(w, 0) * self.lay.cell_w, self.lay.line_h)
+
+
+def keep_in_view(lay, lines, top, line):
+    """`top`, moved down as little as needed (a line at a time) so every row of
+    `line` is on screen once long lines above it wrap."""
+    if not 0 <= line < len(lines):
+        return top
+    for _ in range(len(lines)):
+        geo = Geometry(lay, lines, top)
+        if geo.offset(line) < 0:
+            return float(line)
+        if geo.offset(line) + geo.rows(line) <= lay.rows or top >= line:
+            return top
+        top = float(math.floor(top) + 1)
+    return top
+
+
 def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), marks_removed_at=(),
          tints=(), sweeps=(), boxes=(), modeline=None, echo='', echo_cursor=False, minimap=None,
          morphs=(), morph_p=1.0, focus=None, focus_amount=0.0, motion=None, region=None, folds=(),
-         progress=None, hscroll=0, theme=Theme()):
+         progress=None, theme=Theme()):
     """Draw the pane and return its Placement.
+
+    Long lines wrap onto continuation rows, as Emacs does by default
+    (`truncate-lines` nil): a continuation row has a curly arrow in the
+    fringe and no line number, and everything drawn on a line (marks,
+    washes, words, point) follows the rows its text is on.
 
     `cursor`: (line, col) of point, a block; `blink`: seconds since point last
     moved (None: solid). `marks_added`: lines with a `+` in the fringe;
@@ -269,7 +416,7 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
     strings, default buffer name and position. `echo`: the echo-area text,
     with a cursor after it when `echo_cursor`. `minimap`: a Minimap drawn in
     the layout's strip (laid out with `minimap=True`), its viewport box
-    following `scroll_top`.
+    following the lines on screen.
 
     `morphs`: Segments shown at `morph_p` (0 -> 1): at 0 the old lines, removed
     words struck through (a segment with no new lines is a ghost, drawn
@@ -288,42 +435,31 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
     outlined. `folds`: (line, count) rows drawn under `line` over what is
     there, `… count lines` in a dashed box: an elided run still pouring in.
     `progress`: (done, total) lines, as a count and a thin bar in the mode
-    line. `hscroll`: columns scrolled off the left edge, as Emacs scrolls the
-    window sideways to keep point in view.
+    line.
     """
-    if hscroll != lay.hscroll:
-        lay = replace(lay, hscroll=hscroll)
     box, tb, lh, cw = lay.box, lay.text_box, lay.line_h, lay.cell_w
     n = len(buf.lines)
     p = vb.clamp01(morph_p)
     active = sorted(morphs, key=lambda s: s.line) if p < 1 else []
-    tops, shifts, acc = [], [], 0.0
-    for seg in active:
-        tops.append(lay.line_y(seg.line, scroll_top) + acc * lh)
-        acc += segment_rows(seg, p) - seg.new
-        shifts.append((seg.line + seg.new, acc))
-    inside = {}   # buffer line -> segment index, for the lines a segment draws itself
-    for k, seg in enumerate(active):
-        for ln in range(seg.line, seg.line + seg.new):
-            inside[ln] = k
-
-    def y_of(ln):
-        k = inside.get(ln)
-        if k is not None:
-            return tops[k] + (ln - active[k].line) * lh
-        d = 0.0
-        for thr, cum in shifts:
-            if ln >= thr:
-                d = cum
-        return lay.line_y(ln, scroll_top) + d * lh
+    geo = Geometry(lay, buf.lines, scroll_top, active, p)
+    tops, inside = geo.tops, geo.inside
+    y_of = geo.y
 
     def shown(ln):   # how much of a line's decorations show: a segment's new lines arrive with its words
         return 1.0 if ln not in inside else _phase(p, ARRIVE)
 
     extra = sum(len(s.old) + s.new for s in active)
     first = max(0, math.floor(scroll_top) - extra)
-    last = min(n - 1, math.ceil(scroll_top + lay.rows) + extra)
-    lines = [ln for ln in range(first, last + 1) if tb.y - 2 * lh < y_of(ln) < tb.bottom + lh]
+    lines, ln = [], first
+    stop = max((s.line + s.new for s in active), default=0)
+    while ln < n:
+        y = y_of(ln)
+        if y >= tb.bottom + lh and ln >= stop:
+            break
+        if y + geo.height(ln) > tb.y - lh and y < tb.bottom + lh:
+            lines.append(ln)
+        ln += 1
+    last = lines[-1] if lines else first
     lineset = set(lines)
     font = lay.font
     small = vb.Font(font.family, font.size * 0.95, weight=700)
@@ -334,67 +470,81 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
         cv.rect(box.x, box.y, lay.fringe_w, lay.modeline_box.y - box.y, theme.fringe_bg)
         with cv.clip(box.x, box.y, box.w, lay.modeline_box.y - box.y):
             if cur_line is not None and cur_line in lineset:
-                cv.rect(box.x + lay.fringe_w, y_of(cur_line), box.w - lay.fringe_w, lh, theme.current_line)
+                cv.rect(box.x + lay.fringe_w, y_of(cur_line), box.w - lay.fringe_w, geo.height(cur_line),
+                        theme.current_line)
             for a, b in tints:
                 for ln in range(max(a, first), min(b, last) + 1):
                     if ln in lineset:
-                        cv.rect(tb.x - cw * 0.3, y_of(ln), tb.w + cw * 0.3, lh, theme.tint_added,
+                        cv.rect(tb.x - cw * 0.3, y_of(ln), tb.w + cw * 0.3, geo.height(ln), theme.tint_added,
                                 alpha=theme.tint_alpha * shown(ln))
             for k, seg in enumerate(active):   # the old lines' wash, fading as they go
-                h = segment_rows(seg, p) * lh
+                h = geo.seg_rows(seg) * lh
                 if h > 0.5:
                     cv.rect(tb.x - cw * 0.3, tops[k], tb.w + cw * 0.3, h, theme.removed_fg,
                             alpha=theme.removed_alpha * (1 - _phase(p, GLIDE)))
             if region is not None:
-                _region(cv, lay, buf, region, y_of, lineset, theme)
+                _region(cv, lay, buf, region, geo, lineset, theme)
             for ln, sp, *rest in sweeps:
                 fade = rest[0] if rest else 1.0
                 if ln in lineset and sp > 0:
                     c0, c1 = _text_extent(buf.lines[ln])
-                    if c1 > c0:
-                        y = y_of(ln)
-                        highlighter_swipe(cv, lay.col_x(c0) - cw * 0.25, y + lh * 0.1, (c1 - c0 + 0.5) * cw,
-                                          lh * 0.8, sp, color=theme.sweep, alpha=theme.sweep_alpha * fade, seed=ln)
+                    parts = geo.pieces(ln, c0, c1) if c1 > c0 else []
+                    for j, (x, y, w) in enumerate(parts):   # one stroke per row, each after the one above
+                        q = vb.clamp01(sp * len(parts) - j)
+                        if q > 0:
+                            highlighter_swipe(cv, x - cw * 0.25, y + lh * 0.1, w + cw * 0.5, lh * 0.8, q,
+                                              color=theme.sweep, alpha=theme.sweep_alpha * fade, seed=ln * 31 + j)
             with cv.clip(*tb.pad(0, 0, -lh, 0)), _moving(cv, tb, motion):
                 for ln in lines:
                     if ln in inside:
                         continue
                     _draw_runs(cv, lay, buf.lines[ln], y_of(ln), font)
                 for k, seg in enumerate(active):
-                    _draw_segment(cv, lay, buf, seg, tops[k], p, font, theme)
+                    _draw_segment(cv, lay, buf, seg, tops[k], p, font, theme, geo)
                 for seg in morphs:   # added words stay underlined once the morph is over
                     if p >= 1 or seg not in active:
                         ins = [(seg.line + o[3], o[4], o[5]) for o in seg.ops if o[0] == 'insert']
                         for row, c0, c1 in _spans(ins):
                             if row in lineset:
-                                _underline(cv, lay, y_of(row), c0, c1, theme)
+                                for x, y, w in geo.pieces(row, c0, c1):
+                                    _underline(cv, lay, x, y, w, theme)
             gx = box.x + lay.fringe_w
-            for ln in lines:
-                num = str(ln + 1)
-                vbtext.draw(cv, [num], font, gx, y_of(ln), theme.line_no_current if ln == cur_line else theme.line_no,
+            for ln in lines:   # the number on a line's first row only
+                vbtext.draw(cv, [str(ln + 1)], font, gx, y_of(ln),
+                            theme.line_no_current if ln == cur_line else theme.line_no,
                             align='right', width=lay.gutter_w - cw * 0.5, alpha=shown(ln))
             added = set(marks_added)
             taken = []   # (top, bottom) of the fringe glyphs drawn: one mark per row, never two on one
             for ln in lines:
+                y, a = y_of(ln), shown(ln)
                 if ln in added:
-                    y = y_of(ln)
-                    a = shown(ln)
                     if a > 0:
                         taken.append((y, y + lh))
-                    cv.rect(box.x, y, cw * 0.22, lh, theme.fringe_added, alpha=a)
+                    cv.rect(box.x, y, cw * 0.22, geo.height(ln), theme.fringe_added, alpha=a)
                     vbtext.draw(cv, ['+'], small, box.x + cw * 0.22, y + (lh - vbtext.line_height(small)) / 2,
                                 theme.fringe_added, align='center', width=lay.fringe_w - cw * 0.22, alpha=a)
+                for r in range(1, geo.rows(ln)):
+                    taken.append((y + r * lh, y + (r + 1) * lh))
+                    _continuation(cv, lay, y + r * lh, theme, a)
             seg_at = {seg.line: k for k, seg in enumerate(active)}
             for k, seg in enumerate(active):   # a − beside each old line while it is there
                 a = 1 - _phase(p, DISSOLVE)
-                rows = segment_rows(seg, p)
+                h = geo.seg_rows(seg)
                 sh = vbtext.line_height(small)
-                for r in range(min(len(seg.old), math.ceil(rows))):
-                    y = tops[k] + r * lh
+                at = 0
+                for old in seg.old:
+                    if at >= h:
+                        break
+                    y = tops[k] + at * lh
                     if a > 0:
                         taken.append((y, y + lh))
                     vbtext.draw(cv, ['−'], small, box.x, y + (lh - sh) / 2, theme.fringe_removed, align='center',
                                 width=lay.fringe_w, alpha=a)
+                    rows = wrap_rows(line_length(old), geo.cols)
+                    for r in range(1, rows):
+                        if at + r < h:
+                            _continuation(cv, lay, y + r * lh, theme, a)
+                    at += rows
             for ln in marks_removed_at:
                 if first <= ln <= last + 1:
                     k = seg_at.get(ln)
@@ -412,29 +562,31 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                                 align='center', width=lay.fringe_w, alpha=a)
             for ln, col, length in boxes:
                 if ln in lineset:
-                    y = y_of(ln)
-                    b = vb.Box(lay.col_x(col), y, length * cw, lh)
-                    cv.outline(b.x - 3, b.y + 1, b.w + 6, b.h - 2, theme.xref_box, width=2.5, radius=4)
+                    for x, y, w in geo.pieces(ln, col, col + length):
+                        cv.outline(x - 3, y + 1, w + 6, lh - 2, theme.xref_box, width=2.5, radius=4)
             for ln, count in folds:
-                _fold(cv, lay, y_of(ln) + lh, count, small, theme)
+                _fold(cv, lay, (y_of(ln) + geo.height(ln)) if 0 <= ln < n else lay.line_y(ln + 1, scroll_top),
+                      count, small, theme)
             if cursor is not None:
                 cl, cc = cursor
-                cursor_box = lay.word_box(cl, cc, 1, scroll_top)
                 a = 1.0 if blink is None else cursor_on(blink, since=0.5)
+                if cl in lineset or 0 <= cl < n and abs(cl - scroll_top) < 4 * lay.rows:
+                    cursor_box = geo.box(cl, cc, 1)
+                else:
+                    cursor_box = lay.word_box(cl, cc, 1, scroll_top)
                 if a > 0 and cl in lineset and cl not in inside:
-                    cb = vb.Box(cursor_box.x, y_of(cl), cursor_box.w, lh)
-                    cv.rect(*cb, theme.cursor, alpha=a)
+                    cv.rect(*cursor_box, theme.cursor, alpha=a)
                     ch = _char_at(buf.lines[cl], cc)
                     if ch.strip():
-                        vbtext.draw(cv, [ch], font, cb.x, cb.y, theme.bg, alpha=a)
+                        vbtext.draw(cv, [ch], font, cursor_box.x, cursor_box.y, theme.bg, alpha=a)
         area = vb.Box(tb.x, box.y, tb.w, lay.modeline_box.y - box.y)
         if focus is not None and focus_amount > 0:
             a, b = focus
-            y0, y1 = y_of(a), y_of(b) + lh
+            y0, y1 = y_of(a), y_of(b) + geo.height(b)
             for k, seg in enumerate(active):
                 if a <= seg.line <= b + 1:
                     y0 = min(y0, tops[k])
-                    y1 = max(y1, tops[k] + segment_rows(seg, p) * lh)
+                    y1 = max(y1, tops[k] + geo.seg_rows(seg) * lh)
             if y1 - y0 < lh:   # a closed-up deletion: keep a row lit around the gap
                 y0, y1 = (y0 + y1 - lh) / 2, (y0 + y1 + lh) / 2
             band = vb.Box(box.x, y0, tb.right - box.x, y1 - y0)
@@ -445,12 +597,13 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
             if m is not None:
                 cv.mark('editor.focus', *m)
         for k, seg in enumerate(active):
-            m = _clipped(vb.Box(tb.x, tops[k], tb.w, max(0.0, segment_rows(seg, p) * lh)), area)
+            m = _clipped(vb.Box(tb.x, tops[k], tb.w, max(0.0, geo.seg_rows(seg) * lh)), area)
             if m is not None:
                 cv.mark(f'editor.segment {k}', *m)
         cv.mark('editor.text', *tb.pad(0, 0, max(0.0, tb.h - lay.rows * lh), 0))
+        placement = Placement(lay, scroll_top, _visible(geo, lines), cursor_box, geo)
         if lay.minimap_box is not None:
-            _minimap(cv, lay, minimap, n, scroll_top, theme)
+            _minimap(cv, lay, minimap, n, scroll_top, theme, placement.visible)
         mb = lay.modeline_box
         cv.rect(*mb, theme.modeline_bg)
         cv.rect(mb.x, mb.y, mb.w, 1.5, theme.line_no)
@@ -471,13 +624,38 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
         if echo_cursor:
             cv.rect(eb.x + cw * (0.5 + len(echo)), ey, cw, lh, theme.cursor)
         cv.mark('editor.echo', *eb)
-    return Placement(lay, scroll_top, lay.visible_range(scroll_top, n), cursor_box)
+    return placement
 
 
-def _region(cv, lay, buf, region, y_of, lineset, theme):
-    """The marked region: each row's stretch shaded, the whole outlined (a
-    step at each row whose ends differ), so it reads without its colour.
-    A row the region runs past ends one cell after its text, for the newline."""
+def _visible(geo, lines):
+    """The lines whose first row is at least half on screen."""
+    tb, lh = geo.lay.text_box, geo.lay.line_h
+    bottom = tb.y + geo.lay.rows * lh
+    shown = [ln for ln in lines if geo.y(ln) >= tb.y - lh / 2 and geo.y(ln) + lh / 2 <= bottom]
+    return range(shown[0], shown[-1] + 1) if shown else range(0)
+
+
+def _continuation(cv, lay, y, theme, alpha=1.0):
+    """Emacs's continuation glyph in the left fringe: a curly arrow, down then
+    right, on a row that carries on the line above."""
+    if alpha <= 0:
+        return
+    cw, lh = lay.cell_w, lay.line_h
+    x0, x1 = lay.box.x + cw * 0.45, lay.box.x + lay.fringe_w - cw * 0.2
+    top, mid = y + lh * 0.22, y + lh * 0.62
+    w = max(1.5, cw * 0.09)
+    cv.arc(x0 + cw * 0.25, mid - cw * 0.25, cw * 0.25, math.pi / 2, math.pi, theme.fold_fg, width=w, alpha=alpha)
+    cv.line(x0, top, x0, mid - cw * 0.25, theme.fold_fg, width=w, alpha=alpha)
+    cv.line(x0 + cw * 0.25, mid, x1, mid, theme.fold_fg, width=w, alpha=alpha)
+    s = cw * 0.22
+    cv.line(x1, mid, x1 - s, mid - s, theme.fold_fg, width=w, alpha=alpha)
+    cv.line(x1, mid, x1 - s, mid + s, theme.fold_fg, width=w, alpha=alpha)
+
+
+def _region(cv, lay, buf, region, geo, lineset, theme):
+    """The marked region: each screen row's stretch shaded, the whole outlined
+    (a step at each row whose ends differ), so it reads without its colour.
+    A line the region runs past ends one cell after its text, for the newline."""
     (l0, c0), (l1, c1) = sorted(region)
     if (l0, c0) == (l1, c1):
         return
@@ -486,12 +664,13 @@ def _region(cv, lay, buf, region, y_of, lineset, theme):
     for ln in range(l0, l1 + 1):
         if ln not in lineset:
             continue
-        n = len(''.join(t for _, t in buf.lines[ln])) if ln < len(buf.lines) else 0
+        n = line_length(buf.lines[ln]) if ln < len(buf.lines) else 0
         a = c0 if ln == l0 else 0
         b = c1 if ln == l1 else n + 1
-        x0, x1 = max(lay.col_x(a), lay.text_box.x - cw * 0.3), lay.col_x(b)
-        if x1 > x0:
-            rows.append((x0, x1, y_of(ln)))
+        for x, y, w in geo.pieces(ln, a, b):
+            x0 = max(x, lay.text_box.x - cw * 0.3) if x <= lay.text_box.x else x
+            if x + w > x0:
+                rows.append((x0, x + w, y))
     if not rows:
         return
     for x0, x1, y in rows:
@@ -583,60 +762,79 @@ def _moving(cv, tb, motion):
 
 
 def _draw_runs(cv, lay, runs, y, font):
-    col = 0
+    """A line's runs from `y`, wrapped onto continuation rows every `lay.cols` columns."""
+    col, cols, lh = 0, lay.cols, lay.line_h
     for color, s in runs:
-        x = lay.col_x(col)
-        if x > lay.text_box.right:
-            break
-        if s.strip():
-            vbtext.draw(cv, [s], font, x, y, color)
+        a = 0
+        while a < len(s):
+            c = col + a
+            b = min(len(s), a + cols - c % cols)
+            part = s[a:b]
+            if part.strip():
+                vbtext.draw(cv, [part], font, lay.col_x(c % cols), y + (c // cols) * lh, color)
+            a = b
         col += len(s)
 
 
-def _underline(cv, lay, y, c0, c1, theme, alpha=1.0):
+def _underline(cv, lay, x, y, w, theme, alpha=1.0):
     uy = y + lay.line_h * 0.86
-    cv.line(lay.col_x(c0), uy, lay.col_x(c1), uy, theme.underline, width=2, alpha=alpha)
+    cv.line(x, uy, x + w, uy, theme.underline, width=2, alpha=alpha)
 
 
 SCRAMBLE_GLYPHS = 'abcdefghijklmnopqrstuvwxyz_=+*<>/#'
 
 
-def _draw_segment(cv, lay, buf, seg, top, p, font, theme):
+def _draw_segment(cv, lay, buf, seg, top, p, font, theme, geo):
     """One segment's words at morph progress `p` (see `draw`), kept inside the
     rows the segment has at `p`: a ghost's rows close over it like a shutter, a
-    growing segment opens like a drawer."""
-    lh = lay.line_h
-    rows = segment_rows(seg, p)
+    growing segment opens like a drawer. Old and new lines wrap as the buffer's do."""
+    lh, cols = lay.line_h, geo.cols
+    rows = geo.seg_rows(seg)
     if rows * lh < 0.5:
         return
     ge = vb.ease_in_out_quart(_phase(p, GLIDE))
     dq = _phase(p, DISSOLVE)
     iq = _phase(p, DECODE)
     ghost = seg.new == 0
+    old_at = [geo.old_rows(seg, r) for r in range(len(seg.old) + 1)]
+    new_at = [geo.new_rows(seg, r) for r in range(seg.new + 1)]
+
+    def old_y(row):
+        return top + old_at[row] * lh
+
+    def new_y(row):
+        return top + new_at[row] * lh
+
     with cv.clip(lay.box.x, top, lay.box.w, rows * lh):
         for kind, orow, ocol, nrow, ncol, text in seg.ops:
             if kind != 'equal':
                 continue
-            y = top + (orow + (nrow - orow) * ge) * lh
-            x = lay.col_x(ocol + (ncol - ocol) * ge)
-            vbtext.draw(cv, [text], font, x, y, _color_at(buf.lines[seg.line + nrow], ncol))
+            color = _color_at(buf.lines[seg.line + nrow], ncol)
+            whole = ocol % cols + len(text) <= cols and ncol % cols + len(text) <= cols
+            for i, ch in ([(0, text)] if whole else enumerate(text)):   # a word split by a wrap glides letter by letter
+                vo, co = old_at[orow] + (ocol + i) // cols, (ocol + i) % cols
+                vn, cn = new_at[nrow] + (ncol + i) // cols, (ncol + i) % cols
+                vbtext.draw(cv, [ch], font, lay.col_x(co + (cn - co) * ge), top + (vo + (vn - vo) * ge) * lh, color)
         gone = [o for o in seg.ops if o[0] == 'delete']
         if dq < 1 and gone:
             for row in sorted({o[1] for o in gone}):
-                y = top + row * lh
+                y = old_y(row)
                 words = [o for o in gone if o[1] == row]
 
                 def put(c, words=words, y=y, row=row):
                     for _, _, ocol, _, _, text in words:
                         color = _color_at(seg.old[row], ocol) if ghost else theme.removed_fg
-                        vbtext.draw(c, [text], font, lay.col_x(ocol), y, color,
-                                    alpha=theme.ghost_alpha if ghost else 1.0)
+                        for a, b, x, py in geo._split(ocol, ocol + len(text), y):
+                            vbtext.draw(c, [text[a - ocol:b - ocol]], font, x, py, color,
+                                        alpha=theme.ghost_alpha if ghost else 1.0)
 
-                dither_reveal(cv, vb.Box(lay.text_box.x, y, lay.text_box.w, lh), 1 - dq, put,
+                h = (old_at[row + 1] - old_at[row]) * lh
+                dither_reveal(cv, vb.Box(lay.text_box.x, y, lay.text_box.w, h), 1 - dq, put,
                               cell=max(3.0, lh * 0.16))
                 for _, c0, c1 in _spans([(row, o[2], o[5]) for o in words]):
-                    sy = y + lh * 0.52
-                    cv.line(lay.col_x(c0) - 1, sy, lay.col_x(c1) + 1, sy, theme.strike, width=2, alpha=1 - dq)
+                    for a, b, x, py in geo._split(c0, c1, y):
+                        sy = py + lh * 0.52
+                        cv.line(x - 1, sy, x + (b - a) * lay.cell_w + 1, sy, theme.strike, width=2, alpha=1 - dq)
         added = [o for o in seg.ops if o[0] == 'insert']
         fresh = {o[3] for o in added} - {o[3] for o in seg.ops if o[0] == 'equal'}
         wq = _phase(p, ARRIVE)
@@ -645,28 +843,33 @@ def _draw_segment(cv, lay, buf, seg, top, p, font, theme):
 
             def put(c, words=words, row=row):
                 for _, _, _, nrow, ncol, text in words:
-                    vbtext.draw(c, [text], font, lay.col_x(ncol), top + nrow * lh,
-                                _color_at(buf.lines[seg.line + nrow], ncol))
+                    color = _color_at(buf.lines[seg.line + nrow], ncol)
+                    for a, b, x, py in geo._split(ncol, ncol + len(text), new_y(nrow)):
+                        vbtext.draw(c, [text[a - ncol:b - ncol]], font, x, py, color)
 
-            wipe_reveal(cv, put, vb.Box(lay.text_box.x, top + row * lh, lay.text_box.w, lh),
+            wipe_reveal(cv, put, vb.Box(lay.text_box.x, new_y(row), lay.text_box.w, (new_at[row + 1] - new_at[row]) * lh),
                         vb.ease_out_quint(wq), softness=0.15)
         if iq > 0:   # the words changed on an edited line: a short decode in place
             with cv.layer(opacity=vb.clamp01(iq / 0.2)):
                 for kind, _, _, nrow, ncol, text in added:
-                    if nrow not in fresh:
-                        draw_scramble(cv, text, font, lay.col_x(ncol), top + nrow * lh, iq,
-                                      _color_at(buf.lines[seg.line + nrow], ncol), scrambled=theme.underline,
-                                      seed=f'{seg.line}:{nrow}:{ncol}', glyphs=SCRAMBLE_GLYPHS)
+                    if nrow in fresh:
+                        continue
+                    color = _color_at(buf.lines[seg.line + nrow], ncol)
+                    for a, b, x, py in geo._split(ncol, ncol + len(text), new_y(nrow)):
+                        draw_scramble(cv, text[a - ncol:b - ncol], font, x, py, iq, color, scrambled=theme.underline,
+                                      seed=f'{seg.line}:{nrow}:{a}', glyphs=SCRAMBLE_GLYPHS)
         if p >= UNDERLINE_AT:
             ins = [(o[3], o[4], o[5]) for o in added]
             for row, c0, c1 in _spans(ins):
-                _underline(cv, lay, top + row * lh, c0, c1, theme, alpha=_phase(p, (UNDERLINE_AT, 0.75)))
+                for a, b, x, py in geo._split(c0, c1, new_y(row)):
+                    _underline(cv, lay, x, py, (b - a) * lay.cell_w, theme, alpha=_phase(p, (UNDERLINE_AT, 0.75)))
 
 
-def _minimap(cv, lay, mm, n, scroll_top, theme):
+def _minimap(cv, lay, mm, n, scroll_top, theme, visible=None):
     """The strip: one bar per line (bucketed to whole px rows when lines are
     thinner than a pixel), `+` ticks beside added lines and `−` dashes where
-    lines were removed, and a box over the lines on screen."""
+    lines were removed, and a box over the lines on screen (`visible`, which
+    wrapped lines make fewer than the window's rows)."""
     strip = lay.minimap_box
     cv.rect(*strip, theme.minimap_bg)
     cv.rect(strip.x, strip.y, 1, strip.h, theme.line_no, alpha=0.6)
@@ -695,13 +898,15 @@ def _minimap(cv, lay, mm, n, scroll_top, theme):
         cv.rect(tick_x, inner.y + a * scale, 3, max(2.0, (b - a + 1) * scale), theme.fringe_added)
     for ln in (mm.removed_at if mm is not None else ()):
         cv.rect(tick_x - 1, inner.y + ln * scale - 1, 7, 2, theme.fringe_removed)
-    view_h = max(6.0, min(lay.rows, n) * scale)
-    y = inner.y + scroll_progress(scroll_top, n, lay.rows) * max(0.0, n - lay.rows) * scale
+    count = len(visible) if visible else lay.rows
+    view_h = max(6.0, min(count, n) * scale)
+    y = inner.y + scroll_progress(scroll_top, n, count) * max(0.0, n - count) * scale
     y = min(y, inner.bottom - view_h)
     vbox = vb.Box(strip.x + 1.5, y, strip.w - 3, view_h)
     cv.rect(*vbox, theme.minimap_view, alpha=0.15)
     cv.outline(*vbox, theme.minimap_view, width=1.5, radius=2)
     cv.mark('editor.viewport', *vbox)
+
 
 
 def _color_at(runs, col):
