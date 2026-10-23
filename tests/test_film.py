@@ -694,7 +694,10 @@ class TestFilm(unittest.TestCase):
                     _, top = tour.performance(i).view(film.edits.source_time(t, tour.shots[i]['clock']), lay.rows, lay.cols)
                     self.assertTrue(top <= cursor[0] < top + lay.rows, (name, label, fmt))
                     side = [b for m, b in cv.marks if m.startswith('sidebar.')]
+                    on_side = 'callout.card' in marks and st.side is not None and st.side.contains(marks['callout.card'])
                     for m, b in cv.marks:
+                        if m.startswith('callout.') and on_side:   # a card in the side bar's free area
+                            continue
                         if m.startswith(('editor.', 'callout.')):
                             self.assertTrue(st.main.contains(b), (name, label, fmt, m, b))
                             for c in side:
@@ -749,6 +752,66 @@ class TestFilm(unittest.TestCase):
                     hunk = marks['callout.hunk']
                     if max(hunk.y - area.y, area.bottom - hunk.bottom) >= card.h + 20:
                         self.assertFalse(card.intersects(hunk), (fmt, n))
+
+    def test_free_callout_box_keeps_three_rows_from_point(self):
+        area = vb.Box(100, 50, 1200, 26 * 35.0)
+        lh, w, h = 35.0, 600, 150
+        ends = [area.x + 1100.0] * 26   # long lines everywhere ...
+        for k in (2, 3, 4, 5, 6, 7, 14, 15, 16, 17, 18):   # ... but for two runs of short ones
+            ends[k] = area.x + 200.0
+        for prow in range(26):
+            point = vb.Box(area.x, area.y + prow * lh, area.w, lh)
+            card = film.free_callout_box(area, ends, [point], point, w, h, lh, lh / 2)
+            if card is None:
+                continue
+            self.assertTrue(area.contains(card), prow)
+            self.assertGreaterEqual(max(point.y - card.bottom, card.y - point.bottom), 3 * lh - 1e-6, prow)
+            rows = range(int((card.y - area.y) // lh), int((card.bottom - 1 - area.y) // lh) + 1)
+            self.assertTrue(all(ends[r] < card.x for r in rows), (prow, list(rows)))
+        point = vb.Box(area.x, area.y + 10 * lh, area.w, lh)   # free space on both sides: the nearer
+        card = film.free_callout_box(area, ends, [point], point, w, h, lh, lh / 2)
+        self.assertLess(card.y, point.y)
+        self.assertIsNone(film.free_callout_box(area, [area.x + 1100.0] * 26, [point], point, w, h, lh, lh / 2))
+        card = film.far_callout_box(area, [point], [point], w, h, lh, lh / 2)   # none free: over code, far away
+        self.assertGreater(card.bottom, area.bottom - lh)
+
+    def test_side_bar_free_area(self):
+        box = vb.Box(1376, 24, 520, 1032)
+        files = [{'path': 'a.py', 'added': 1, 'deleted': 0}]
+        short = {'subject': 'Fix it', 'body': 'One line.', 'short': 'abc', 'author': 'A', 'date': '2026-01-01'}
+        free = sidebar.free_area(box, commit=short, files=files, xref_stack=(), graph=True)
+        self.assertTrue(box.contains(free))
+        self.assertGreater(free.h, 200)
+        cv = vb.Canvas(1920, 1080, '#000')
+        sidebar.draw(cv, box, commit=short, files=files, current_path='a.py', xref_stack=(), graph=lambda c, b: None)
+        commit = dict(cv.marks)['sidebar.commit']
+        self.assertTrue(commit.contains(free))
+        long = dict(short, body=' '.join(['word'] * 400))
+        free = sidebar.free_area(box, commit=long, files=files, xref_stack=(), graph=True)
+        self.assertTrue(free is None or free.h < 40)
+
+    def test_develop_callout_far_from_point(self):
+        tours = self.develop_tours()
+        seen = 0
+        for name in ('callout', 'develop', 'big'):
+            tour = tours[name]
+            for i, s in enumerate(tour.shots):
+                for k, c in enumerate(s.get('callouts') or ()):
+                    for dt in (0.1, 0.5, 1.0, (c['until'] - c['at']) * 0.9):
+                        n = tour.shot_frames[i] + round((c['at'] + dt) * tour.fps)
+                        cv = tour.film.frame(n, '16x9')
+                        marks = dict(cv.marks)
+                        kind, box = film.develop_callout_at(tour, film.stage(cv), i, k, tour.at(n)[1])
+                        if 'callout.card' not in marks:
+                            continue
+                        card, point = marks['callout.card'], marks['callout.point']
+                        self.assertFalse(card.intersects(point), (name, n))
+                        if kind == 'free':
+                            seen += 1
+                            lh = film.stage(cv).mono.size * 1.35
+                            gap = max(point.y - card.bottom, card.y - point.bottom)
+                            self.assertGreaterEqual(gap, 3 * lh - 2, (name, n))
+        self.assertTrue(seen)
 
     def test_develop_draw_is_pure_and_flat(self):
         import time

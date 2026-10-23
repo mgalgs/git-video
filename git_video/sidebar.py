@@ -92,27 +92,8 @@ def draw(cv, box, *, commit, files, current_path, xref_stack, ui='sans-serif', m
     with cv.clip(*box):
         cv.rect(*box, style.bg, radius=10)
         cv.outline(box.x + 0.5, box.y + 0.5, box.w - 1, box.h - 1, style.border, width=1, radius=10)
-        inner = box.pad(26 * scale, 26 * scale)
-        hh = vbtext.line_height(F['head'])
-        rh = vbtext.line_height(F['row'])
-        gap = 22 * scale
-        graph_box = None
-        if graph is not None and beside:
-            inner, graph_box = inner.row(vb.fr, vb.fr * 0.62, gap=gap * 1.5)
-        # Reserve the xref, files and graph sections first; the commit takes what is left.
-        xref_rows = max(2, min(4, len(xref_stack)))
-        xref_h = hh + 8 * scale + xref_rows * rh
-        file_rows_n = len(files)
-        max_files = max(1, int((inner.h * (0.30 if graph is not None and not beside else 0.38) - hh) // rh))
-        files_shown = min(file_rows_n, max_files)
-        files_h = hh + 8 * scale + files_shown * rh
-        if graph is not None and not beside:
-            graph_h = min(240 * scale, inner.h * 0.26)
-            commit_h = max(0.0, inner.h - xref_h - files_h - graph_h - 3 * gap)
-            c_box, f_box, graph_box, x_box = inner.column(commit_h, files_h, graph_h, xref_h, gap=gap)
-        else:
-            commit_h = max(0.0, inner.h - xref_h - files_h - 2 * gap)
-            c_box, f_box, x_box = inner.column(commit_h, files_h, xref_h, gap=gap)
+        c_box, f_box, graph_box, x_box, xref_rows, files_shown = _sections(box, files, xref_stack, F, scale,
+                                                                           graph is not None, beside)
         _commit(cv, c_box, commit, F, style)
         drawn = _files(cv, f_box, files, current_path, files_shown, F, style)
         _xref(cv, x_box, xref_stack, xref_rows, F, style)
@@ -124,34 +105,69 @@ def draw(cv, box, *, commit, files, current_path, xref_stack, ui='sans-serif', m
     return drawn
 
 
+def _sections(box, files, xref_stack, F, scale, graph, beside):
+    """(commit, files, graph or None, xref) boxes, the xref rows and the file rows shown."""
+    inner = box.pad(26 * scale, 26 * scale)
+    hh = vbtext.line_height(F['head'])
+    rh = vbtext.line_height(F['row'])
+    gap = 22 * scale
+    graph_box = None
+    if graph and beside:
+        inner, graph_box = inner.row(vb.fr, vb.fr * 0.62, gap=gap * 1.5)
+    # Reserve the xref, files and graph sections first; the commit takes what is left.
+    xref_rows = max(2, min(4, len(xref_stack)))
+    xref_h = hh + 8 * scale + xref_rows * rh
+    max_files = max(1, int((inner.h * (0.30 if graph and not beside else 0.38) - hh) // rh))
+    files_shown = min(len(files), max_files)
+    files_h = hh + 8 * scale + files_shown * rh
+    if graph and not beside:
+        graph_h = min(240 * scale, inner.h * 0.26)
+        commit_h = max(0.0, inner.h - xref_h - files_h - graph_h - 3 * gap)
+        c_box, f_box, graph_box, x_box = inner.column(commit_h, files_h, graph_h, xref_h, gap=gap)
+    else:
+        commit_h = max(0.0, inner.h - xref_h - files_h - 2 * gap)
+        c_box, f_box, x_box = inner.column(commit_h, files_h, xref_h, gap=gap)
+    return c_box, f_box, graph_box, x_box, xref_rows, files_shown
+
+
+def free_area(box, *, commit, files, xref_stack, ui='sans-serif', mono='monospace', scale=1.0, graph=False,
+              beside=False, **_):
+    """The largest empty box in the full side bar as `draw` lays it out: the
+    commit section below its text (a short message leaves room), or None."""
+    F = _fonts(ui, mono, scale)
+    c_box = _sections(vb.Box(*box), files, xref_stack, F, scale, graph, beside)[0]
+    if c_box.h <= 0:
+        return None
+    y = _commit_layout(c_box, commit, F)[-1] + 12
+    return vb.Box(c_box.x, y, c_box.w, c_box.bottom - y) if c_box.bottom - y > 0 else None
+
+
 def _header(cv, box, label, F, style):
     vbtext.draw(cv, [label], F['head'], box.x, box.y, style.head)
     return box.y + vbtext.line_height(F['head']) + 8
 
 
-def _commit(cv, box, commit, F, style):
-    if box.h <= 0:
-        return
-    cv.mark('sidebar.commit', *box)
-    with cv.clip(*box):
-        y = _header(cv, box, 'COMMIT', F, style)
-        sub = vbtext.wrap(commit['subject'], F['subject'], box.w)
-        slh = vbtext.line_height(F['subject'])
-        sub = list(sub[:3])
-        if len(vbtext.wrap(commit['subject'], F['subject'], box.w)) > 3:
-            sub[-1] = ellipsize(sub[-1] + '…', F['subject'], box.w)
-        vbtext.draw(cv, sub, F['subject'], box.x, y, style.strong)
-        y += slh * len(sub) + 6
-        date = commit.get('date', '')[:10]
-        meta = ' · '.join(x for x in (commit.get('short'), commit.get('author'), date) if x)
-        vbtext.draw(cv, [ellipsize(meta, F['meta'], box.w)], F['meta'], box.x, y, style.muted)
-        y += vbtext.line_height(F['meta']) + 14
-        blh = vbtext.line_height(F['body'])
-        room = int((box.bottom - y) // blh)
-        if room <= 0:
-            return
+def _commit_layout(box, commit, F):
+    """(subject lines, their y, meta, its y, body lines, their y, where the text ends)."""
+    y = box.y + vbtext.line_height(F['head']) + 8
+    sub = vbtext.wrap(commit['subject'], F['subject'], box.w)
+    slh = vbtext.line_height(F['subject'])
+    sub = list(sub[:3])
+    if len(vbtext.wrap(commit['subject'], F['subject'], box.w)) > 3:
+        sub[-1] = ellipsize(sub[-1] + '…', F['subject'], box.w)
+    sub_y = y
+    y += slh * len(sub) + 6
+    date = commit.get('date', '')[:10]
+    meta = ' · '.join(x for x in (commit.get('short'), commit.get('author'), date) if x)
+    meta_y = y
+    y += vbtext.line_height(F['meta'])
+    end = y
+    y += 14
+    blh = vbtext.line_height(F['body'])
+    room = int((box.bottom - y) // blh)
+    lines = []
+    if room > 0:
         if commit.get('body'):
-            lines = []
             for para in commit['body'].split('\n\n'):
                 if lines:
                     lines.append('')
@@ -160,8 +176,22 @@ def _commit(cv, box, commit, F, style):
             lines = [ellipsize(f'{c["short"]} {c["subject"]}', F['body'], box.w)
                      for c in commit.get('commits', [])] if len(commit.get('commits', [])) > 1 else []
         lines = trim(lines, room, F['body'], box.w)
+        if lines:
+            end = y + len(lines) * blh
+    return sub, sub_y, ellipsize(meta, F['meta'], box.w), meta_y, lines, y, end
+
+
+def _commit(cv, box, commit, F, style):
+    if box.h <= 0:
+        return
+    cv.mark('sidebar.commit', *box)
+    with cv.clip(*box):
+        _header(cv, box, 'COMMIT', F, style)
+        sub, sub_y, meta, meta_y, lines, body_y, _ = _commit_layout(box, commit, F)
+        vbtext.draw(cv, sub, F['subject'], box.x, sub_y, style.strong)
+        vbtext.draw(cv, [meta], F['meta'], box.x, meta_y, style.muted)
         if lines:   # a subject-only commit, or a one-commit range, has no body to show
-            vbtext.draw(cv, lines, F['body'], box.x, y, style.fg)
+            vbtext.draw(cv, lines, F['body'], box.x, body_y, style.fg)
 
 
 def trim(lines, room, font, width):

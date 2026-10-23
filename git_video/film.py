@@ -237,6 +237,8 @@ class Tour:
         self.performances = {}   # develop: edit shot -> its edits.Performance, made on first use
         self.edit_texts = {}     # develop: edit shot -> (old lines' runs, new lines' runs, digits, mode)
         self.callout_text = {}   # (shot, callout, width) -> its wrapped lines, once per format
+        self.callout_places = {}   # develop: (shot, callout, main box, font size) -> where its card sits
+        self.late = []   # drawing put off until the side bar is drawn (a callout card on it), per frame
         self.minimaps = {}   # the minimap per buffer: bars and marks, computed once
         for (k, path, variant), buf in self.buffers.items():
             added, removed, ranges = self.marks.get((k, path), ((), (), ()))
@@ -489,6 +491,7 @@ class Tour:
             alpha = min(alpha, vb.clamp01(t / FADE))
         if i + 1 < len(self.shots) and self.shots[i + 1]['scene'] == 'card':
             alpha = min(alpha, vb.clamp01((shot['dur'] - t) / FADE))
+        self.late = []
         with cv.layer(opacity=alpha):
             SCENES[shot['scene']](self, cv, st.main, shot, t, i, st)
             if st.side is not None:
@@ -504,6 +507,8 @@ class Tour:
                         def graph(c, box, i=i, t=t, path=path, stack=stack):
                             self.draw_graph(c, box, i, t, path, stack, st.scale)
                     sidebar.draw(cv, st.side, scale=st.scale, graph=graph, beside=st.side.w > st.side.h, **kw)
+            for f in self.late:
+                f(cv)
         self.draw_caption(cv, st, shot, n)
 
     def caption_place(self, cv, st, shot):
@@ -1282,6 +1287,188 @@ def callout_box(area, band, point, w, h, gap):
     return vb.Box(x, y, w, h)
 
 
+CALLOUT_CLEAR = 3     # develop: rows kept between the card and point while free space allows
+CALLOUT_SAMPLES = 24  # develop: the moments of a callout's life its place is checked at
+
+
+def row_ends(geo, area):
+    """Per whole row of `area`, the x the text on it reaches (area.x when the
+    row is blank), from a frame's editor.Geometry."""
+    lay, lh = geo.lay, geo.lay.line_h
+    count = max(0, int(area.h // lh))
+    ends = [area.x] * count
+    ln = max(0, math.floor(geo.scroll_top) - 1)
+    while ln < geo.n:
+        y = geo.y(ln)
+        if y >= area.bottom:
+            break
+        text = editor.line_text(geo.lines[ln])
+        starts = geo.starts(ln)
+        for r, a in enumerate(starts):
+            b = starts[r + 1] if r + 1 < len(starts) else len(text)
+            used = len(text[a:b].rstrip())
+            if not used:
+                continue
+            top = (y + r * lh - area.y) / lh
+            for k in range(max(0, math.floor(top + 1e-6)), min(count, math.ceil(top + 1 - 1e-6))):
+                ends[k] = max(ends[k], lay.col_x(used))
+        ln += 1
+    return ends
+
+
+def _clear_of(y, h, points, rows):
+    return all(y >= p.bottom + rows - 1e-6 or y + h <= p.y - rows + 1e-6 for p in points)
+
+
+def free_callout_box(area, ends, points, target, w, h, lh, gap, clear=CALLOUT_CLEAR):
+    """Develop: the card's box in free space, or None: right-aligned over rows
+    whose text (`ends`, see `row_ends`) stops short of it, blank rows or the
+    empty right part of short lines, at least `clear` rows from every box in
+    `points` (point's row through the callout's life); of those, the nearest
+    `target`."""
+    x = area.right - w - gap
+    m = math.ceil((h + gap) / lh)
+    best = None
+    for k in range(len(ends) - m + 1):
+        if any(e > x - gap for e in ends[k:k + m]):
+            continue
+        y = area.y + k * lh + (m * lh - h) / 2
+        if not _clear_of(y, h, points, clear * lh):
+            continue
+        d = abs(y + h / 2 - target.cy)
+        if best is None or d < best[0]:
+            best = (d, vb.Box(x, y, w, h))
+    return best and best[1]
+
+
+def far_callout_box(area, bands, points, w, h, lh, gap):
+    """Develop, with no free space: the card over code but outside every box in
+    `bands` (the hunk) and `points`, as far from point as fits; or None."""
+    x = area.right - w - gap
+    best = None
+    k = 0
+    while area.y + gap / 2 + k * lh + h <= area.bottom - gap / 2 + 1e-6:
+        card = vb.Box(x, area.y + gap / 2 + k * lh, w, h)
+        k += 1
+        if any(card.intersects(b) for b in (*bands, *points)):
+            continue
+        d = min((max(p.y - card.bottom, card.y - p.bottom) for p in points), default=0.0)
+        if best is None or d > best[0]:
+            best = (d, card)
+    return best and best[1]
+
+
+def _edit_moment(tour, st, i, t):
+    """Develop at `t` s into edit shot i: (Geometry, point's line box, the hunk's
+    band, the target: point's row from its start to point)."""
+    shot = tour.shots[i]
+    lay, buf, top, _, state = _edit_view(tour, st, i, edits.source_time(t, shot['clock']))
+    geo = editor.Geometry(lay, buf.lines, top)
+    line, col = state.cursor
+    tb = lay.text_box
+
+    def rows(a, b):
+        y0 = geo.y(a)
+        return vb.Box(tb.x, y0, tb.w, geo.y(b) + geo.height(b) - y0)
+    run = next(((a, b) for a, b in _changed_ranges(state.lines) if a <= line <= b + 1), (line, line))
+    h = geo.row_start(line, col)
+    return geo, rows(line, line), rows(min(run[0], line), max(run[1], line)), geo.box(line, h, max(1, col - h))
+
+
+CALLOUT_SETTLE = 0.6   # develop: a stretch of a callout's life shorter than this takes the next one's place
+CALLOUT_MOVE = 0.35    # develop: the card's glide from one place to the next
+
+
+def develop_callout_places(tour, st, i, k):
+    """Where edit shot i's callout k sits through its life, as [(from t, kind,
+    box)]: one place per stretch in which the view holds still and point
+    stays within CALLOUT_CLEAR rows, decided for the whole stretch so the
+    card never jumps under the typing. In each: ('free', box) in free space
+    at least CALLOUT_CLEAR rows from point; else ('side', box) in the side
+    bar's free area; else ('over', box) over code outside the hunk, as far
+    from point as fits (over the hunk too when it fills the screen); else
+    ('frame', None): placed frame by frame, as the view scrolls under it."""
+    key = (i, k, tuple(st.main), st.mono.size)
+    if key in tour.callout_places:
+        return tour.callout_places[key]
+    c = tour.shots[i]['callouts'][k]
+    tour.performance(i)   # makes edit_texts[i]
+    lay = editor.layout(st.main, st.mono, digits=tour.edit_texts[i][2], minimap=True)
+    area = _text_area(lay)
+    w = callout_width(area)
+    _, h = _card_text(tour, st, (i, k), c, w)
+    gap, lh = lay.line_h * 0.5, lay.line_h
+    samples = []
+    for j in range(CALLOUT_SAMPLES + 1):
+        t = c['at'] + (c['until'] - c['at']) * j / CALLOUT_SAMPLES
+        geo, point, band, target = _edit_moment(tour, st, i, t)
+        samples.append((t, geo.scroll_top, point, band, target, row_ends(geo, area)))
+    stretches = [[samples[0]]]
+    for a, b in zip(samples, samples[1:]):
+        if abs(b[1] - a[1]) > 1e-3 or abs(b[2].y - a[2].y) > CALLOUT_CLEAR * lh:
+            stretches.append([b])
+        else:
+            stretches[-1].append(b)
+    step = (c['until'] - c['at']) / CALLOUT_SAMPLES
+    kept, pending = [], []
+    for g in stretches:   # a short stretch joins the next (else the one before): its point stays clear too
+        pending += g
+        if g[-1][0] - g[0][0] + step >= CALLOUT_SETTLE:
+            kept.append(pending)
+            pending = []
+    if pending:
+        if kept:
+            kept[-1] += pending
+        else:
+            kept.append(pending)
+    out = []
+    for n, g in enumerate(kept):
+        kind, box = _callout_place(tour, st, i, k, c, area, w, h, lh, gap, g)
+        out.append((c['at'] if n == 0 else g[0][0], kind, box))
+    tour.callout_places[key] = out
+    return out
+
+
+def _callout_place(tour, st, i, k, c, area, w, h, lh, gap, samples):
+    ends = [max(col) for col in zip(*(sm[5] for sm in samples))]
+    points = [sm[2] for sm in samples]
+    wide, _ = _card_text(tour, st, (i, k), c, w)
+    for fw in (w, w * 0.8, w * 0.68):   # a narrower card fits more free space, if it cuts no more of the text
+        lines, fh = _card_text(tour, st, (i, k), c, fw)
+        if fw < w and ' '.join(lines) != ' '.join(wide):
+            break
+        card = free_callout_box(area, ends, points, samples[0][4], fw, fh, lh, gap)
+        if card is not None:
+            return 'free', card
+    if st.side is not None and not st.compact:
+        info = tour.patch_info(tour.shots[i].get('patch', 0))
+        free = sidebar.free_area(st.side, commit=info['commit'], files=info['files'], xref_stack=(), ui=UI,
+                                 mono=tour.font, scale=st.scale, graph=bool(tour.graph_nodes),
+                                 beside=st.side.w > st.side.h)
+        if free is not None and free.w >= 280:
+            sw = min(CALLOUT_W, free.w)
+            _, sh = _card_text(tour, st, (i, k), c, sw)
+            if sh <= free.h:
+                return 'side', vb.Box(free.x, free.y, sw, sh)
+    card = (far_callout_box(area, [sm[3] for sm in samples], points, w, h, lh, gap)
+            or far_callout_box(area, [], points, w, h, lh, gap))   # the hunk fills the screen
+    return ('over', card) if card is not None else ('frame', None)
+
+
+def develop_callout_at(tour, st, i, k, t):
+    """(kind, box) of edit shot i's callout k at `t`, gliding from one place to
+    the next (see `develop_callout_places`); box None: decide frame by frame."""
+    places = develop_callout_places(tour, st, i, k)
+    n = max(j for j, p in enumerate(places) if j == 0 or p[0] <= t)
+    t0, kind, box = places[n]
+    if n and box is not None and places[n - 1][2] is not None and t - t0 < CALLOUT_MOVE:
+        prev = places[n - 1][2]
+        e = vb.ease_in_out_quart(vb.clamp01((t - t0) / CALLOUT_MOVE))
+        box = vb.Box(*(a + (b - a) * e for a, b in zip(prev, box)))
+        kind = 'moving'
+    return kind, box
+
+
 def _union(a, b):
     x0, y0 = min(a.x, b.x), min(a.y, b.y)
     return vb.Box(x0, y0, max(a.right, b.right) - x0, max(a.bottom, b.bottom) - y0)
@@ -1309,24 +1496,42 @@ def _callout(tour, cv, st, where, shot, i, k, c, t):
     _callout_card(tour, cv, st, where, (i, k), c, t, target, band, point, outline=bool(c['len']))
 
 
-def _callout_card(tour, cv, st, where, key, c, t, target, band, point, outline=True):
+def callout_width(area):
+    return min(CALLOUT_W, area.w * 0.62)
+
+
+def _card_text(tour, st, key, c, w):
+    """The card's wrapped lines at width `w`, and the card's height."""
+    kicker_f, font = callout_fonts(st)
+    pad = 16 if st.compact else 18
+    key = (*key, round(w))
+    if key not in tour.callout_text:
+        tour.callout_text[key] = callout_lines(c['text'], font, w - 2 * pad - 6)
+    lines = tour.callout_text[key]
+    return lines, 2 * pad + vbtext.line_height(kicker_f) + 6 + len(lines) * vbtext.line_height(font)
+
+
+def _callout_card(tour, cv, st, where, key, c, t, target, band, point, outline=True, card=None, draw=True):
     """One commit sentence as a caption card beside the code, clear of `band`
-    (the current hunk's rows) and the `point` row (see `callout_box`), a line
-    drawn from it to `target` (callout_line_with_label's leader, called as
-    is, with the label drawn as our card); fading in, then out before
-    `until`. `key` names the callout for the wrapped-text cache."""
+    (the current hunk's rows) and the `point` row (see `callout_box`), or in
+    `card` when given, a line drawn from it to `target`
+    (callout_line_with_label's leader, called as is, with the label drawn as
+    our card); fading in, then out before `until`. `key` names the callout
+    for the wrapped-text cache. Returns the card's box (only that, without
+    `draw`)."""
     lay = where.layout
     area = _text_area(lay)
     kicker_f, font = callout_fonts(st)
     band = _union(band, vb.Box(area.x, target.y, area.w, target.h))   # the words it points at stay clear too
     pad = 16 if st.compact else 18
-    w = min(CALLOUT_W, area.w * 0.62)
-    key = (*key, round(w))
-    if key not in tour.callout_text:
-        tour.callout_text[key] = callout_lines(c['text'], font, w - 2 * pad - 6)
-    lines = tour.callout_text[key]
-    h = 2 * pad + vbtext.line_height(kicker_f) + 6 + len(lines) * vbtext.line_height(font)
-    card = callout_box(area, band, point, w, h, lay.line_h * 0.5)
+    if card is None:
+        w = callout_width(area)
+        lines, h = _card_text(tour, st, key, c, w)
+        card = callout_box(area, band, point, w, h, lay.line_h * 0.5)
+    else:
+        lines, _ = _card_text(tour, st, key, c, card.w)
+    if not draw:
+        return card
     e = vb.ease_out_quint(vb.clamp01((t - c['at']) / 0.3))
     fade = vb.clamp01((c['until'] - t) / 0.25)
     run = vb.clamp01((t - c['at'] - 0.15) / (P.CALLOUT_IN - 0.15))
@@ -1524,10 +1729,8 @@ def _changed_ranges(lines):
 ECHO_PROMPT = 'Goto line: '
 
 
-def _edit_pane(tour, cv, st, i, src, **kw):
-    """The edit shot i's buffer at natural time `src`: point, the marked
-    region, a fold still pouring, the window scrolled as Emacs would, the
-    progress strip. Returns (Placement, edits.State)."""
+def _edit_view(tour, st, i, src):
+    """The edit shot i's (layout, buffer, top, motion, edits.State) at natural time `src`."""
     s = tour.shots[i]
     perf = tour.performance(i)
     old_runs, new_runs, digits, mode = tour.edit_texts[i]
@@ -1544,6 +1747,15 @@ def _edit_pane(tour, cv, st, i, src, **kw):
                 motion = scroll_motion(a, b, into, dur, lay.line_h)
         else:
             top = vb.interpolate(into, [0, dur], [a, b], vb.ease_in_out_quart)
+    return lay, buf, top, motion, state
+
+
+def _edit_pane(tour, cv, st, i, src, **kw):
+    """The edit shot i's buffer at natural time `src`: point, the marked
+    region, a fold still pouring, the window scrolled as Emacs would, the
+    progress strip. Returns (Placement, edits.State)."""
+    s = tour.shots[i]
+    lay, buf, top, motion, state = _edit_view(tour, st, i, src)
     ranges = _changed_ranges(state.lines)
     bars = editor.minimap_bars(buf.lines[k] for k in range(len(state.lines)))
     done = s['done_before'] + state.done
@@ -1607,7 +1819,6 @@ def _edit(tour, cv, st, shot, t, i, before, after):
     card = None
     for k, c in enumerate(shot.get('callouts') or ()):
         if c['at'] <= t < c['until']:
-            lay = where.layout
             line, col = state.cursor
             point = where.line_box(line)
             # the hunk being written: the run of changed lines point is in
@@ -1616,7 +1827,13 @@ def _edit(tour, cv, st, shot, t, i, before, after):
             band = vb.Box(first.x, first.y, first.w, last.bottom - first.y)
             h = where.geometry.row_start(line, col)   # point's row of its (maybe wrapped) line, from its start to point
             target = where.word_box(line, h, max(1, col - h))
-            card = _callout_card(tour, cv, st, where, (i, k), c, t, target, band, point, outline=False)
+            args = (tour, cv, st, where, (i, k), c, t, target, band, point)
+            kind, box = develop_callout_at(tour, st, i, k, t)
+            if box is None:
+                box = _callout_card(*args, outline=False, draw=False)
+            card = box if kind != 'side' else None
+            # drawn once the side bar is, which it may sit on
+            tour.late.append(lambda cv, args=args, box=box: _callout_card(*args, outline=False, card=box))
     _speed_badge(cv, st, where, shot, t, avoid=card)
 
 

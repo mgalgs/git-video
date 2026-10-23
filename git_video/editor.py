@@ -280,25 +280,32 @@ BREAK_BEFORE = frozenset('.([{=+-*/%<>!&|^~@')
 
 
 def _may_break(text, i):
+    """0: no break before text[i]; 2: after a space; 1: before punctuation."""
     a, b = text[i - 1], text[i]
     if b == ' ':
-        return False
+        return 0
     if a == ' ':
-        return True
-    return b in BREAK_BEFORE and a not in BREAK_BEFORE and a not in '([{'
+        return 2
+    return int(b in BREAK_BEFORE and a not in BREAK_BEFORE and a not in '([{')
 
 
 @functools.lru_cache(maxsize=8192)
 def wrap_starts(text, cols):
     """The columns each screen row of `text` starts at in a window `cols`
     wide (the first is 0), wrapped as Emacs's visual-line-mode does: each row
-    as long as it can be, broken after a space or before punctuation, and
-    mid-word only for a word longer than a row. A line exactly `cols` wide
+    as long as it can be, broken after a space (or, when that would leave the
+    row less than half full, before punctuation), and mid-word only for a
+    word longer than a row. A line exactly `cols` wide
     takes one row, point at its end sitting past the last column (Emacs's
     overflow-newline-into-fringe)."""
     starts, a, n = [0], 0, len(text)
     while n - a > cols:
-        b = next((i for i in range(a + cols, a, -1) if _may_break(text, i)), a + cols)
+        kinds = {i: _may_break(text, i) for i in range(a + cols, a, -1)}
+        space = next((i for i, k in kinds.items() if k == 2), None)
+        if space is not None and space - a >= cols // 2:   # a space break unless it leaves the row half empty
+            b = space
+        else:
+            b = next((i for i, k in kinds.items() if k), a + cols)
         starts.append(b)
         a = b
     return tuple(starts)
@@ -315,7 +322,7 @@ def row_of(starts, col):
     return r, col - starts[r]
 
 
-def _plain_text(runs):
+def line_text(runs):
     return ''.join(t for _, t in runs)
 
 
@@ -351,7 +358,7 @@ class Geometry:
         """The columns `ln`'s screen rows start at (see `wrap_starts`)."""
         r = self._rows.get(ln)
         if r is None:
-            r = self._rows[ln] = wrap_starts(_plain_text(self.lines[ln]), self.cols) if 0 <= ln < self.n else (0,)
+            r = self._rows[ln] = wrap_starts(line_text(self.lines[ln]), self.cols) if 0 <= ln < self.n else (0,)
         return r
 
     def rows(self, ln):
@@ -378,7 +385,7 @@ class Geometry:
         return self.y0 + self.offset(ln) * self.lay.line_h
 
     def old_rows(self, seg, upto=None):
-        return sum(wrap_rows(_plain_text(r), self.cols) for r in seg.old[:upto])
+        return sum(wrap_rows(line_text(r), self.cols) for r in seg.old[:upto])
 
     def new_rows(self, seg, upto=None):
         return sum(self.rows(seg.line + r) for r in range(seg.new if upto is None else upto))
@@ -602,7 +609,7 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                         taken.append((y, y + lh))
                     vbtext.draw(cv, ['−'], small, box.x, y + (lh - sh) / 2, theme.fringe_removed, align='center',
                                 width=lay.fringe_w, alpha=a)
-                    rows = wrap_rows(_plain_text(old), geo.cols)
+                    rows = wrap_rows(line_text(old), geo.cols)
                     for r in range(1, rows):
                         if at + r < h:
                             _continuation(cv, lay, y + r * lh, theme, a)
@@ -860,7 +867,7 @@ def _draw_segment(cv, lay, buf, seg, top, p, font, theme, geo):
     ghost = seg.new == 0
     old_at = [geo.old_rows(seg, r) for r in range(len(seg.old) + 1)]
     new_at = [geo.new_rows(seg, r) for r in range(seg.new + 1)]
-    old_starts = [wrap_starts(_plain_text(r), geo.cols) for r in seg.old]
+    old_starts = [wrap_starts(line_text(r), geo.cols) for r in seg.old]
     new_starts = [geo.starts(seg.line + r) for r in range(seg.new)]
 
     def old_y(row):
