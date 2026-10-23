@@ -45,11 +45,13 @@ XREF_TRAVEL = 0.7         # the pointer glides to the word
 XREF_CLICK = 0.7          # ... and clicks it
 XREF_RIPPLE = 0.35
 XREF_KEYS = (1.1, 1.2)    # M, .
-XREF_SWITCH = 1.4         # the definition's buffer shows
+XREF_SWITCH = 1.4         # the definition's buffer starts to open out of the word ...
+XREF_REVEAL = 0.4         # ... and fills the pane (taken out of the definition's dwell)
 XREF_SWEEP = 0.5
 XREF_DUR = 4.4
 POP_KEYS = (0.08, 0.18)   # M, ,
-POP_SWITCH = 0.35
+POP_SWITCH = 0.35         # the definition starts to close back into the word ...
+POP_REVEAL = 0.35         # ... and is gone
 POP_DUR = 1.3
 
 MAP_DUR = 2.2             # the repo map, wide, its changed tiles lighting one by one

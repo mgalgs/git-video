@@ -9,14 +9,17 @@ entry. `draw(n, cv)` is pure: everything it shows is derived from the shot
 list and tables built once here (the treemap per format among them).
 """
 import bisect
+import math
 import re
 from dataclasses import dataclass, replace
 
 import videobuilder as vb
 from videobuilder import text as vbtext
 from videobuilder.capabilities.broadcast.click_ripple_indicator import click_ripple
-from videobuilder.capabilities.broadcast.cursor_path_animation import CursorPose, cursor_path, draw_cursor
+from videobuilder.capabilities.broadcast.cursor_path_animation import cursor_path
 from videobuilder.capabilities.broadcast.zoom_to_location_map import fly_to
+from videobuilder.capabilities.ui.circular_clip_reveal import GROW, circular_reveal, reach
+from videobuilder.capabilities.ui.cursor_state_change import draw_cursor as draw_state_cursor, hover_amount
 
 from . import editor, highlight, plan as P, repomap, sidebar, sounds
 
@@ -215,7 +218,9 @@ class Tour:
                 out.append((f0 + round(t * self.fps), f'hunk {s["path"]}#{s["index"] + 1}'))
             elif kind == 'xref-push':
                 out.append((f0 + round((P.XREF_CLICK + 0.12) * self.fps), f'xref {s["name"]} click'))
-                out.append((f0 + round((P.XREF_SWITCH + P.XREF_SWEEP + 0.4) * self.fps), f'xref {s["name"]} def'))
+                out.append((f0 + round((P.XREF_SWITCH + P.XREF_REVEAL * 0.4) * self.fps), f'xref {s["name"]} dive'))
+                out.append((f0 + round((P.XREF_SWITCH + P.XREF_REVEAL + P.XREF_SWEEP + 0.4) * self.fps),
+                            f'xref {s["name"]} def'))
         return tuple((min(n, self.frames - 1), label) for n, label in out)
 
     # ---- drawing ----
@@ -362,50 +367,125 @@ def settle(t):
     return 1 - (1 - SETTLED) * _ease(t, 0.0, 0.6)
 
 
+def _reveal(cv, box, a, b, p, center, r0):
+    """circular_reveal kept to `box`: its circle is eased to cover the box's
+    farthest corner (not the frame's) as p reaches 1."""
+    cx, cy = center
+    far = max(((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 for x in (box.x, box.right) for y in (box.y, box.bottom))
+    k = (far + 2 - r0) / (reach(cv, cx, cy) + 2 - r0)
+    with cv.clip(*box):
+        circular_reveal(cv, a, b, p, center=center, r0=r0, ease=lambda x: GROW(x) * k)
+        if 0 < p < 1:   # a rim on the circle, so the opening reads even between two look-alike panes
+            r = r0 + (far + 2 - r0) * GROW(vb.clamp01(p))
+            cv.arc(cx, cy, r, 0, 2 * math.pi, THEME.xref_box, width=4, alpha=0.9 * (1 - vb.clamp01(p)) ** 0.5)
+
+
+def _word_box(tour, st, view, line, col, n):
+    """Where a word lands in the pane showing `view`, without drawing it."""
+    buf = tour.buffers[view.path] if view.path else SCRATCH
+    return _layout(st, buf).word_box(line, col, n, _fitted(tour, st, view))
+
+
+def _xref_source(tour, cv, st, shot, t, before):
+    """The pane the xref starts from: the pointer's word boxed once clicked,
+    `M-.` in the echo area. Returns its Placement."""
+    use_line, col, name = shot['line'] - 1, shot['col'], shot['name']
+    moved = t >= P.XREF_CLICK
+    cursor = (use_line, col) if moved else before.cursor
+    view = View(before.path, before.top, use_line, cursor, before.stack)
+    boxes = [(use_line, col, len(name))] if moved else []
+    echo = 'M-.' if t >= P.XREF_KEYS[0] else ''
+    return _pane(tour, cv, st, view, boxes=boxes, echo=echo, blink=None if moved else t + 1.0)
+
+
 def _xref_push(tour, cv, st, shot, t, i, before, after):
+    """M-. as a dive: the pointer turns into a target over the word, the click
+    ripples, and the definition's buffer opens out of the word in a growing
+    circle (circular_clip_reveal)."""
     use_line, col, name = shot['line'] - 1, shot['col'], shot['name']
     if t < P.XREF_SWITCH:
-        moved = t >= P.XREF_CLICK
-        view = before if not moved else View(before.path, before.top, before.focus, (use_line, col), before.stack)
-        view = View(view.path, view.top, use_line, view.cursor, view.stack)
-        boxes = [(use_line, col, len(name))] if moved else []
-        echo = 'M-.' if t >= P.XREF_KEYS[0] else ''
-        where = _pane(tour, cv, st, view, boxes=boxes, echo=echo, blink=None if moved else t + 1.0)
+        where = _xref_source(tour, cv, st, shot, t, before)
         wb = where.word_box(use_line, col, len(name))
         cv.mark('xref.word', *wb)
-        cx, cy = wb.cx, wb.cy
-        if moved:
-            click_ripple(cv, cx, cy, (t - P.XREF_CLICK) / P.XREF_RIPPLE, color=THEME.xref_box,
+        if t >= P.XREF_CLICK:
+            click_ripple(cv, wb.cx, wb.cy, (t - P.XREF_CLICK) / P.XREF_RIPPLE, color=THEME.xref_box,
                          reach=where.layout.line_h * 1.5, width=4)
-        _pointer(cv, st.main, (cx, cy + where.layout.line_h * 0.15), t)
+        _pointer(cv, st.main, wb, where.layout.line_h, t)
         return
     d = after.cursor
-    p = vb.clamp01((t - P.XREF_SWITCH) / P.XREF_SWEEP)
-    band = (d[0], vb.ease_in_out_quart(p), settle(t - P.XREF_SWITCH - P.XREF_SWEEP))
-    _pane(tour, cv, st, after, sweeps=[band], boxes=[(d[0], d[1], len(name))],
-          blink=t - P.XREF_SWITCH)
+    p = vb.clamp01((t - P.XREF_SWITCH - P.XREF_REVEAL) / P.XREF_SWEEP)
+    band = (d[0], vb.ease_in_out_quart(p), settle(t - P.XREF_SWITCH - P.XREF_REVEAL - P.XREF_SWEEP))
+
+    def definition(cv):
+        _pane(tour, cv, st, after, sweeps=[band], boxes=[(d[0], d[1], len(name))], blink=t - P.XREF_SWITCH)
+
+    q = (t - P.XREF_SWITCH) / P.XREF_REVEAL
+    if q >= 1:
+        definition(cv)
+        return
+    wb = _word_box(tour, st, View(before.path, before.top, use_line, (use_line, col), before.stack),
+                   use_line, col, len(name))
+    _reveal(cv, st.main, lambda c: _xref_source(tour, c, st, shot, t, before), definition, q, (wb.cx, wb.cy),
+            wb.h * 0.4)
+    cv.mark('xref.word', *wb)
 
 
-def _pointer(cv, box, target, t):
-    """The mouse pointer gliding in from the pane's lower right to `target`,
-    resting through the click, then fading."""
+def pointer_at(box, target, t):
+    """The pointer's tip at `t` s into an xref push: gliding in from the pane's
+    lower right to `target`, resting through the click."""
     start = (box.right - box.w * 0.12, box.bottom - box.h * 0.18)
+    pose = cursor_path([start, target], t, start=0.0, travel=P.XREF_TRAVEL, dwell=0.4, bend=0.18)
+    return pose.x, pose.y
+
+
+def hover_at(t, word, box, line_h):
+    """How far the pointer has turned from an arrow into a target (0 -> 1) at
+    `t`: by its distance to the word's box."""
+    x, y = pointer_at(box, (word.cx, word.cy + line_h * 0.15), t)
+    return hover_amount(x, y, word, reach=line_h * 1.5)
+
+
+def _pointer(cv, box, word, line_h, t):
+    """The mouse pointer gliding to the word, folding into a round target as it
+    arrives (cursor_state_change), resting through the click, then fading."""
     fade = 1 - vb.clamp01((t - (P.XREF_CLICK + 0.45)) / 0.25)
     if fade <= 0:
         return
-    pose = cursor_path([start, target], t, start=0.0, travel=P.XREF_TRAVEL, dwell=0.4, bend=0.18)
-    with cv.layer(opacity=fade):
-        draw_cursor(cv, CursorPose(pose.x, pose.y, pose.stop, -1.0), scale=1.5, color='#ffffff', edge='#1c1f24')
+    x, y = pointer_at(box, (word.cx, word.cy + line_h * 0.15), t)
+    with cv.layer(opacity=fade * 0.85):
+        b = draw_state_cursor(cv, x, y, hover_at(t, word, box, line_h), color=THEME.xref_box, ink='#1c1f24',
+                              radius=line_h * 0.3, size=1.5)
+    cv.mark('xref.pointer', *b)
 
 
 def _xref_pop(tour, cv, st, shot, t, i, before, after):
+    """M-, as the dive in reverse: the definition shrinks back into the word it
+    came from, in a closing circle, easing back as it goes (the zoom-out-reveal
+    feel, drawn here inside the pane rather than over the whole frame)."""
     echo = 'M-,' if t >= P.POP_KEYS[0] else ''
     if t < P.POP_SWITCH:
         _pane(tour, cv, st, before, echo=echo)
         return
     fade = 1 - vb.clamp01((t - P.POP_SWITCH) / 0.5)
-    boxes = [(after.cursor[0], after.cursor[1], len(shot['name']))] if fade > 0.5 else []
-    _pane(tour, cv, st, after, boxes=boxes, echo=echo if t < P.POP_SWITCH + 0.3 else '', blink=t - P.POP_SWITCH)
+    word = (after.cursor[0], after.cursor[1], len(shot['name']))
+    boxes = [word] if fade > 0.5 else []
+
+    def back(cv):
+        _pane(tour, cv, st, after, boxes=boxes, echo=echo if t < P.POP_SWITCH + 0.3 else '', blink=t - P.POP_SWITCH)
+
+    q = (t - P.POP_SWITCH) / P.POP_REVEAL
+    if q >= 1:
+        back(cv)
+        return
+    wb = _word_box(tour, st, after, *word)
+    cx, cy = wb.cx, wb.cy
+    k = 1 - 0.15 * vb.ease_in_out_quart(q)
+
+    def leaving(cv):
+        with cv.layer(dx=cx * (1 - k), dy=cy * (1 - k), scale=k):
+            _pane(tour, cv, st, before, echo=echo)
+
+    _reveal(cv, st.main, back, leaving, 1 - q, (cx, cy), wb.h * 0.4)
 
 
 EDITOR_KINDS = {'open': _open, 'hunk': _hunk, 'xref-push': _xref_push, 'xref-pop': _xref_pop}

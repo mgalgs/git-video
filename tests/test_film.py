@@ -52,7 +52,7 @@ class TestFilm(unittest.TestCase):
         self.assertEqual(code, 0)
         labels = [label for _, label in self.tour.film.keyframes]
         for want in ('title', 'map', 'dive src/app.py', 'travel tests/test_app.py', 'open src/lib.py',
-                     'hunk src/app.py#1', 'xref frob click', 'xref frob def', 'end'):
+                     'hunk src/app.py#1', 'xref frob click', 'xref frob dive', 'xref frob def', 'end'):
             self.assertIn(want, labels)
         for fmt in ('16x9', '9x16', '1x1'):
             self.assertTrue(os.path.isfile(os.path.join(out, f'sheet-{fmt}.png')))
@@ -116,6 +116,27 @@ class TestFilm(unittest.TestCase):
         self.assertNotIn('editor.text', dict(mid.marks))   # out on the map between the two
         self.assertEqual(self.tour.state(self.frame_of('travel', plan.TRAVEL_SWITCH + 0.05)[1])[0],
                          'tests/test_app.py')
+
+    def test_pointer_hover_reaches_the_word(self):
+        i, n = self.frame_of('xref-push', plan.XREF_CLICK)
+        cv = self.tour.film.frame(n, '16x9')
+        marks = dict(cv.marks)
+        word, st = marks['xref.word'], film.stage(cv)
+        lh = film._layout(st, self.tour.buffers['src/app.py']).line_h
+        self.assertEqual(film.hover_at(0, word, st.main, lh), 0)
+        self.assertGreaterEqual(film.hover_at(plan.XREF_CLICK, word, st.main, lh), 0.99)
+        self.assertTrue(marks['xref.pointer'].intersects(word))
+
+    def test_xref_reveal_is_between_panes(self):
+        fps = self.plan.fps
+        for kind, switch, reveal in (('xref-push', plan.XREF_SWITCH, plan.XREF_REVEAL),
+                                     ('xref-pop', plan.POP_SWITCH, plan.POP_REVEAL)):
+            frames = [self.frame_of(kind, t)[1] for t in (switch - 1 / fps, switch + reveal / 2, switch + reveal + 0.1)]
+            a, mid, b = (self.tour.film.frame(n, '16x9') for n in frames)
+            self.assertNotEqual(mid.bgra(), a.bgra(), kind)
+            self.assertNotEqual(mid.bgra(), b.bgra(), kind)
+            if kind == 'xref-push':
+                self.assertIn('xref.word', dict(mid.marks))
 
     def test_lit_order_follows_files(self):
         (m,) = [s for s in self.plan.shots if s['kind'] == 'map']
