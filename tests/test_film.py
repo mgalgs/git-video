@@ -128,7 +128,7 @@ class TestFilm(unittest.TestCase):
         cv = self.tour.film.frame(n, '16x9')
         marks = dict(cv.marks)
         word, st = marks['xref.word'], film.stage(cv)
-        lh = film._layout(st, self.tour.buffers['src/app.py']).line_h
+        lh = film._layout(st, self.tour.buffers[0, 'src/app.py', 'new']).line_h
         self.assertEqual(film.hover_at(0, word, st.main, lh), 0)
         self.assertGreaterEqual(film.hover_at(plan.XREF_CLICK, word, st.main, lh), 0.99)
         self.assertTrue(marks['xref.pointer'].intersects(word))
@@ -364,7 +364,7 @@ class TestFilm(unittest.TestCase):
             cv = tour.film.frame(n, fmt)
             marks = dict(cv.marks)
             seg, text = marks['editor.segment 0'], marks['editor.text']
-            lay = film._layout(film.stage(cv), tour.buffers['lib.py'])
+            lay = film._layout(film.stage(cv), tour.buffers[0, 'lib.py', 'new'])
             self.assertAlmostEqual(seg.h, 6 * lay.line_h, places=3, msg=fmt)
             self.assertLessEqual(seg.bottom, text.bottom + 1e-6, fmt)
 
@@ -513,13 +513,13 @@ class TestFilm(unittest.TestCase):
         word, text = marks['xref.word'], marks['editor.text']
         self.assertTrue(text.contains(word))
         st = film.stage(cv)
-        lay = film._layout(st, self.tour.buffers['src/app.py'])
+        lay = film._layout(st, self.tour.buffers[0, 'src/app.py', 'new'])
         self.assertAlmostEqual(word.w, len('frob') * lay.cell_w, places=3)
         self.assertEqual(lay.hit(word.x + 1, word.cy, film.fit_top(*self._top(i, lay))), (4, 11))
 
     def _top(self, i, lay):
         v = self.tour.views[i][0]
-        return v.top, 4, lay.rows, len(self.tour.buffers['src/app.py'].lines)
+        return v.top, 4, lay.rows, len(self.tour.buffers[0, 'src/app.py', 'new'].lines)
 
     @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'needs ffmpeg')
     def test_render_smoke(self):

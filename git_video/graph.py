@@ -46,6 +46,12 @@ def _hunk_of(change, path, index):
     return None, None
 
 
+def _changes(change):
+    """The changes a plan's shots come from, by their `patch` field: a list
+    (one per --series patch) or one change for all."""
+    return change if isinstance(change, (list, tuple)) else [change]
+
+
 def _changed(h):
     return [n for a, b in h.added for n in range(a, b + 1)]
 
@@ -56,52 +62,58 @@ def build(change, shots):
     hunk's changed lines (`touched`) or a dive's target; its `first` is the
     shot that discovers it. Edges: `xref` per dive, from the hunk's node to
     the definition; `call` from a touched definition to another node whose
-    name it uses on a changed line. At most MAX_NODES nodes, by discovery."""
+    name it uses on a changed line. At most MAX_NODES nodes, by discovery.
+    `change` may be a list of changes, one per --series patch: each shot is
+    read against the change its `patch` names."""
+    changes = _changes(change)
     nodes, edges = {}, []
     defs_of, holders_of = {}, {}
 
-    def defs(path):
-        if path not in defs_of:
-            text = change.text(path) or ''
-            defs_of[path] = xref.file_defs(change.repo, change.target, path)
-            holders_of[path] = xref.enclosures(text.split('\n'), defs_of[path])
-        return defs_of[path]
+    def defs(k, path):
+        if (k, path) not in defs_of:
+            ch = changes[k]
+            text = ch.text(path) or ''
+            defs_of[k, path] = xref.file_defs(ch.repo, ch.target, path)
+            holders_of[k, path] = xref.enclosures(text.split('\n'), defs_of[k, path])
+        return defs_of[k, path]
 
-    def enclosing(path, n):
-        hs = holders_of[path]
+    def enclosing(k, path, n):
+        hs = holders_of[k, path]
         return hs[n - 1] if 0 < n <= len(hs) else None
 
-    def holder(path, ns):
-        defs(path)
+    def holder(k, path, ns):
+        defs(k, path)
         for n in ns:
-            e = enclosing(path, n)
+            e = enclosing(k, path, n)
             if e:
                 return e
         return None
 
-    touched_ranges = {}   # path -> set of (name, line) holding a changed line
-    for f in change.files:
-        if f.text is None:
-            continue
-        defs(f.path)
-        for h in f.hunks:
-            for n in _changed(h):
-                e = enclosing(f.path, n)
-                if e:
-                    touched_ranges.setdefault(f.path, set()).add((e[0], e[1].line))
+    touched_ranges = {}   # (patch, path) -> set of (name, line) holding a changed line
+    for k, ch in enumerate(changes):
+        for f in ch.files:
+            if f.text is None:
+                continue
+            defs(k, f.path)
+            for h in f.hunks:
+                for n in _changed(h):
+                    e = enclosing(k, f.path, n)
+                    if e:
+                        touched_ranges.setdefault((k, f.path), set()).add((e[0], e[1].line))
     source, hunk_of_shot = None, {}
     for i, s in enumerate(shots):
+        k = s.get('patch', 0)
         if s['kind'] == 'hunk':
-            f, h = _hunk_of(change, s['path'], s['index'])
-            defs(s['path'])
-            e = holder(s['path'], [s['focus_line'], *_changed(h), *(g[0] for g in h.segments)]) if h else None
+            f, h = _hunk_of(changes[k], s['path'], s['index'])
+            defs(k, s['path'])
+            e = holder(k, s['path'], [s['focus_line'], *_changed(h), *(g[0] for g in h.segments)]) if h else None
             source = _node(nodes, s['path'], e[0], e[1].line, e[1].kind, True, i) if e else None
             s['node'] = source
             hunk_of_shot[i] = h
         elif s['kind'] == 'xref-push':
             d = s['definition']
-            defs(d['path'])
-            touched = (s['name'], d['line']) in touched_ranges.get(d['path'], ())
+            defs(k, d['path'])
+            touched = (s['name'], d['line']) in touched_ranges.get((k, d['path']), ())
             if source is None:   # a dive from top-level code: the file itself is the source
                 source = _node(nodes, s['path'], os.path.basename(s['path']), 1, 'module', True, i)
             b = _node(nodes, d['path'], s['name'], d['line'], d['kind'], touched, i)
@@ -117,8 +129,9 @@ def build(change, shots):
         lang = xref.lang_of(s.get('path', '')) if a else None
         if not a or h is None or lang is None:
             continue
-        index = xref.index(change.repo, change.target, lang)
-        for c in xref.candidates(change.text(s['path']), s['path'], _changed(h)):
+        ch = changes[s.get('patch', 0)]
+        index = xref.index(ch.repo, ch.target, lang)
+        for c in xref.candidates(ch.text(s['path']), s['path'], _changed(h)):
             d = xref.resolve(c, index, s['path'])
             b = by_def.get((d.path, d.line)) if d else None
             if b and b != a and (a, b) not in seen:
@@ -224,8 +237,8 @@ def state_at(graph, shots, i, t, current, trail):
         elif n['first'] == i:
             if kind == 'xref-push' and shots[i].get('node') == n['id'] and shots[i].get('edge') is not None:
                 nodes[n['id']] = vb.clamp01((t - (r1 - 0.15)) / POP)
-            else:
-                nodes[n['id']] = vb.clamp01(t / POP)
+            else:   # a node written while a develop shot types it pops in at its `at`
+                nodes[n['id']] = vb.clamp01((t - n.get('at', 0.0)) / POP)
     for k, e in enumerate(graph['edges']):
         if e['first'] < i:
             edges[k] = 1.0
@@ -235,6 +248,8 @@ def state_at(graph, shots, i, t, current, trail):
                 edges[k] = p
                 if 0 < p < 1:
                     route = (k, p)
+            elif 'at' in e:   # a call typed in a develop shot grows as its line is written
+                edges[k] = vb.clamp01((t - e['at']) / POP)
             else:
                 d = shots[i]['dur']
                 edges[k] = vb.clamp01((t - GROW[0] * d) / ((GROW[1] - GROW[0]) * d))

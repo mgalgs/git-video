@@ -14,7 +14,7 @@ from videobuilder.type.typewriter import schedule
 
 from . import callouts as callouts_mod, graph as graphmod, highlight, repomap, worddiff, xref
 
-VERSION = 1
+VERSION = 2
 FPS = 30
 PLAN_ROWS = 26            # rows the planner assumes are on screen: the fewest any format shows (16x9)
 # The film re-scrolls to keep the focus line off the window's last row
@@ -58,6 +58,7 @@ FOCUS_OUT = 0.3           # ... and comes back up before the shot ends
 CALLOUT_IN = 0.8          # a commit sentence's card fades in and its line runs to the words
 CALLOUT_EACH = 2.6        # each callout stays at least this long (the hunk's read grows to fit)
 CALLOUT_MAX_PER_HUNK = 2
+INTER_DUR = 2.6           # the card between two patches of a --series
 
 XREF_TRAVEL = 0.7         # the pointer glides to the word
 XREF_CLICK = 0.7          # ... and clicks it
@@ -163,6 +164,10 @@ class Plan:
     next: dict | None = None  # {'short', 'subject'} of the commit after the target on HEAD's line
     map: dict | None = None   # the repo map's groups and tiles (repomap.tiles)
     graph: dict | None = None # the call graph's nodes and edges (graph.build)
+    mode: str = 'tour'        # tour or develop
+    # One entry per patch performed or toured: the whole change set, or with
+    # --series each commit of the range (see `patch_entry`).
+    patches: list = field(default_factory=list)
 
     def to_json(self):
         return json.dumps(asdict(self), indent=2, sort_keys=True, ensure_ascii=False)
@@ -296,26 +301,36 @@ def _place_callouts(change, shots, readings):
         s['dur'] = round(hunk_dwell(visible, morph=morph, far=far, callouts=len(picks)), 3)
 
 
-def plan(change, verbose=0):
-    """The tour of `change` as a Plan."""
-    files = [{'path': f.path, 'old_path': f.old_path, 'status': f.status, 'added': f.added,
-              'deleted': f.deleted, 'binary': f.binary, 'lines': f.lines,
-              'marks': {'added': [list(r) for h in f.hunks for r in h.added],
-                        'removed_at': [r for h in f.hunks for r in h.removed_at]}} for f in change.files]
-    name = repo_name(change.repo)
-    tree_map = repomap.tiles(change.tree, files, root=name)
-    tiled = {t['path'] for g in tree_map['groups'] for t in g['tiles'] if 'path' in t}
-    shots = [shot('card', 'title', TITLE_DUR)]
-    lit = [f['path'] for f in files if f['path'] in tiled]   # the changed files' tiles light in tour order
-    if lit:   # nothing changed on the map (only deletions): nothing to show there
-        shots.append(shot('map', 'map', MAP_DUR, lit=lit))
+def file_entries(change):
+    """The plan's `files`: what the side bar lists and the fringe marks, per file."""
+    return [{'path': f.path, 'old_path': f.old_path, 'status': f.status, 'added': f.added,
+             'deleted': f.deleted, 'binary': f.binary, 'lines': f.lines,
+             'marks': {'added': [list(r) for h in f.hunks for r in h.added],
+                       'removed_at': [r for h in f.hunks for r in h.removed_at]}} for f in change.files]
+
+
+def patch_entry(change, first_shot):
+    """One patch of the plan: its commit and files (what the side bar shows while
+    it plays), its size, and from which shot it plays. The develop planner adds
+    its budget: `lines` performed, the `budget`, the `natural` and the `perf`
+    (played) length of its edit shots, in seconds."""
+    return {'commit': _commit_info(change), 'files': file_entries(change), 'added': change.added,
+            'deleted': change.deleted, 'lines': None, 'budget': None, 'natural': None, 'perf': None,
+            'first_shot': first_shot}
+
+
+def _tour_body(change, verbose, patch):
+    """The tour of one change: per file an `enter` (resolved later) and its hunk
+    shots, the commit sentences placed, the xref visits inserted after their
+    hunks. Shot indices in the body are its own, from 0."""
+    shots = []
     hunk_shots = 0
     hunks = []   # (index into shots of the hunk shot, file, candidates)
     readings = []   # (index into shots, file, hunk, top, visible added lines)
     for f in change.files:
         if f.text is None:
             continue   # deleted or binary: listed in the side bar, not visited
-        shots.append(shot('map', 'enter', 0, path=f.path))   # resolved below, once the xrefs are known
+        shots.append(shot('map', 'enter', 0, path=f.path, patch=patch))   # resolved once the xrefs are known
         last_top = 0   # where the view is when the scroll to the next hunk starts
         for i, h in enumerate(f.hunks):
             if hunk_shots >= MAX_HUNK_SHOTS and i > 0:
@@ -344,11 +359,10 @@ def plan(change, verbose=0):
                 if segments else None
             shots.append(shot('editor', 'hunk', hunk_dwell(len(visible), morph=bool(morph), far=far), path=f.path,
                               index=i, top=top, added=shown, removed_at=list(h.removed_at), focus_line=focus,
-                              focus=span, scroll='far' if far else 'near', morph=morph))
+                              focus=span, scroll='far' if far else 'near', morph=morph, patch=patch))
             readings.append((len(shots) - 1, f, h, top, len(visible)))
             pickable = [n for n in visible if n <= top + XREF_ROWS]
             hunks.append((len(shots) - 1, f, top, _hunk_candidates(change, f, top, pickable)))
-    shots.append(shot('card', 'end', END_DUR))
     _place_callouts(change, shots, readings)
 
     # Xref visits, within the --verbose budget, inserted after their hunk.
@@ -374,30 +388,71 @@ def plan(change, verbose=0):
                 total -= 1
     tops = {si: top for si, _, top, _ in hunks}
     out = []
-    current, opened = None, set()   # the file on screen; files a definition visit has opened
     for si, s in enumerate(shots):
-        if s['kind'] == 'enter':
-            path = s['path']
-            if path in opened or path not in tiled:   # already seen (or not on the map): open it the editor's way
-                *_, dur = open_timing(path)
-                s = shot('editor', 'open', dur, path=path, keys=f'C-x C-f {path}')
-            elif current is None:
-                s = shot('map', 'dive', DIVE_DUR, path=path)
-            else:
-                s = shot('map', 'travel', TRAVEL_DUR, path=current, to=path)
-            current = path
         out.append(s)
         for c, d in picks.get(si, ()):
             lines = change.text(d.path).count('\n') + 1
             out.append(shot('editor', 'xref-push', XREF_DUR, path=s['path'], line=c.line, col=c.col, name=c.name,
                             definition={'path': d.path, 'line': d.line, 'kind': d.kind, 'col': d.col},
-                            def_top=scroll_top(d.line, lines)))
+                            def_top=scroll_top(d.line, lines), patch=patch))
             out.append(shot('editor', 'xref-pop', POP_DUR, path=s['path'], back_top=tops[si], line=c.line,
-                            col=c.col, name=c.name))
-            opened.add(d.path)
+                            col=c.col, name=c.name, patch=patch))
+    return out
 
+
+def _resolve_enters(shots, tiled):
+    """Each `enter` becomes the way into its file: a dive from the map for a
+    patch's first file, a travel over the map from the file before, or `C-x
+    C-f` for a file already seen in the patch (a definition visit opened it) or
+    not on the map."""
+    out = []
+    current, opened, patch = None, set(), None   # the file on screen; files a definition visit has opened
+    for s in shots:
+        if s.get('patch') != patch:
+            current, opened, patch = None, set(), s.get('patch')
+        if s['kind'] == 'enter':
+            path = s['path']
+            if path in opened or path not in tiled:   # already seen (or not on the map): open it the editor's way
+                *_, dur = open_timing(path)
+                s = shot('editor', 'open', dur, path=path, keys=f'C-x C-f {path}', patch=s['patch'])
+            elif current is None:
+                s = shot('map', 'dive', DIVE_DUR, path=path, patch=s['patch'])
+            else:
+                s = shot('map', 'travel', TRAVEL_DUR, path=current, to=path, patch=s['patch'])
+            current = path
+        elif s['kind'] == 'xref-push':
+            opened.add(s['definition']['path'])
+        out.append(s)
+    return out
+
+
+def build(change, verbose=0, mode='tour', patches=None):
+    """The Plan of `change` in `mode`: a tour, or with `patches` (the change's
+    commits as changes of their own, oldest first) one tour per patch."""
+    patches = patches or [change]
+    files = file_entries(change)
+    name = repo_name(change.repo)
+    tree_map = repomap.tiles(change.tree, files, root=name)
+    tiled = {t['path'] for g in tree_map['groups'] for t in g['tiles'] if 'path' in t}
+    shots = [shot('card', 'title', TITLE_DUR, patch=0)]
+    lit = [f['path'] for f in files if f['path'] in tiled]   # the changed files' tiles light in tour order
+    if lit:   # nothing changed on the map (only deletions): nothing to show there
+        shots.append(shot('map', 'map', MAP_DUR, lit=lit, patch=0))
+    entries = []
+    for k, ch in enumerate(patches):
+        if k:
+            shots.append(shot('card', 'patch', INTER_DUR, patch=k))
+        entries.append(patch_entry(ch, len(shots)))
+        shots += _tour_body(ch, verbose, k)
+    shots.append(shot('card', 'end', END_DUR, patch=len(patches) - 1))
+    out = _resolve_enters(shots, tiled)   # one shot per shot: each patch's first_shot still holds
     nxt = {'short': change.next.short, 'subject': change.next.subject} if change.next else None
-    call_graph = graphmod.build(change, out)
+    call_graph = graphmod.build(patches, out)
     return Plan(VERSION, FPS, change.base, change.target, change.label, change.is_range, _commit_info(change),
                 files, verbose, out, round(sum(s['dur'] for s in out), 3), repo=name, next=nxt,
-                map=tree_map, graph=call_graph)
+                map=tree_map, graph=call_graph, mode=mode, patches=entries)
+
+
+def plan(change, verbose=0):
+    """The tour of `change` as a Plan."""
+    return build(change, verbose)

@@ -81,6 +81,8 @@ class View:
     cursor: tuple               # (line, col), 0-based
     stack: tuple                # ((name, path, line), ...), oldest first
     extra: int = 0              # rows a morph's old lines add past the file's end before they go
+    patch: int = 0              # the --series patch whose text is shown
+    variant: str = 'new'        # the file as the patch leaves it (`new`) or finds it (`old`)
 
 
 SCRATCH_TEXT = (';; This buffer is for text that is not saved, and for Lisp evaluation.\n'
@@ -112,12 +114,13 @@ class Tour:
     """A plan made into a film. `film` is the vb.Film; `shot_frames[i]` is the
     first frame of shot i (where a later narration track would hook in)."""
 
-    def __init__(self, plan, change, formats=FORMATS, font='monospace', log=None):
+    def __init__(self, plan, change, formats=FORMATS, font='monospace', log=None, patches=None):
         for s in plan.shots:
             if s['scene'] not in SCENES:
                 raise ValueError(f'unknown scene {s["scene"]!r} in a {s["kind"]!r} shot; '
                                  f'known: {", ".join(SCENES)}')
         self.plan, self.change, self.font = plan, change, font
+        self.patches = list(patches) if patches else [change]   # the change of each --series patch
         self.fps = plan.fps
         self.shots = plan.shots
         starts, acc = [], 0.0
@@ -126,19 +129,25 @@ class Tour:
             acc += s['dur']
         self.shot_frames = starts
         self.frames = max(1, round(acc * self.fps))
+        # Buffers by (patch, path, variant); the fringe's +/− marks and tints by
+        # (patch, path), from the plan.
         self.buffers, self.marks = {}, {}
-        for f in plan.files:   # the fringe's +/− marks and tints, from the plan
-            m = f.get('marks') or {}
-            added = [(a - 1, b - 1) for a, b in m.get('added', ())]
-            self.marks[f['path']] = (sorted({n for a, b in added for n in range(a, b + 1)}),
-                                     sorted(set(m.get('removed_at', ()))), added)
+        for k in range(len(self.patches)):
+            for f in self.patch_info(k)['files']:
+                m = f.get('marks') or {}
+                added = [(a - 1, b - 1) for a, b in m.get('added', ())]
+                self.marks[k, f['path']] = (sorted({n for a, b in added for n in range(a, b + 1)}),
+                                            sorted(set(m.get('removed_at', ()))), added)
         for s in self.shots:
+            k = s.get('patch', 0)
             for path in (s.get('path'), s.get('to'), (s.get('definition') or {}).get('path')):
-                if path and path not in self.buffers:
-                    text = change.text(path)
+                if path and (k, path, 'new') not in self.buffers:
+                    ch = self.patches[k]
+                    text = ch.text(path)
                     if text is None:
-                        raise ValueError(f'{path} has no text at {change.target[:12]} to show')
-                    self.buffers[path] = editor.Buffer(path, highlight.highlight_lines(text, path), _mode(path))
+                        raise ValueError(f'{path} has no text at {ch.target[:12]} to show')
+                    self.buffers[k, path, 'new'] = editor.Buffer(path, highlight.highlight_lines(text, path),
+                                                                 _mode(path))
         self.views = self._views()
         self.segments = {}   # hunk shot index -> its morph's editor.Segments (old lines highlighted once)
         for i, s in enumerate(self.shots):
@@ -157,9 +166,10 @@ class Tour:
             self.graph_home.append(dict(home))
         self.callout_text = {}   # (shot, callout, width) -> its wrapped lines, once per format
         self.minimaps = {}   # the minimap per buffer: bars and marks, computed once
-        for path, buf in self.buffers.items():
-            added, removed, ranges = self.marks.get(path, ((), (), ()))
-            self.minimaps[path] = editor.Minimap(editor.minimap_bars(buf.lines), tuple(ranges), tuple(removed))
+        for (k, path, variant), buf in self.buffers.items():
+            added, removed, ranges = self.marks.get((k, path), ((), (), ()))
+            self.minimaps[k, path, variant] = editor.Minimap(editor.minimap_bars(buf.lines), tuple(ranges),
+                                                             tuple(removed))
         self.maps = {}   # the treemap per main box, laid out once
         if plan.map:
             for f in formats:
@@ -169,16 +179,30 @@ class Tour:
                             sounds=sounds.sounds_for(self.shots, self.shot_frames, self.fps, log=log),
                             keyframes=self.keyframes())
 
+    def patch_info(self, k):
+        """The plan's entry for patch k: its commit and files. With one patch
+        (no --series, or a hand-written plan without patches) they are the
+        plan's own."""
+        ps = self.plan.patches or ()
+        if len(ps) <= 1:
+            return {**(ps[0] if ps else {}), 'commit': self.plan.commit, 'files': self.plan.files}
+        return ps[k]
+
+    def buffer(self, view):
+        """The editor.Buffer `view` shows (the scratch buffer for no file)."""
+        return self.buffers[view.patch, view.path, view.variant] if view.path else SCRATCH
+
     def map_layout(self, box):
         k = tuple(box)
         if k not in self.maps:
             self.maps[k] = repomap.layout(self.plan.map or {'groups': []}, box)
         return self.maps[k]
 
-    def _def_col(self, path, line, name):
+    def _def_col(self, path, line, name, patch=0):
         """Where `name` sits on its definition line: the first whole-word match
         (a hand-written plan may lack the definition's `col`)."""
-        runs = self.buffers[path].lines[line - 1] if 0 < line <= len(self.buffers[path].lines) else ()
+        lines = self.buffers[patch, path, 'new'].lines
+        runs = lines[line - 1] if 0 < line <= len(lines) else ()
         m = re.search(rf'(?<![\w$]){re.escape(name)}(?![\w$])', ''.join(t for _, t in runs))
         return m.start() if m else 0
 
@@ -187,27 +211,27 @@ class Tour:
         out = []
         cur = View(None, 0, 0, (0, 0), ())
         for s in self.shots:
-            before, kind = cur, s['kind']
+            before, kind, k = cur, s['kind'], s.get('patch', 0)
             if kind == 'map':
                 cur = View(None, 0, 0, (0, 0), cur.stack)
             elif kind in ('open', 'dive', 'travel'):
-                cur = View(s.get('to', s['path']), 0, 0, (0, 0), cur.stack)
+                cur = View(s.get('to', s['path']), 0, 0, (0, 0), cur.stack, patch=k)
             elif kind == 'hunk':
                 focus = s['focus_line'] - 1
-                runs = self.buffers[s['path']].lines
+                runs = self.buffers[k, s['path'], 'new'].lines
                 col = _first_col(runs[focus]) if focus < len(runs) else 0
                 grow = sum(max(0, len(g['old']) - g['new']) for g in (s.get('morph') or {}).get('segments', ()))
-                cur = View(s['path'], s['top'], focus, (focus, col), cur.stack, grow)
+                cur = View(s['path'], s['top'], focus, (focus, col), cur.stack, grow, patch=k)
             elif kind == 'xref-push':
                 d = s['definition']
                 dl = d['line'] - 1
                 entry = (s['name'], d['path'], d['line'])
-                col = d['col'] if 'col' in d else self._def_col(d['path'], d['line'], s['name'])
+                col = d['col'] if 'col' in d else self._def_col(d['path'], d['line'], s['name'], k)
                 cur = View(d['path'], s['def_top'], dl, (dl, col),
-                           cur.stack + (entry,))
+                           cur.stack + (entry,), patch=k)
             elif kind == 'xref-pop':
                 ln = s['line'] - 1
-                cur = View(s['path'], s['back_top'], ln, (ln, s['col']), cur.stack[:-1])
+                cur = View(s['path'], s['back_top'], ln, (ln, s['col']), cur.stack[:-1], patch=k)
             out.append((before, cur))
         return out
 
@@ -293,7 +317,8 @@ class Tour:
             SCENES[shot['scene']](self, cv, st.main, shot, t, i, st)
             if st.side is not None:
                 path, stack = self.state(n)
-                kw = dict(commit=self.plan.commit, files=self.plan.files, current_path=path, xref_stack=stack,
+                info = self.patch_info(shot.get('patch', 0))   # a --series side bar follows its patch
+                kw = dict(commit=info['commit'], files=info['files'], current_path=path, xref_stack=stack,
                           ui=UI, mono=self.font)
                 if st.compact:   # no room for the graph in 1:1
                     sidebar.draw_strip(cv, st.side, **kw)
@@ -649,18 +674,18 @@ def draw_editor(tour, cv, box, shot, t, i, st):
 
 def _pane(tour, cv, st, view, top=None, **kw):
     """Draw the editor showing `view` (its scroll fitted to this format's rows)."""
-    buf = tour.buffers[view.path] if view.path else SCRATCH
+    buf = tour.buffer(view)
     lay = _layout(st, buf)
     if top is None:
         top = fit_top(view.top, view.focus, lay.rows, len(buf.lines) + view.extra)
-    added, removed, tints = tour.marks.get(view.path, ((), (), ()))
+    added, removed, tints = tour.marks.get((view.patch, view.path), ((), (), ()))
     kw.setdefault('cursor', view.cursor)
     return editor.draw(cv, lay, buf, top, marks_added=added, marks_removed_at=removed, tints=tints,
-                       minimap=tour.minimaps.get(view.path), theme=THEME, **kw)
+                       minimap=tour.minimaps.get((view.patch, view.path, view.variant)), theme=THEME, **kw)
 
 
 def _fitted(tour, st, view):
-    buf = tour.buffers[view.path] if view.path else SCRATCH
+    buf = tour.buffer(view)
     lay = _layout(st, buf)
     return fit_top(view.top, view.focus, lay.rows, len(buf.lines) + view.extra)
 
@@ -719,7 +744,7 @@ def focus_amount(shot, t, landed):
 def _hunk(tour, cv, st, shot, t, i, before, after):
     """Scroll to the hunk; morph its replaced and removed lines from old to new;
     sweep a highlighter over the lines that are only added."""
-    buf = tour.buffers[after.path]
+    buf = tour.buffer(after)
     lay = _layout(st, buf)
     rows = lay.rows
     a = _fitted(tour, st, before) if before.path == after.path else 0.0
@@ -793,20 +818,16 @@ def callout_box(area, band, target, w, h, gap):
     return box
 
 
+def _text_area(lay):
+    """The text area's whole rows."""
+    return lay.text_box.pad(0, 0, max(0.0, lay.text_box.h - lay.rows * lay.line_h), 0)
+
+
 def _callout(tour, cv, st, where, shot, i, k, c, t):
-    """One commit sentence as a caption card beside the code, a line drawn from
-    it to the words it names (callout_line_with_label's leader, called as is,
-    with the label drawn as our card); fading in, then out before `until`."""
+    """A hunk's commit sentence: its card beside the hunk's lit band, its line
+    to the words it names (or, for a deletion, to the gap the lines left)."""
     lay = where.layout
-    area = lay.text_box.pad(0, 0, max(0.0, lay.text_box.h - lay.rows * lay.line_h), 0)
-    kicker_f, font = callout_fonts(st)
-    pad = 16 if st.compact else 18
-    w = min(CALLOUT_W, area.w * 0.62)
-    key = (i, k, round(w))
-    if key not in tour.callout_text:
-        tour.callout_text[key] = callout_lines(c['text'], font, w - 2 * pad - 6)
-    lines = tour.callout_text[key]
-    h = 2 * pad + vbtext.line_height(kicker_f) + 6 + len(lines) * vbtext.line_height(font)
+    area = _text_area(lay)
     f0, f1 = shot['focus']
     band = vb.Box(area.x, where.layout.line_y(f0 - 1, where.scroll_top), area.w,
                   max(lay.line_h, (f1 - f0 + 1) * lay.line_h))
@@ -815,12 +836,30 @@ def _callout(tour, cv, st, where, shot, i, k, c, t):
     else:   # a deletion: the gap the lines left, where its − rule is
         gy = lay.line_y(c['line'] - 1, where.scroll_top)
         target = vb.Box(lay.text_box.x, gy - 2, lay.cell_w * 6, 4)
+    _callout_card(tour, cv, st, where, (i, k), c, t, target, band, outline=bool(c['len']))
+
+
+def _callout_card(tour, cv, st, where, key, c, t, target, band, outline=True):
+    """One commit sentence as a caption card beside the code, clear of `band`,
+    a line drawn from it to `target` (callout_line_with_label's leader, called
+    as is, with the label drawn as our card); fading in, then out before
+    `until`. `key` names the callout for the wrapped-text cache."""
+    lay = where.layout
+    area = _text_area(lay)
+    kicker_f, font = callout_fonts(st)
+    pad = 16 if st.compact else 18
+    w = min(CALLOUT_W, area.w * 0.62)
+    key = (*key, round(w))
+    if key not in tour.callout_text:
+        tour.callout_text[key] = callout_lines(c['text'], font, w - 2 * pad - 6)
+    lines = tour.callout_text[key]
+    h = 2 * pad + vbtext.line_height(kicker_f) + 6 + len(lines) * vbtext.line_height(font)
     card = callout_box(area, band, target, w, h, lay.line_h * 0.5)
     e = vb.ease_out_quint(vb.clamp01((t - c['at']) / 0.3))
     fade = vb.clamp01((c['until'] - t) / 0.25)
     run = vb.clamp01((t - c['at'] - 0.15) / (P.CALLOUT_IN - 0.15))
     with cv.layer(opacity=fade):
-        if run > 0.7 and c['len']:
+        if run > 0.7 and outline:
             a = vb.clamp01((run - 0.7) / 0.3)
             cv.outline(target.x - 3, target.y + 1, target.w + 6, target.h - 2, THEME.cursor, width=2.5, radius=4,
                        alpha=a)
@@ -865,8 +904,7 @@ def _reveal(cv, box, a, b, p, center, r0):
 
 def _word_box(tour, st, view, line, col, n):
     """Where a word lands in the pane showing `view`, without drawing it."""
-    buf = tour.buffers[view.path] if view.path else SCRATCH
-    return _layout(st, buf).word_box(line, col, n, _fitted(tour, st, view))
+    return _layout(st, tour.buffer(view)).word_box(line, col, n, _fitted(tour, st, view))
 
 
 def _xref_source(tour, cv, st, shot, t, before):
@@ -875,7 +913,7 @@ def _xref_source(tour, cv, st, shot, t, before):
     use_line, col, name = shot['line'] - 1, shot['col'], shot['name']
     moved = t >= P.XREF_CLICK
     cursor = (use_line, col) if moved else before.cursor
-    view = View(before.path, before.top, use_line, cursor, before.stack, before.extra)
+    view = replace(before, focus=use_line, cursor=cursor)
     boxes = [(use_line, col, len(name))] if moved else []
     echo = 'M-.' if t >= P.XREF_KEYS[0] else ''
     return _pane(tour, cv, st, view, boxes=boxes, echo=echo, blink=None if moved else t + 1.0)
@@ -906,8 +944,7 @@ def _xref_push(tour, cv, st, shot, t, i, before, after):
     if q >= 1:
         definition(cv)
         return
-    wb = _word_box(tour, st, View(before.path, before.top, use_line, (use_line, col), before.stack, before.extra),
-                   use_line, col, len(name))
+    wb = _word_box(tour, st, replace(before, focus=use_line, cursor=(use_line, col)), use_line, col, len(name))
     _reveal(cv, st.main, lambda c: _xref_source(tour, c, st, shot, t, before), definition, q, (wb.cx, wb.cy),
             wb.h * 0.4)
     cv.mark('xref.word', *wb)
