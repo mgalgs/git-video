@@ -4,9 +4,10 @@ The frame is a stage: `stage(cv)` names its boxes per format (the main box,
 the side bar's), and each shot's `scene` picks the draw function that plays
 in the main box (`SCENES`): the title/end `card`, the `editor`, and the
 repo `map`, whose camera moves (`dive`, `travel`) carry the tour from the
-map into a file and from file to file. A call graph would be one more
-entry. `draw(n, cv)` is pure: everything it shows is derived from the shot
-list and tables built once here (the treemap per format among them).
+map into a file and from file to file. `draw(n, cv)` is pure: everything
+it shows is derived from the shot list and tables built once here (the
+treemap and the call graph per box, the morphs' highlighted old lines and
+the minimaps among them).
 """
 import bisect
 import math
@@ -29,7 +30,7 @@ from videobuilder.capabilities.ui.cursor_state_change import draw_cursor as draw
 from videobuilder.capabilities.principles.time_remapping import speed_ramp
 from videobuilder.capabilities.ui.scroll_velocity_skew import scroll_velocity, velocity_skew
 
-from . import editor, highlight, plan as P, repomap, sidebar, sounds
+from . import editor, graph as graphmod, highlight, plan as P, repomap, sidebar, sounds
 
 THEME = editor.Theme()
 FORMATS = ('16x9', '9x16', '1x1')
@@ -146,6 +147,14 @@ class Tour:
                     editor.Segment(g['at'], highlight.highlight_lines('\n'.join(g['old']) + '\n', s['path']),
                                    g['new'], tuple(tuple(o) for o in g['ops']))
                     for g in s['morph']['segments'])
+        self.graph_layouts = {}   # the call graph per side-bar box, laid out once
+        self.graph_nodes = {n['id'] for n in (plan.graph or {}).get('nodes', ())}
+        self.graph_home = []   # per shot: the node of the last hunk shown in its file
+        home = {}
+        for s in self.shots:
+            if s['kind'] == 'hunk':
+                home[s['path']] = s.get('node')
+            self.graph_home.append(dict(home))
         self.callout_text = {}   # (shot, callout, width) -> its wrapped lines, once per format
         self.minimaps = {}   # the minimap per buffer: bars and marks, computed once
         for path, buf in self.buffers.items():
@@ -219,7 +228,7 @@ class Tour:
         return v.path, v.stack
 
     def keyframes(self):
-        out, hunks, travels, seen = [], 0, 0, set()
+        out, hunks, travels, seen, graphed = [], 0, 0, set(), False
         for i, s in enumerate(self.shots):
             f0, kind = self.shot_frames[i], s['kind']
             if kind == 'map':
@@ -258,6 +267,10 @@ class Tour:
             elif kind == 'xref-push':
                 out.append((f0 + round((P.XREF_CLICK + 0.12) * self.fps), f'xref {s["name"]} click'))
                 out.append((f0 + round((P.XREF_SWITCH + P.XREF_REVEAL * 0.4) * self.fps), f'xref {s["name"]} dive'))
+                if not graphed and s.get('edge') is not None:
+                    graphed = True
+                    r0, r1 = graphmod.route_span()
+                    out.append((f0 + round((r0 + 0.6 * (r1 - r0)) * self.fps), f'graph {s["name"]} route'))
                 out.append((f0 + round((P.XREF_SWITCH + P.XREF_REVEAL + P.XREF_SWEEP + 0.4) * self.fps),
                             f'xref {s["name"]} def'))
         return tuple((min(n, self.frames - 1), label) for n, label in out)
@@ -281,10 +294,35 @@ class Tour:
                 path, stack = self.state(n)
                 kw = dict(commit=self.plan.commit, files=self.plan.files, current_path=path, xref_stack=stack,
                           ui=UI, mono=self.font)
-                if st.compact:
+                if st.compact:   # no room for the graph in 1:1
                     sidebar.draw_strip(cv, st.side, **kw)
                 else:
-                    sidebar.draw(cv, st.side, scale=st.scale, **kw)
+                    graph = None
+                    if self.graph_nodes:
+                        def graph(c, box, i=i, t=t, path=path, stack=stack):
+                            self.draw_graph(c, box, i, t, path, stack, st.scale)
+                    sidebar.draw(cv, st.side, scale=st.scale, graph=graph, beside=st.side.w > st.side.h, **kw)
+
+    def graph_layout(self, box, scale):
+        k = (tuple(box), scale)
+        if k not in self.graph_layouts:
+            self.graph_layouts[k] = graphmod.layout(self.plan.graph, box, scale)
+        return self.graph_layouts[k]
+
+    def graph_current(self, i, path, stack):
+        """The node on screen: the top of the xref stack, else the last hunk's
+        node in the file in view."""
+        if stack:
+            name, p, _ = stack[-1]
+            nid = f'{p}:{name}'
+            return nid if nid in self.graph_nodes else None
+        return self.graph_home[i].get(path)
+
+    def draw_graph(self, cv, box, i, t, path, stack, scale):
+        trail = [f'{p}:{name}' for name, p, _ in stack]
+        state = graphmod.state_at(self.plan.graph, self.shots, i, t, self.graph_current(i, path, stack), trail)
+        graphmod.draw(cv, self.graph_layout(box, scale), self.plan.graph, state, color=THEME.cursor,
+                      accent=THEME.xref_box, bg=sidebar.Style().bg, scale=scale)
 
 
 def _layout(st, buf):

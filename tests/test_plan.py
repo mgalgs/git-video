@@ -182,6 +182,20 @@ class TestPlan(unittest.TestCase):
         steps = [s for s in kinds(big, 'hunk') if s['path'] == 'big.py'][1:]
         self.assertEqual({s['scroll'] for s in steps}, {'near'})
 
+    def test_graph_shot_fields(self):
+        p = self.plans[3]
+        ids = {n['id'] for n in p.graph['nodes']}
+        for s in p.shots:
+            if s['kind'] == 'hunk':
+                self.assertIn('node', s)
+                self.assertTrue(s['node'] is None or s['node'] in ids)
+            if s['kind'] == 'xref-push':
+                self.assertIn(s['node'], ids)
+                self.assertEqual(p.graph['edges'][s['edge']]['b'], s['node'])
+        code, out, _ = quiet(cli.main, ['-C', self.repo, '--plan-json', self.sha['change']])
+        doc = json.loads(out)
+        self.assertEqual(set(doc['graph']), {'nodes', 'edges'})
+
     def test_large_hunk_dwell(self):
         repo = fixtures.make_big_repo(self.tmp.name + '/large')
         p = plan.plan(collect.collect(repo, 'HEAD'))

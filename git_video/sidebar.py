@@ -1,5 +1,5 @@
-"""The side bar beside (or under) the editor: the commit, the changed files and
-the xref stack, for orientation. The current file is marked with `▶` and
+"""The side bar beside (or under) the editor: the commit, the changed files,
+the call graph and the xref stack, for orientation. The current file is marked with `▶` and
 weight, not only colour."""
 from dataclasses import dataclass
 
@@ -80,9 +80,12 @@ def _fonts(ui, mono, scale):
 
 
 def draw(cv, box, *, commit, files, current_path, xref_stack, ui='sans-serif', mono='monospace', scale=1.0,
-         style=Style()):
+         style=Style(), graph=None, beside=False):
     """The full side bar in `box`. `commit`: the plan's commit dict; `files`: the
     plan's file dicts; `xref_stack`: [(name, path, line)], oldest first.
+    `graph(cv, box)`: draws the call graph into its section's box, between
+    the files and the xref stack, or (`beside`, for a wide, short bar) in a
+    column of its own on the right.
     Returns the files rows as drawn: [(texts, weight)]."""
     F = _fonts(ui, mono, scale)
     box = vb.Box(*box)
@@ -93,18 +96,31 @@ def draw(cv, box, *, commit, files, current_path, xref_stack, ui='sans-serif', m
         hh = vbtext.line_height(F['head'])
         rh = vbtext.line_height(F['row'])
         gap = 22 * scale
-        # Reserve the xref and files sections first; the commit takes what is left.
+        graph_box = None
+        if graph is not None and beside:
+            inner, graph_box = inner.row(vb.fr, vb.fr * 0.62, gap=gap * 1.5)
+        # Reserve the xref, files and graph sections first; the commit takes what is left.
         xref_rows = max(2, min(4, len(xref_stack)))
         xref_h = hh + 8 * scale + xref_rows * rh
         file_rows_n = len(files)
-        max_files = max(1, int((inner.h * 0.38 - hh) // rh))
+        max_files = max(1, int((inner.h * (0.30 if graph is not None and not beside else 0.38) - hh) // rh))
         files_shown = min(file_rows_n, max_files)
         files_h = hh + 8 * scale + files_shown * rh
-        commit_h = max(0.0, inner.h - xref_h - files_h - 2 * gap)
-        c_box, f_box, x_box = inner.column(commit_h, files_h, xref_h, gap=gap)
+        if graph is not None and not beside:
+            graph_h = min(240 * scale, inner.h * 0.26)
+            commit_h = max(0.0, inner.h - xref_h - files_h - graph_h - 3 * gap)
+            c_box, f_box, graph_box, x_box = inner.column(commit_h, files_h, graph_h, xref_h, gap=gap)
+        else:
+            commit_h = max(0.0, inner.h - xref_h - files_h - 2 * gap)
+            c_box, f_box, x_box = inner.column(commit_h, files_h, xref_h, gap=gap)
         _commit(cv, c_box, commit, F, style)
         drawn = _files(cv, f_box, files, current_path, files_shown, F, style)
         _xref(cv, x_box, xref_stack, xref_rows, F, style)
+        if graph_box is not None:
+            cv.mark('sidebar.graph', *graph_box)
+            with cv.clip(*graph_box):
+                y = _header(cv, graph_box, 'CALL GRAPH', F, style)
+                graph(cv, vb.Box(graph_box.x, y + 6 * scale, graph_box.w, graph_box.bottom - y - 6 * scale))
     return drawn
 
 

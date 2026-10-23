@@ -224,7 +224,10 @@ class TestFilm(unittest.TestCase):
             ed = [b for name, b in cv.marks if name.startswith('editor.')]
             sb = [b for name, b in cv.marks if name.startswith('sidebar.')]
             self.assertEqual(len(ed), 6)   # text, mode line, echo, minimap, viewport, focus
-            self.assertEqual(len(sb), 3, fmt)
+            self.assertEqual(len(sb), 3 if fmt == '1x1' else 4, fmt)   # commit, files, xref (+ graph)
+            for k, b in enumerate(sb):
+                for c in sb[k + 1:]:
+                    self.assertFalse(b.intersects(c), (fmt, b, c))
             for b in ed:
                 self.assertTrue(st.main.contains(b), (fmt, b))
                 for c in sb:
@@ -309,26 +312,35 @@ class TestFilm(unittest.TestCase):
         fixtures.commit(delete, 'Drop gone()')
         ch = collect.collect(delete, 'HEAD')
         tours.append(film.Tour(plan.plan(ch), ch, log=io.StringIO()))
+        for make in (lambda d: fixtures.make_far_repo(d), lambda d: fixtures.make_graph_repo(d),
+                     lambda d: fixtures.make_callout_repo(d)[0]):
+            ch = collect.collect(make(self.tmp.name + f'/kf{len(tours)}'), 'HEAD')
+            tours.append(film.Tour(plan.plan(ch), ch, log=io.StringIO()))
         labels = [label for t in tours for _, label in t.film.keyframes]
-        self.assertIn('morph src/lib.py#1', labels)
-        self.assertIn('morph m.py#2', labels)
-        self.assertIn('ghost a.py#1', labels)
+        for want in ('morph src/lib.py#1', 'morph m.py#2', 'ghost a.py#1', 'scroll far.py#2', 'graph helper route',
+                     'callout lib.py#1'):
+            self.assertIn(want, labels)
         for tour in tours:
             for n, label in tour.film.keyframes:
-                if label.split()[0] not in ('morph', 'ghost'):
+                kind = label.split()[0]
+                if kind not in ('morph', 'ghost', 'callout', 'scroll', 'graph'):
                     continue
                 i, t = tour.at(n)
-                self.assertTrue(0 < film.morph_progress(tour.shots[i], t) < 1, label)
+                if kind in ('morph', 'ghost'):
+                    self.assertTrue(0 < film.morph_progress(tour.shots[i], t) < 1, label)
                 for fmt in ('16x9', '9x16', '1x1'):
                     cv = tour.film.frame(n, fmt)
                     st = film.stage(cv)
-                    names = [name for name, _ in cv.marks]
-                    self.assertIn('editor.segment 0', names, (label, fmt))
+                    marks = dict(cv.marks)
+                    if kind in ('morph', 'ghost'):
+                        self.assertIn('editor.segment 0', marks, (label, fmt))
                     for name, b in cv.marks:
-                        if name.startswith('editor.'):
+                        if name.startswith(('editor.', 'callout.')):
                             self.assertTrue(st.main.contains(b), (label, fmt, name, b))
                         if name.startswith('sidebar.'):
                             self.assertTrue(st.side.contains(b), (label, fmt, name, b))
+                        if name.startswith('graph.'):
+                            self.assertTrue(marks['sidebar.graph'].contains(b), (label, fmt, name, b))
 
     def test_ghost_at_end_of_file_is_shown(self):
         # Deleting the last lines of a long file: the window must not be

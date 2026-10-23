@@ -127,6 +127,64 @@ def make_callout_repo(tmp):
     return repo, {'root': root, 'head': head}
 
 
+GRAPH_LIB = '''from util import helper
+
+
+def frob(x):
+    return x * 2
+
+
+SPACER = [
+    1,
+    2,
+    3,
+]
+
+
+def main():
+    return 1
+'''
+
+
+def make_graph_repo(tmp):
+    """util.py defines helper(); lib.py defines frob() and main(). HEAD makes
+    frob() call helper() and main() call frob()."""
+    repo = os.path.join(tmp, 'graph')
+    init(repo)
+    write(repo, 'util.py', 'def helper(x):\n    return x + 1\n')
+    write(repo, 'lib.py', GRAPH_LIB)
+    commit(repo, 'Start')
+    write(repo, 'lib.py', GRAPH_LIB.replace('return x * 2', 'return helper(x) * 2').replace('return 1', 'return frob(3)'))
+    commit(repo, 'Wire them up')
+    return repo
+
+
+def make_call_first_repo(tmp):
+    """GRAPH_LIB again, but HEAD changes frob()'s body without a call and makes
+    main() call frob() and helper(): the call edge main -> frob is found at
+    main's hunk, before the dive into helper() that follows it."""
+    repo = os.path.join(tmp, 'callfirst')
+    init(repo)
+    write(repo, 'util.py', 'def helper(x):\n    return x + 1\n')
+    write(repo, 'lib.py', GRAPH_LIB)
+    commit(repo, 'Start')
+    write(repo, 'lib.py', GRAPH_LIB.replace('return x * 2', 'return x * 3').replace('return 1', 'return helper(frob(3))'))
+    commit(repo, 'Call both')
+    return repo
+
+
+def make_many_defs_repo(tmp, n=15):
+    """lib.py with n functions far apart; HEAD changes every one's body."""
+    repo = os.path.join(tmp, 'many')
+    init(repo)
+    body = ''.join(f'def f{i}(x):\n    return x + {i}\n' + '\n' * 8 for i in range(n))
+    write(repo, 'lib.py', body)
+    commit(repo, 'Start')
+    write(repo, 'lib.py', body.replace('return x + ', 'return x - '))
+    commit(repo, 'Flip them all')
+    return repo
+
+
 FAR_LINES = 300
 
 
