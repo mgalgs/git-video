@@ -113,6 +113,23 @@ class TestEditor(unittest.TestCase):
         self.assertFalse(numbered & set(drawn))
         self.assertEqual(sum(t == '+' and f is not lay.font for t, x, y, f, k in calls), 1)   # on its first row only
 
+    def test_point_past_an_exactly_full_line_stays_in_the_text_area(self):
+        for width in range(890, 905):
+            lay = editor.layout(vb.Box(0, 0, width, 600), FONT, minimap=True)
+            buf = buffer('z' * lay.cols + '\nabc\n')
+            cv = vb.Canvas(1000, 700, '#000')
+            where = editor.draw(cv, lay, buf, 0, cursor=(0, lay.cols))
+            self.assertTrue(lay.text_box.contains(where.cursor_box), (width, where.cursor_box, lay.text_box))
+            self.assertEqual(where.cursor_box.y, lay.line_y(0, 0))
+            # a region over that line's newline keeps it on line 0's row: nothing over line 1 but its own
+            geo = editor.Geometry(lay, buf.lines, 0)
+            pieces = geo.pieces(0, 0, lay.cols + 1)
+            self.assertEqual([round(y, 2) for x, y, w in pieces], [round(lay.line_y(0, 0), 2)])
+            self.assertAlmostEqual(pieces[0][2], (lay.cols + 1) * lay.cell_w)
+            self.assertTrue(lay.text_box.right >= pieces[0][0] + pieces[0][2] - 1e-6)
+            (x, y, w), = geo.pieces(0, lay.cols, lay.cols + 1)
+            self.assertEqual((x, y), (lay.col_x(lay.cols), lay.line_y(0, 0)))
+
     def test_keep_in_view_with_wrapped_lines(self):
         lay = editor.layout(vb.Box(0, 0, 900, 600), FONT)
         long = 'z' * (lay.cols * 4)

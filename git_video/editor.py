@@ -95,8 +95,10 @@ class Layout:
 
     @property
     def cols(self):
-        """Whole text columns the text area shows."""
-        return max(1, int(self.text_box.w // self.cell_w))
+        """Whole text columns the text area shows, less one: point at the end
+        of a line exactly this wide sits in that last cell, past the last
+        column (Emacs's right fringe), and never under the minimap."""
+        return max(1, int(self.text_box.w // self.cell_w) - 1)
 
     def line_y(self, line, scroll_top):
         """Top of `line` when the view starts at `scroll_top`."""
@@ -367,13 +369,24 @@ class Geometry:
 
     def pieces(self, ln, c0, c1):
         """[(x, y, w)]: the columns c0..c1 of `ln`, one piece per screen row."""
-        return [(x, y, (b - a) * self.lay.cell_w) for a, b, x, y in self._split(c0, c1, self.y(ln))]
+        return [(x, y, (b - a) * self.lay.cell_w) for a, b, x, y in self._split(c0, c1, self.y(ln), self.rows(ln))]
 
-    def _split(self, c0, c1, y0):
+    def _split(self, c0, c1, y0, rows=None):
+        """[(a, b, x, y)] per screen row. With the line's `rows`, columns past
+        its last row (the newline cell of a line filling it exactly) stay at
+        that row's end, as `at` puts point there."""
         out, a, cols, lh = [], c0, self.cols, self.lay.line_h
         while a < c1 or (a == c1 == c0):
             b = min(c1, (a // cols + 1) * cols)
-            out.append((a, b, self.lay.col_x(a % cols), y0 + (a // cols) * lh))
+            r = a // cols
+            if rows is not None and r >= rows and r > 0 and a % cols == 0:
+                y = y0 + (r - 1) * lh
+                if out and out[-1][3] == y:
+                    out[-1] = (out[-1][0], b, out[-1][2], y)
+                else:
+                    out.append((a, b, self.lay.col_x(cols), y))
+            else:
+                out.append((a, b, self.lay.col_x(a % cols), y0 + r * lh))
             if b == a:
                 break
             a = b

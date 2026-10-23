@@ -191,6 +191,8 @@ def resolve(cand, defs, use_path, text=None):
         # an import line names a module's own definition, or a module: (b) or nothing
         hits = [d for d in every if imported(use_path, here)[0].get(cand.name, _Paths()).has(d.path)]
         return hits[0] if len(hits) == 1 else None
+    if qual is None and not cand.is_call and lines is not None and _bound(lines, cand):
+        return None   # a variable, parameter or field of that name, not the function
     # (a) the same class, else the same file
     if qual is None or qual in SELF:
         mine = [d for d in every if d.path == use_path]
@@ -237,6 +239,44 @@ def resolve(cand, defs, use_path, text=None):
     if python:   # `x.name` in Python: a method, as top-level functions come through (b)
         return d if d.owner == 'class' and cand.name not in BUILTIN_METHODS else None
     return d if d.owner in (None, 'class') else None   # Go's `func (r *T) Read` is top level
+
+
+_SCOPE = re.compile(r'^\s*(?:async\s+)?(?:def|class|function\*?|func|fn)\b')
+
+
+def _bound(lines, cand):
+    """Whether `cand`'s bare name is bound in a scope around it: assigned or
+    annotated, a loop or `as` target, a declared variable, or a parameter of
+    an enclosing function, in an enclosing block or at the top level. Such a
+    name is that variable, whatever function shares it."""
+    name = re.escape(cand.name)
+    binds = re.compile(rf'(?<![\w.$]){name}\s*(?::[^=\n]*)?=(?!=)|^\s*{name}\s*:'
+                       rf'|\bfor\b[^:\n]*(?<![\w.$]){name}\b[^:\n]*\bin\b|\bas\s+{name}\b'
+                       rf'|\b(?:const|let|var)\s+{name}\b')
+    word = re.compile(rf'(?<![\w.$]){name}\b')
+    tab = [s.expandtabs(highlight.TAB) for s in lines]
+    ln = min(cand.line, len(tab)) - 1
+    if ln < 0:
+        return False
+    ind = _indent(tab[ln]) if tab[ln].strip() else 0
+    blocks = []   # (header line, its indent) of each enclosing def/class, innermost first
+    for k in range(ln, -1, -1):
+        s = tab[k]
+        if s.strip() and _indent(s) < ind:
+            ind = _indent(s)
+            if _SCOPE.match(s):
+                blocks.append((k, ind))
+    for k, hind in blocks:
+        head = ' '.join(tab[k:k + 10])
+        params = head[head.find('('):head.find(')') + 1] if '(' in head else ''
+        if not re.match(r'\s*class\b', head) and word.search(params):   # a class's bases are uses
+            return True
+        end = k + 1
+        while end < len(tab) and (not tab[end].strip() or _indent(tab[end]) > hind):
+            end += 1
+        if any(binds.search(s) for s in tab[k + 1:end]):
+            return True
+    return any(binds.search(s) for s in tab if s.strip() and _indent(s) == 0)
 
 
 def _reaches(lines, d, line):

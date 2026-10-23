@@ -303,8 +303,40 @@ class TestPlan(unittest.TestCase):
         defs, C = self.xref_defs(), xref.Candidate
         d = xref.resolve(C(2, 4, 'frobnicate', True), defs, 'pkg/main.py', 'import os\n    frobnicate(2)\n')
         self.assertEqual(d.path, 'pkg/util.py')
-        d = xref.resolve(C(2, 7, 'frobnicate', True), defs, 'pkg/main.py', 'import os\nthing.frobnicate(2)\n')
-        self.assertEqual(d.path, 'pkg/util.py')
+        # `thing.frobnicate` in Python: rung (c) offers a method only, and util's is a top-level def
+        self.assertIsNone(xref.resolve(C(2, 6, 'frobnicate', True), defs, 'pkg/main.py', 'import os\nthing.frobnicate(2)\n'))
+
+    def test_xref_names_bound_in_scope_do_not_dive(self):
+        # a variable, parameter or field sharing a function's name is that variable
+        from git_video import xref
+        defs, C = self.xref_defs(), xref.Candidate
+        text = 'def report(rows):\n    frobnicate = 0\n    return frobnicate\n'
+        self.assertIsNone(xref.resolve(C(2, 4, 'frobnicate', False), defs, 'pkg/main.py', text))
+        self.assertIsNone(xref.resolve(C(3, 11, 'frobnicate', False), defs, 'pkg/main.py', text))
+        text = 'def report(rows, frobnicate=None):\n    return frobnicate\n'
+        self.assertIsNone(xref.resolve(C(2, 11, 'frobnicate', False), defs, 'pkg/main.py', text))
+        text = 'class Pane:\n    frobnicate: int\n\n    def show(self):\n        return frobnicate\n'
+        self.assertIsNone(xref.resolve(C(2, 4, 'frobnicate', False), defs, 'pkg/main.py', text))
+        text = 'def report(rows):\n    for frobnicate in rows:\n        print(frobnicate)\n'
+        self.assertIsNone(xref.resolve(C(3, 14, 'frobnicate', False), defs, 'pkg/main.py', text))
+        # a function passed by name is still a use of it, and so is a call
+        text = 'def report(rows):\n    return sorted(rows, key=frobnicate)\n'
+        self.assertEqual(xref.resolve(C(2, 28, 'frobnicate', False), defs, 'pkg/main.py', text).path, 'pkg/util.py')
+        text = 'class Pane(Base):\n    def show(self, rows):\n        return frobnicate(rows)\n'
+        self.assertEqual(xref.resolve(C(3, 15, 'frobnicate', True), defs, 'pkg/main.py', text).path, 'pkg/util.py')
+
+    def test_xref_local_variable_end_to_end(self):
+        repo = self.tmp.name + '/shadow'
+        fixtures.init(repo)
+        fixtures.write(repo, 'util.py', 'def total(items):\n    return sum(items)\n')
+        fixtures.write(repo, 'app.py', 'import util\n')
+        fixtures.commit(repo, 'Add util')
+        fixtures.write(repo, 'app.py', 'import util\n\n\ndef report(rows):\n    total = 0\n'
+                       '    for r in rows:\n        total += r\n    return total\n')
+        fixtures.commit(repo, 'Add report')
+        ch = collect.collect(repo, 'HEAD')
+        pushes = [s for s in plan.plan(ch, 0).shots if s['kind'] == 'xref-push']
+        self.assertFalse([s for s in pushes if s['name'] == 'total'], pushes)
 
     def test_xref_ambiguous_does_not_dive(self):
         from git_video import xref

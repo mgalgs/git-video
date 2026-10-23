@@ -490,6 +490,24 @@ class TestFilm(unittest.TestCase):
             editor.draw(ref, lay, buf, 0.0, motion=(1.5, 0.015))
         self.assertEqual(len(calls), len(set(calls)))
 
+    def test_develop_jump_scroll_glides(self):
+        # an `M-g g` jump puts point on its line at once; the view still ramps there
+        ch = collect.collect(fixtures.make_far_repo(self.tmp.name + '/fardev'), 'HEAD')
+        tour = film.Tour(plan.build(ch, 0, 'develop'), ch, formats=('16x9',), log=io.StringIO())
+        (i,) = [k for k, s in enumerate(tour.shots) if s['kind'] == 'edit']
+        tops, real = [], editor.draw
+
+        def record(cv, lay, buf, top, **kw):
+            tops.append(top)
+            return real(cv, lay, buf, top, **kw)
+
+        with mock.patch.object(editor, 'draw', record):
+            for n in range(tour.shot_frames[i], tour.shot_frames[i + 1]):
+                tour.film.frame(n, '16x9')
+        self.assertGreater(max(tops) - min(tops), 200)
+        steps = [abs(b - a) for a, b in zip(tops, tops[1:])]
+        self.assertLess(max(steps), 0.2 * (max(tops) - min(tops)))
+
     def test_ellipsize_words(self):
         font = vb.Font('sans-serif', 22)
         s = 'The helper other() returns three times its input.'
