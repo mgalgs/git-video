@@ -75,6 +75,50 @@ class TestScript(unittest.TestCase):
                 gaps = [y - x for x, y in zip(ts[::2], ts[1::2])]
                 self.assertLessEqual(max(gaps), voice.QUIET + 0.5, (mode, p.shots[a].get('path'), gaps))
 
+    def test_wording_from_this_repos_history(self):
+        # test and implementation jargon is not read out; prose around it is
+        self.assertIsNone(voice.say_sentence("A keyframe at the first dive's route mid-way (`graph <name> route`) "
+                                             "is the graph-mid-dive still."))
+        self.assertIsNone(voice.say_sentence('whoosh_soft/air and hover_tick/detent are not in vb-sfx-1, so both '
+                                             'fell back to other sounds.'))
+        self.assertEqual(voice.say_sentence('Edges were gentle arcs drawn straight from node to node, so in a graph '
+                                            'of several files they crossed the names in the columns between.'),
+                         'Edges were gentle arcs drawn straight from node to node.')
+        self.assertEqual(voice.say_sentence('A shot now lasts at least as long as what is said over it plus a short '
+                                            'breath.'),
+                         'A shot now lasts at least as long as what is said over it plus a short breath.')
+        # every verb of a coordinated predicate is conjugated, and nothing else
+        for subject, said in (
+                ('Ramp and streak long scrolls', 'This change ramps and streaks long scrolls.'),
+                ('Collect git facts and plan the tour shots', 'This change collects git facts and plans the tour shots.'),
+                ("Never overlap map labels; keep the dive target's on top",
+                 "This change never overlaps map labels; keeps the dive target's on top."),
+                ('Read `--verbose N`, test the side bar as drawn, drop the license claim',
+                 'This change reads --verbose N, tests the side bar as drawn, drops the license claim.'),
+                ('Wrap long lines at word boundaries and widen the 16:9 code pane',
+                 'This change wraps long lines at word boundaries and widens the 16:9 code pane.'),
+                ('Collect old texts and one change per commit of a series',
+                 'This change collects old texts and one change per commit of a series.'),
+                ('Name one changed definition per file, and the tests as tests',
+                 'This change names one changed definition per file, and the tests as tests.'),
+                ("Treat a parameter on the def line itself as bound, not a default's value",
+                 "This change treats a parameter on the def line itself as bound, not a default's value."),
+                ('Land a camera move on the hunk it leads to, and sweep it at once',
+                 'This change lands a camera move on the hunk it leads to, and sweeps it at once.'),
+                # a subject that is not an imperative
+                ('Initial commit', 'This is the first commit.'),
+                ('Minor fixes', 'This change brings minor fixes.')):
+            self.assertEqual(voice.sentence_from_subject(subject), said)
+        self.assertEqual(voice.sentence_from_subject('Initial commit', 'The next commit'), 'The next commit is the first commit.')
+        # symbols stripped never leave dangling words: their clause goes
+        self.assertEqual(voice.say_sentence("The def line's own parameters now count, and a parameter is matched as a "
+                                            "name after `(` or `,`, so a default (`key=frobnicate`) stays a use."),
+                         "The def line's own parameters now count, so a default stays a use.")
+        self.assertEqual(voice.say_sentence('The identifier check (`str.isidentifier`) rejected hyphens, which most '
+                                            'Lisp names have. It now accepts `[A-Za-z_][\\w-]*\\w`.'),
+                         'The identifier check rejected hyphens, which most Lisp names have.')
+        self.assertIsNone(voice.say_sentence('pyproject.toml declared `license = MIT`, but the repo has no LICENSE file.'))
+
     def test_develop_slot_is_the_callouts(self):
         # an unsayable first sentence leaves its slot empty: the phrase waits for the second card
         hunk = next(k for k in voice.shot_index(self.develop.shots) if k[0] == 'edit')

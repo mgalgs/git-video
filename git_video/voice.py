@@ -53,6 +53,14 @@ duck explain expose extract fix give handle hide hold inline join keep land let 
 open pace pin place rework play put read remove rename render replace return reuse run save say scroll set show simplify
 skip slow speed split start stop support sweep take test tidy treat trim turn type update use wrap write'''.split())
 ADVERBS = {'never', 'always', 'also', 'only', 'now', 'still', 'just', 'really', 'actually'}
+# Words a verb's object may start with: a word between a comma or "and" and
+# one of these is a verb of the same predicate ("and plan the tour shots").
+DETERMINERS = {'the', 'a', 'an', 'its', 'their', 'it', 'them', 'each', 'every', 'all', 'this', 'that', 'these',
+               'those', 'our', 'his', 'her', 'any', 'one', 'both'}
+# Subjects that open on a noun phrase rather than a verb ("Initial commit", "Minor fixes").
+NOUN_STARTS = {'initial', 'first', 'wip', 'misc', 'miscellaneous', 'minor', 'various', 'more', 'new', 'typo',
+               'typos', 'version', 'release', 'changes', 'updates', 'fixes', 'tweaks', 'cleanup', 'refactoring'}
+_FIRST_COMMIT = re.compile(r"(?:initial|first)(?:\s+(?:commit|import|version|revision|check-?in))?", re.I)
 
 
 @dataclass(frozen=True)
@@ -139,7 +147,7 @@ def sentence_from_subject(subject, lead='This change'):
     ('Count wrapped rows', 'This change') -> 'This change counts wrapped rows.'
     A conventional-commit prefix (`fix(cli):`) or `[tag]` goes first; a
     subject that does not start with a word is quoted as its title."""
-    s = ' '.join(subject.split())
+    s = ' '.join(subject.replace('`', '').split())
     while True:
         m = _PREFIX.match(s)
         if not m or m.end() >= len(s):
@@ -149,6 +157,10 @@ def sentence_from_subject(subject, lead='This change'):
     words = s.split(' ')
     if not words or not re.fullmatch(r"[A-Za-z][A-Za-z']*", words[0]):
         return finish(f'{lead} is titled: {subject.strip()}')
+    if _FIRST_COMMIT.fullmatch(s):
+        return 'This is the first commit.' if lead == 'This change' else f'{lead} is the first commit.'
+    if words[0].lower() in NOUN_STARTS and not (len(words) > 1 and words[1].lower() in DETERMINERS):
+        return shorten(f'{lead} brings {s[0].lower() + s[1:] if not words[0].isupper() else s}')
     k = 1 if words[0].lower() in ADVERBS and len(words) > 1 and re.fullmatch(r"[A-Za-z']+", words[1]) else 0
     head = [w.lower() if not w.isupper() or len(w) == 1 else w for w in words[:k]]
     verb = words[k]
@@ -159,12 +171,41 @@ def sentence_from_subject(subject, lead='This change'):
             head = ['is'] + head
     else:
         conj = third_person(verb)
-        rest = words[k + 1:]
-        for j in range(1, len(rest)):   # "..., and sweep it" -> "..., and sweeps it"
-            if rest[j - 1].lower() in ('and', 'then') and rest[j].lower() in VERBS:
-                rest[j] = third_person(rest[j])
-        return shorten(f'{lead} {" ".join(head + [conj] + rest)}')
+        return shorten(f'{lead} {" ".join(head + [conj] + _coordinated(words[k + 1:]))}')
     return shorten(f'{lead} {" ".join(head + [conj] + words[k + 1:])}')
+
+
+_FUNCTION_WORDS = {'and', 'or', 'but', 'then', 'not', 'nor', 'so', 'yet', 'with', 'without', 'to', 'of', 'in', 'on',
+                   'at', 'for', 'by', 'from', 'into', 'onto', 'over', 'under', 'per', 'via', 'than', 'as', 'after',
+                   'before', 'between', 'within', 'like', 'up', 'down', 'out', 'off', 'about', 'across', 'instead',
+                   'which', 'that', 'while', 'when', 'where', 'if', 'unless', 'until', 'once', 'too', 'only'}
+
+
+def _coordinated(rest):
+    """The words after a subject's first verb, every other verb of its
+    predicate conjugated like the first: "and streak" right after it, a
+    known verb after "and" or "then", a word before an object ("and plan the
+    tour shots", ", test the side bar"), and whatever opens a clause after a
+    semicolon ("; keep the target on top"). A list after a colon is nouns."""
+    rest = list(rest)
+    for j, w in enumerate(rest):
+        if ':' in w and j < len(rest) - 1:
+            break
+        prev = rest[j - 1] if j else None
+        low = w.lower()
+        nxt = rest[j + 1].lower().strip(",;:'") if j + 1 < len(rest) else ''
+        if (not re.fullmatch(r"[a-z][a-z']*", w) or low in DETERMINERS or low in _FUNCTION_WORDS
+                or conjugated(low) or low in ADVERBS):
+            continue
+        if prev is None:
+            continue
+        after_and = prev.lower() in ('and', 'then', 'or')
+        if (j == 1 and after_and                                 # "Ramp and streak ..."
+                or prev.endswith(';')                            # "...; keep ..."
+                or after_and and (low in VERBS or nxt in DETERMINERS)
+                or prev.endswith(',') and nxt in DETERMINERS):
+            rest[j] = third_person(w)
+    return rest
 
 
 # ---- cleaning what the commit says ----
@@ -173,8 +214,23 @@ _HASH = re.compile(r'(?<![\w/])(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40
 _ASIDE = re.compile(r'\s*\([^()]*[^()\s][^()]*\)')
 _SYMBOLS = re.compile(r'->|=>|==|!=|<=|>=|:=|&&|\|\||[+*&|#$@%^~<>\\{}\[\]=]')
 _DASH = re.compile(r'\s+[-–—]+\s+|\s*—\s*')
+_UNSAID = re.compile(r'[(){}\[\]=;<>]|:\s|:$')
+_BARE_SYMBOL = re.compile(r'[-=<>|&*+#$@%^~\\{}\[\]!/]+[,.;:]?')
 _TRAILER = re.compile(r'^[A-Za-z0-9][\w]*(?:-[\w]+)+:\s')
 _CODE_CHARS = re.compile(r'[(){}\[\]=;<>|\\]')
+
+
+def _dangles(clause):
+    """Whether a clause's symbols (marked \\x02) are words of it: one after a
+    preposition or conjunction, or before "or" or "and" ("after ( or ,")."""
+    words = clause.split()
+    for j, w in enumerate(words):
+        if w.startswith('\x02'):
+            prev = words[j - 1].lower().strip(',;:') if j else ''
+            nxt = words[j + 1].lower().strip(',;:') if j + 1 < len(words) else ''
+            if prev in _FUNCTION_WORDS or prev in _DANGLING or nxt in ('or', 'and', 'nor'):
+                return True
+    return False
 
 
 def _codeish(text):
@@ -198,13 +254,27 @@ def clean(text):
         return None
     # A clause pointing at a URL or a hash ("see https://...") goes with it;
     # in the sentence's first clause, just the link does.
-    s = _ASIDE.sub('', text.strip())   # first, so a split never opens an aside
+    # A backticked span of code ("`def f(x):`") or of bare symbols is not
+    # said: it is marked, and an aside holding it goes whole.
+    s = re.sub(r'`([^`]*)`', lambda m: ' \x01 ' if _UNSAID.search(re.sub(r'\(\)$', '', m.group(1)))
+               or not re.search(r'\w', m.group(1)) else m.group(0), text.strip())
+    s = _ASIDE.sub('', s)   # first, so a split never opens an aside
     parts = re.split(r'(?<=[,;:])\s+', s)
     s = ' '.join(p for k, p in enumerate(parts) if k == 0 or not (_URL.search(p) or _HASH.search(p)))
     s = _URL.sub(' ', s)
     s = _HASH.sub(' ', s)
+    # A clause whose words are symbols ("matched after `(` or `,`") cannot be
+    # said without them: it goes whole, rather than leave "after or".
     s = s.replace('`', '')
     s = _DASH.sub(', ', s)
+    s = ' '.join('\x02' if _BARE_SYMBOL.fullmatch(w) else w for w in s.split())
+    s = re.sub(r'\s+([,;:.])', r'\1', s)
+    if '\x01' in s or '\x02' in s:   # code goes with its clause; a bare symbol when it leaves words dangling
+        clauses = [c for c in re.split(r'(?<=[,;:.])\s+', s)]
+        broken = ['\x01' in c or _dangles(c) for c in clauses]
+        if broken[0]:
+            return None
+        s = ' '.join(c for c, b in zip(clauses, broken) if not b).replace('\x02', ' ')
     s = re.sub(r'(?<=\w)\(\)', '\0', s)   # keep a call's () through the symbol pass
     s = _SYMBOLS.sub(' ', s)
     s = re.sub(r'[()]', ' ', s).replace('\0', '()')   # a stray parenthesis
@@ -226,7 +296,7 @@ _DANGLING = {'and', 'but', 'or', 'so', 'with', 'the', 'a', 'an', 'to', 'of', 'in
              'from', 'which', 'that', 'while', 'when', 'where', 'then', 'its', 'their', 'is', 'are', 'as'}
 # what can never end a clause, even one that ends at a comma ("what it is," can)
 _NEVER_LAST = {'and', 'but', 'or', 'with', 'the', 'a', 'an', 'to', 'of', 'in', 'on', 'at', 'for', 'by', 'from',
-               'its', 'their'}
+               'its', 'their', 'only', 'not'}
 _END = re.compile(r'(?<=[.!?])\s+(?=[A-Za-z_`])')
 
 
@@ -285,13 +355,36 @@ def fragment(text):
     return bool(t.count('"') % 2 or t.count('\u201c') != t.count('\u201d') or _FRAGMENT.match(t))
 
 
+# Words that make a sentence about the tests or the tooling rather than the change.
+_TEST_WORDS = {'test', 'tests', 'keyframe', 'keyframes', 'stills', 'fixture', 'fixtures', 'assert', 'asserts',
+               'mock', 'mocks', 'pinned', 'pins', 'snapshot', 'snapshots', 'testcase', 'unittest'}
+_STILL = re.compile(r"\b(?:the|a|its|one|each|every|[\w-]+-[\w-]+)\s+still\b", re.I)   # the noun, not the adverb
+
+
+def jargon(text):
+    """Whether a commit sentence is mostly test or implementation detail,
+    which reads badly aloud ("A keyframe at the first dive's route mid-way is
+    the graph-mid-dive still."): mostly identifiers, hyphenated names, or
+    about tests and stills by name. Judged on what would be said."""
+    text = re.sub(r'`[^`\w]+`', ' ', _ASIDE.sub('', text))   # what is said: no aside, no lone symbol
+    words = re.findall(r"[\w'`.()/-]+", text)
+    if not words:
+        return False
+    names = [w for w in words if callouts_mod._looks_like_code(w.strip('`.,()')) or w.count('-') >= 2
+             or '`' in w]
+    tests = [w for w in words if w.lower().strip('.,') in _TEST_WORDS] + _STILL.findall(text)
+    return (len(names) >= 3 or len(names) >= 0.3 * len(words) or len(tests) >= 2
+            or bool(tests) and bool(names))
+
+
 def say_sentence(text):
     """A commit sentence ready to be said: cleaned and shortened, or None (a
-    fragment is better silent)."""
+    fragment, or test and implementation jargon, is better silent)."""
     if fragment(text):
         return None
     s = clean(text)
-    return shorten(s) if s else None
+    s = shorten(s) if s else None
+    return None if s is None or jargon(s) else s
 
 
 # ---- spoken forms ----
@@ -404,7 +497,7 @@ def _called(name, kind):
     if name == '__init__':
         return 'the constructor'
     if _test_name(name):
-        return f'the test {_test_name(name)}'
+        return f'the test: {_test_name(name)}'
     return name if len(name.strip('_')) > 4 or not name.isalpha() else f'the {name} {kind}'
 
 
@@ -595,7 +688,8 @@ def why_line(body, used=()):
         return None
     if _was(s) and not callouts_mod._looks_like_code(s.split()[0]):
         s = 'Before, ' + s[0].lower() + s[1:]
-    return shorten(s)
+    s = shorten(s)
+    return None if jargon(s) else s
 
 
 def script(plan, patches, fill=()):
