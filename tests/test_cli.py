@@ -110,6 +110,13 @@ class TestCli(unittest.TestCase):
             self.assertEqual(code, 0, err)
             self.assertIn(f'git video: the change fills only {total:.1f}s of the 120s target', err)
 
+    def test_release_workflow_renders_condensed(self):
+        with open(os.path.join(ROOT, '.github', 'workflows', 'release-video.yml')) as f:
+            text = f.read()
+        (line,) = [x for x in text.splitlines() if 'python -m git_video' in x]
+        self.assertIn('--format all --duration 60 --quality small', line)
+        self.assertIn('container: debian:trixie', text)
+
     def test_module_entry(self):
         r = subprocess.run([sys.executable, '-m', 'git_video', '--help'], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)

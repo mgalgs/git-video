@@ -53,7 +53,7 @@ jobs:
             prev=$(git rev-list --max-parents=0 "$TAG" | tail -n 1)
           fi
           echo "rendering $prev..$TAG"
-          python -m git_video "$prev..$TAG" --format all -o "git-video-$TAG.mp4" | tee rendered.txt
+          python -m git_video "$prev..$TAG" --format all --duration 60 --quality small -o "git-video-$TAG.mp4" | tee rendered.txt
 
       - name: Attach to the release
         env:
