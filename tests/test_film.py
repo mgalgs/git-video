@@ -1078,7 +1078,8 @@ class TestVoiceFilm(unittest.TestCase):
         cls.tmp.cleanup()
 
     def mid(self, tour, q):
-        return round((q['start'] + q['end']) / 2 * tour.fps)
+        """A frame inside the phrase's first sentence (a caption is down in the gap between two)."""
+        return round(min(q['start'] + 0.4, (q['start'] + q['end']) / 2) * tour.fps)
 
     def test_captions_in_every_format(self):
         seen = set()

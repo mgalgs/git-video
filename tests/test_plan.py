@@ -142,7 +142,7 @@ class TestPlan(unittest.TestCase):
         p = plan.plan(collect.collect(repo, sha['head']))
         one, two = kinds(p, 'hunk')
         self.assertEqual([c['text'] for c in one['callouts']], ['frob() now doubles its input.'])
-        self.assertEqual([c['text'] for c in two['callouts']], ['The helper other() returns three times its input.'])
+        self.assertEqual([c['text'] for c in two['callouts']], ['The helper other() returns three times its input, so callers keep their scale.'])
         c = one['callouts'][0]
         self.assertEqual((c['line'], c['col'], c['len']), (1, 4, 4))   # `frob` on `def frob(x):`, in view
         self.assertEqual(c['commit'], p.commit['short'])
@@ -624,7 +624,7 @@ class TestDevelopPlan(unittest.TestCase):
         p = plan.build(collect.collect(repo, sha['head']), 0, 'develop')
         (s,) = kinds(p, 'edit')
         texts = [c['text'] for c in s['callouts']]
-        self.assertEqual(texts, ['frob() now doubles its input.', 'The helper other() returns three times its input.'])
+        self.assertEqual(texts, ['frob() now doubles its input.', 'The helper other() returns three times its input, so callers keep their scale.'])
         for c in s['callouts']:
             first = next(st for st in s['steps'] if st['hunk'] == c['hunk'])
             self.assertAlmostEqual(c['at'], edits.shot_time(first['at'], s['clock']), delta=0.01)

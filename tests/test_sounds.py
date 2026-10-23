@@ -33,10 +33,12 @@ class TestSounds(unittest.TestCase):
 
     def test_voice_mix(self):
         from git_video import voice
+        repo, sha = fixtures.make_callout_repo(os.path.join(self.tmp.name, 'mix'))   # a phrase over typing
+        change = collect.collect(repo, sha['head'])
         with mock.patch.dict(os.environ, {'XDG_CACHE_HOME': os.path.join(self.tmp.name, 'cache')}):
-            p = voice.narrate(self.change, [self.change], 0, 'develop', fixtures.FakeEngine(), 'bf_isabella')
+            p = voice.narrate(change, [change], 0, 'develop', fixtures.FakeEngine(), 'bf_isabella')
         with self.pack('full-voice', FULL):
-            f, _ = film.build(p, self.change, log=io.StringIO())
+            f, _ = film.build(p, change, log=io.StringIO())
         self.assertEqual(f.audio.duck_db, voice.DUCK_DB)
         self.assertTrue(os.path.isfile(f.audio.path))
         said = [x for x in f.sounds if x.path.startswith(p.voice['dir'])]

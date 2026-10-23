@@ -195,20 +195,18 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
 
 ## --voice
 
-A voice walks you through the change while the film plays, the way a
-colleague would: what the change does (the commit subject as a sentence)
-and how big it is, a word as each file opens, the commit sentence that
-explains a hunk as it is shown or written (cut to a spoken length), a few
-words naming a new definition where no sentence explains it, what a dive
-calls, each patch of a `--series`, and the close. Silence is allowed:
-hunks with nothing worth saying get none, and a commit sentence that is
-mostly identifiers or about the tests is not read out. But no file stays
-quiet for more than about 8 s where a hunk could break the silence: one
-gets a short line on what it changes ("Three new tests for the graph.",
-"Changes to draw and layout."). The script is written by
-heuristics from the plan; nothing reads code, trailers, URLs or hashes
-aloud. Identifiers are said as words (`draw_card` as "draw card", `film.py`
-as "film dot pie") and captioned as written.
+A voice explains the change while the film plays, the way its author would
+to a colleague watching the screen: what it does and why, not what the
+editor shows. It is sparse: most shots pass in silence. Identifiers are
+said as words (`draw_card` as "draw card", `film.py` as "film dot pie") and
+captioned as written; nothing reads code, trailers, URLs or hashes aloud.
+
+The heuristic narrator writes the script from the commit message: what the
+change does (the subject as a sentence) and how big it is, the body's lead
+sentence over the repo map, a body sentence that gives a reason over the
+hunk it names, what a dive calls when the body names it, each patch of a
+`--series`, and the close. A body sentence that only says what the code now
+does is not read out.
 
 Shots stretch to the voice: a card or a hunk is held until its phrases and
 a breath are done, and in develop mode a narrated hunk is typed no faster

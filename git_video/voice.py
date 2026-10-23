@@ -1,13 +1,15 @@
 """The narration: what a colleague would say while showing you the change.
 
-`script(plan, patches)` writes it from a plan, by heuristics: one phrase per
-shot or beat, each tied to a shot by its `plan.shot_key` (an edit shot's
-hunks by keys of their own). The opening turns the commit subject into a
-sentence and says the change's size in words; each file gets a lead-in;
-a hunk gets the commit sentence the callout matcher tied to it, shortened
-to a spoken length, or a few words naming the definition written there, or
-nothing; the first dive per file says what it calls; a --series card says
-the next patch; the closing says so, and the next commit when there is one.
+A narrator writes the script: a list of phrases, each tied to a shot by its
+`plan.shot_key` (an edit shot's hunks by keys of their own). `script(plan,
+patches)` is the heuristic narrator: sparse, it says only what the commit
+says about why. The opening turns the commit subject into a sentence and
+says the change's size in words; the body's lead sentence goes over the
+repo map; a body sentence that gives a reason goes over the hunk the callout
+matcher tied it to, shortened to a spoken length; a dive says what it calls
+when the body names it; a --series card says the next patch; the closing
+says so, and the next commit when there is one. Nothing narrates what the
+editor shows: long silences are expected. (`narrator` has the other one.)
 
 What is said is plain text, captioned as written. How an identifier, a
 path or a flag is said (`spoken`) goes to videobuilder's `say` as its
@@ -24,7 +26,7 @@ from dataclasses import dataclass
 
 from videobuilder import speech
 
-from . import callouts as callouts_mod, collect, edits, plan as planmod, xref
+from . import callouts as callouts_mod, edits, plan as planmod, xref
 
 SPEED = 1.0         # Kokoro's speaking rate (part of the cache key)
 GAP = 0.35          # seconds between two phrases said over one shot (say's own gap)
@@ -40,10 +42,6 @@ EXT = {'py': 'pie', 'md': 'M D', 'js': 'J S', 'ts': 'T S', 'yml': 'yammel', 'yam
        'css': 'C S S', 'el': 'E L', 'rb': 'R B', 'go': 'go', 'cfg': 'config', 'ini': 'I N I', 'jsx': 'J S X',
        'tsx': 'T S X', 'cpp': 'C P P', 'hpp': 'H P P', 'java': 'java', 'lock': 'lock', 'rst': 'R S T'}
 WORDS = {'xref': 'x ref', 'json': 'jason', 'sql': 'sequel', 'gui': 'gooey', 'todo': 'to do', 'yaml': 'yammel', 'toml': 'tommel'}
-KINDS = {'def': 'function', 'function': 'function', 'func': 'function', 'fn': 'function', 'defun': 'function',
-         'defmacro': 'macro', 'class': 'class', 'struct': 'struct', 'enum': 'enum', 'trait': 'trait',
-         'type': 'type', 'interface': 'interface', 'union': 'union', 'const': 'constant', 'let': 'variable',
-         'var': 'variable'}
 IRREGULAR = {'have': 'has', 'do': 'does', 'go': 'goes', 'be': 'is', 'undo': 'undoes', "don't": "doesn't",
              'redo': 'redoes'}
 # Verbs a subject's second clause may start with ("Land a move, and sweep it"),
@@ -462,181 +460,12 @@ def base(path):
     return os.path.basename(path)
 
 
-def _kind_word(d):
-    if d.kind in ('def', 'func', 'fn', 'function') and d.owner in xref.CLASS_KINDS:
-        return 'method'
-    return KINDS.get(d.kind, d.kind if d.kind.isalpha() else 'definition')
-
-
-def written_lines(change, f, hunks):
-    """{hunk index: line} for the hunks of `f` no commit sentence explains,
-    each naming the one definition its changes sit in: "A new function,
-    draw_card." for each that adds a definition's own line ("A new test:
-    ..." for a test, by its name's words), and "A change to callout_box." for
-    the biggest of the rest; the others say nothing (silence is better than
-    filler)."""
-    new, changed = {}, []
-    for hi in hunks:
-        defs = planmod.hunk_defs(change, f, f.hunks[hi])
-        if len(defs) != 1:
-            continue
-        name, d, is_new = defs[0]
-        kind = _kind_word(d)
-        test = re.match(r'test_?(?=[A-Za-z])', name) if name.lower().startswith('test') else None
-        if is_new:
-            if test and kind in ('function', 'method'):
-                new[hi] = f'A new test: {_name(name[test.end():])}.'
-            else:
-                new[hi] = f'A new {kind}, {name}.'
-        elif not test:
-            h = f.hunks[hi]
-            size = sum(b - a + 1 for a, b in h.added) + h.old_count
-            changed.append((-size, hi, name, kind))
-    if changed:
-        _, hi, name, kind = min(changed)
-        new[hi] = f'A change to {_called(name, kind)}.'
-    return new
-
-
-def _called(name, kind):
-    """A definition as a line names it: "the constructor", "callout_box", "the draw function"."""
-    if name == '__init__':
-        return 'the constructor'
-    if _test_name(name):
-        return f'the test: {_test_name(name)}'
-    return name if len(name.strip('_')) > 4 or not name.isalpha() else f'the {name} {kind}'
-
-
-_PLURAL = {'class': 'classes', 'method': 'methods', 'function': 'functions', 'macro': 'macros',
-           'struct': 'structs', 'enum': 'enums', 'trait': 'traits', 'type': 'types', 'interface': 'interfaces',
-           'union': 'unions', 'constant': 'constants', 'variable': 'variables', 'definition': 'definitions'}
-
-
-def _listed(names):
-    """'a', 'a and b', 'a, b and c', 'a, b and two more'."""
-    if len(names) > 3:
-        names = names[:2] + [f'{number_words(len(names) - 2)} more']
-    return names[0] if len(names) == 1 else f'{", ".join(names[:-1])} and {names[-1]}'
-
-
-def _test_name(name):
-    m = re.match(r'test_?(?=[A-Za-z])', name) if name.lower().startswith('test') else None
-    return m and _name(name[m.end():])
-
-
-def _tests_of(path):
-    """What a test file tests, from its name: tests/test_graph.py -> "the graph"."""
-    stem = base(path).rsplit('.', 1)[0]
-    stem = re.sub(r'^tests?_|_tests?$|_spec$|\.test$', '', stem)
-    return f'the {_name(stem)}' if stem and collect.is_test(path) and stem.lower() not in ('test', 'tests') else None
-
-
-def hunk_line(change, f, h):
-    """One short line on what hunk `h` of `f` changes, from the definitions it
-    touches: "Three new tests for the graph.", "Two new functions, edge_path
-    and _rounded.", "Changes to draw and layout."; None when it touches none
-    (no filler: silence is better)."""
-    defs = planmod.hunk_defs(change, f, h)
-    tests = [n for n, d, new in defs if new and _test_name(n) and _kind_word(d) in ('function', 'method')]
-    new = [(n, d) for n, d, is_new in defs if is_new and n not in tests]
-    changed = [n for n, d, is_new in defs if not is_new]
-    if len(tests) > 1:
-        what = _tests_of(f.path)
-        return f'{number_words(len(tests)).capitalize()} new tests{" for " + what if what else ""}.'
-    if tests and not new:
-        return f'A new test: {_test_name(tests[0])}.'
-    if len(new) == 1:
-        return f'A new {_kind_word(new[0][1])}, {new[0][0]}.'
-    if new:
-        kinds = {_kind_word(d) for _, d in new}
-        kind = _PLURAL.get(kinds.pop(), 'definitions') if len(kinds) == 1 else 'definitions'
-        return f'{number_words(len(new)).capitalize()} new {kind}, {_listed([n for n, _ in new])}.'
-    if changed:
-        kinds = {n: _kind_word(d) for n, d, is_new in defs if not is_new}
-        called = [_called(n, kinds[n]) for n in changed]
-        return f'A change to {called[0]}.' if len(called) == 1 else f'Changes to {_listed(called)}.'
-    return _top_level_line(f, h)
-
-
-_IMPORT = re.compile(r'^\s*(?:from\s+(\S+)\s+import\s+(.+)|import\s+(.+)|(?:const|let|var)\s+\w+\s*=\s*require\(.+\)|'
-                     r'#include\s*[<"](.+)[>"]|use\s+(.+);)')
-_CONSTANT = re.compile(r'^([A-Z][A-Z0-9_]*[A-Z0-9])\s*(?::[^=]+)?=(?!=)')
-
-
-def _top_level_line(f, h):
-    """A line on a hunk outside every definition: the imports it adds, the
-    constants it sets, or the file's opening docstring; else None."""
-    lines = f.text.split('\n')
-    added = [lines[n - 1] for a, b in h.added for n in range(a, b + 1) if 0 < n <= len(lines) and lines[n - 1].strip()]
-    if not added:
-        return None
-    consts = list(dict.fromkeys(m.group(1) for m in map(_CONSTANT.match, added) if m))
-    if consts and len(consts) * 2 >= len(added):
-        return (f'A new setting, {consts[0]}.' if len(consts) == 1 else
-                f'{number_words(len(consts)).capitalize()} settings, {_listed(consts)}.')
-    if all(_IMPORT.match(ln) for ln in added):
-        names = []
-        for ln in added:
-            m = _IMPORT.match(ln)
-            what = m.group(2) or m.group(3) or m.group(4) or m.group(5) or ''
-            names += [w.split(' as ')[-1].strip(' ()') for w in what.split(',') if w.strip(' ()')]
-        names = [n for n in dict.fromkeys(names) if re.fullmatch(r'[\w.]+', n)]
-        return f'It now imports {_listed(names)}.' if names else None
-    m = _DOCSTRING.match(f.text)
-    if m:
-        end = f.text.find(m.group(1), m.end())
-        first, last = f.text[:m.start(1)].count('\n') + 1, f.text[:max(end, m.end())].count('\n') + 1
-        if all(first <= n <= last for a, b in h.added for n in range(a, b + 1)):
-            return "The file's opening comment changes."
-    return None
-
-
-_DOCSTRING = re.compile(r'\s*(?:#[^\n]*\n\s*)*[rRuU]?("""|\'\'\')')
-
-
 def dive_line(s):
     """What a dive into a definition says: "That calls frob, defined in lib.py."."""
     d = s['definition']
     verb = 'calls' if d.get('kind') in xref.FUNCTION_KINDS and d.get('kind') not in xref.CLASS_KINDS else 'uses'
     where = 'in this file' if d['path'] == s['path'] else f'in {base(d["path"])}'
     return f'That {verb} {s["name"]}, defined {where}.'
-
-
-def _hunk_of(change, path, index):
-    f = next((f for f in change.files if f.path == path), None)
-    if f is None or f.text is None or index >= len(f.hunks):
-        return None, None
-    return f, f.hunks[index]
-
-
-def _lead_ins(shots):
-    """{enter shot index: its lead-in}: per patch "First, a.py.", "Next, b.py.",
-    "Finally, c.py." (of three or more), or for a patch of one file "This is
-    all in a.py."; "the tests in t.py" for the first of a run of test files;
-    a file the develop mode deletes "..., which goes."."""
-    out = {}
-    by_patch = {}
-    for i, s in enumerate(shots):
-        if s['kind'] in ('dive', 'travel', 'open'):
-            by_patch.setdefault(s.get('patch', 0), []).append(i)
-    for idx in by_patch.values():
-        paths = [shots[i].get('to', shots[i]['path']) for i in idx]
-        for n, (i, path) in enumerate(zip(idx, paths)):
-            nxt = shots[i + 1] if i + 1 < len(shots) else {}
-            gone = ', which goes' if nxt.get('kind') == 'edit' and nxt.get('status') == 'D' else ''
-            name = base(path)
-            if collect.is_test(path) and not (n and collect.is_test(paths[n - 1])):
-                name = f'the tests in {name}'   # once, for a run of test files
-            if len(idx) == 1:
-                line = f'This is all in {name}{gone}.'
-            elif n == 0:
-                line = f'First, {name}{gone}.'
-            elif n == len(idx) - 1 and len(idx) >= 3:
-                line = f'Finally, {name}{gone}.'
-            else:
-                line = f'{"Next" if n % 2 else "Then"}, {name}{gone}.'
-            out[i] = line
-    return out
 
 
 def _opening(plan):
@@ -698,156 +527,71 @@ def why_line(body, used=()):
     return None if jargon(s) else s
 
 
-def script(plan, patches, fill=()):
-    """The narration of `plan` (the change of each patch in `patches`), as
-    [Phrase] in the order they are said, with a line on what changes (see
-    `fill_lines`) for each hunk key in `fill`. Deterministic: the same plan
-    and `fill` give the same script, however long its shots are."""
-    fills = fill_lines(plan, patches) if fill else {}
-    out = [Phrase(t, ('title',)) for t in _opening(plan)]
+# A sentence that says why, not only what: a reason or purpose ("so", "because",
+# "to keep"), a constraint ("never", "without", "unless") or how things were.
+_REASON = re.compile(r"\b(?:because|so that|so as to|in order to|instead|rather than|otherwise|that way|"
+                     r"which means|no longer|never|without|unless|lets?|keeps?|avoids?|prevents?|allows?|"
+                     r"needs?|must|can't|cannot|was|were|had|used to|could|couldn't|didn't|wasn't)\b|"
+                     r",\s+so\b|\bto\s+(?:" + '|'.join(sorted(VERBS)) + r")\b", re.I)
+
+
+def reason(text):
+    """Whether a sentence states a purpose or a reason, rather than only what
+    the code now does: what a sparse narration says over a hunk."""
+    return bool(_REASON.search(text))
+
+
+def _bodies(plan, k):
+    """The commit bodies of patch `k` of `plan` (every commit's, for a range)."""
+    commit = plan.patches[k]['commit'] if len(plan.patches or ()) > 1 else plan.commit
+    return [c.get('body') or '' for c in commit.get('commits') or ()] or [commit.get('body') or '']
+
+
+def _named(name, bodies):
+    return any(re.search(rf'(?<![\w.]){re.escape(name)}(?!\w)', b) for b in bodies)
+
+
+def script(plan, patches):
+    """The heuristic narration of `plan` (the change of each patch in
+    `patches`), as [Phrase] in the order they are said. Sparse: the opening
+    (what the change does and its size), the body's lead sentence over the
+    repo map, a body sentence that gives a reason over the hunk the callout
+    matcher tied it to, a dive's line when the body names what it dives
+    into, each --series patch's subject, and the closing; nothing that only
+    says what the editor shows. Long silences are expected. Deterministic:
+    the same plan gives the same script, however long its shots are."""
+    out = [Phrase(' '.join(_opening(plan)), ('title',))]
     used = {c['text'] for s in plan.shots for c in s.get('callouts') or ()}
     if plan.mode == 'develop':
         used |= {t for ch in patches for ts in planmod.develop_sentences(ch).values() for t in ts}
     why = _why(plan, patches, used)
     if why:   # over the repo map, or the title card without one
         out.append(Phrase(why, ('map',) if any(s['kind'] == 'map' for s in plan.shots) else ('title',)))
-    lead = _lead_ins(plan.shots)
     develop = {k: planmod.develop_sentences(ch) for k, ch in enumerate(patches)} if plan.mode == 'develop' else {}
-    unmatched = {}     # (patch, path) -> the hunks shown that no sentence explains
+
+    def reasons(texts):
+        lines = [(n, say_sentence(t)) for n, t in enumerate(texts)]
+        return [(n, t) for n, t in lines if t and reason(t)]
+
     for s in plan.shots:
-        k = s.get('patch', 0)
-        if s['kind'] == 'hunk' and not s.get('callouts'):
-            unmatched.setdefault((k, s['path']), []).append(s['index'])
-        elif s['kind'] == 'edit' and s.get('status') != 'D':
-            unmatched.setdefault((k, s['path']), []).extend(
-                hi for hi in hunks_in(s['steps']) if not develop[k].get((s['path'], hi)))
-    written = {}
-    for (k, path), hunks in unmatched.items():
-        ch = patches[min(k, len(patches) - 1)]
-        f = next((f for f in ch.files if f.path == path), None)
-        if f is not None and f.text is not None:
-            written[k, path] = written_lines(ch, f, [hi for hi in hunks if hi < len(f.hunks)])
-    dived = set()      # (patch, path) a dive's line was said from
-    for i, s in enumerate(plan.shots):
         kind, k = s['kind'], s.get('patch', 0)
         key = planmod.shot_key(s)
-        here = written.get((k, s.get('path')), {})
-        if i in lead:
-            out.append(Phrase(lead[i], key))
-        elif kind == 'patch':
+        if kind == 'patch':
             out.append(Phrase(sentence_from_subject(plan.patches[k]['commit']['subject'], 'The next patch'), key))
         elif kind == 'hunk':
-            lines = [(n, say_sentence(c['text'])) for n, c in enumerate(s.get('callouts') or ())]
-            lines = [(n, t) for n, t in lines if t] or ([(0, here[s['index']])] if s['index'] in here else [])
-            if not lines and key in fill and key in fills:
-                lines = [(0, fills[key])]
-            out += [Phrase(t, key, n) for n, t in lines]
-        elif kind == 'xref-push' and (k, s['path']) not in dived:
-            dived.add((k, s['path']))
+            out += [Phrase(t, key, n) for n, t in reasons(c['text'] for c in s.get('callouts') or ())]
+        elif kind == 'xref-push' and _named(s['name'], _bodies(plan, k)):
             out.append(Phrase(dive_line(s), key))
         elif kind == 'edit' and s.get('status') != 'D':
             for hi in hunks_in(s['steps']):
-                lines = [(n, say_sentence(x)) for n, x in enumerate(develop[k].get((s['path'], hi), ()))]
-                lines = [(n, t) for n, t in lines if t] or ([(0, here[hi])] if hi in here else [])
                 hkey = ('edit', k, s['path'], hi)
-                if not lines and hkey in fill and hkey in fills:
-                    lines = [(0, fills[hkey])]
-                out += [Phrase(t, hkey, n) for n, t in lines]
+                out += [Phrase(t, hkey, n) for n, t in reasons(develop[k].get((s['path'], hi), ()))]
         elif kind == 'end':
-            out.append(Phrase("That's the series." if len(plan.patches or ()) > 1 else "That's the change.", key))
+            end = "That's the series." if len(plan.patches or ()) > 1 else "That's the change."
             if plan.next:
-                out.append(Phrase(sentence_from_subject(plan.next['subject'], 'The next commit'), key))
+                end += ' ' + sentence_from_subject(plan.next['subject'], 'The next commit')
+            out.append(Phrase(end, key))
     return out
-
-
-def fill_lines(plan, patches):
-    """{hunk key: line} for the hunks the script says nothing over, each a
-    line on what it changes (`hunk_line`) that its file has not heard: what
-    a quiet stretch of a file may say (see `quiet_keys`)."""
-    phrases = script(plan, patches)
-    said = {}
-    for p in phrases:
-        if len(p.key) > 2:
-            said.setdefault((p.key[1], p.key[2]), set()).add(p.text)
-    keyed = {p.key for p in phrases}
-    out = {}
-    for s in plan.shots:
-        k = s.get('patch', 0)
-        if s['kind'] == 'hunk':
-            todo = [(planmod.shot_key(s), s['index'])]
-        elif s['kind'] == 'edit' and s.get('status') != 'D':
-            todo = [(('edit', k, s['path'], hi), hi) for hi in hunks_in(s['steps'])]
-        else:
-            continue
-        ch = patches[min(k, len(patches) - 1)]
-        f = next((f for f in ch.files if f.path == s['path']), None)
-        if f is None or f.text is None:
-            continue
-        heard = said.setdefault((k, s['path']), set())
-        for key, hi in todo:
-            if key in keyed or hi >= len(f.hunks):
-                continue
-            line = hunk_line(ch, f, f.hunks[hi])
-            if line and line not in heard:
-                heard.add(line)
-                out[key] = line
-    return out
-
-
-QUIET = 8.0         # a file's stretch silent longer than this gets a line on a hunk in it ...
-QUIET_EDGE = 1.5    # ... said at least this long after the phrase before it, and before the next
-
-
-def quiet_keys(plan, phrases, seconds, candidates):
-    """The keys of `candidates` (hunk keys a line could be said over) to say
-    one over, so that no file's stretch (from the way into it to the way into
-    the next) of the timed `plan` stays silent longer than QUIET where a hunk
-    could break the silence: in each long gap, the one nearest its middle,
-    and again in what is left."""
-    starts, _ = planmod.frame_starts(plan.shots, plan.fps)
-    timed = Timed(phrases, seconds)
-    spans, at = [], {}
-    for i, s in enumerate(plan.shots):
-        t0 = starts[i] / plan.fps
-        for key, anchor in anchors(s).items():
-            first = anchor[0] if isinstance(anchor, (list, tuple)) else anchor
-            if key in timed:
-                spans += [(t0 + a, t0 + b) for a, b in timed.fit(key, anchor)[0]]
-            elif key in candidates:
-                at[key] = (t0 + first, i)
-    stretch, cur = {}, -1   # shot index -> its file stretch
-    for i, s in enumerate(plan.shots):
-        if s['kind'] in ('dive', 'travel', 'open'):
-            cur = i
-        elif s['scene'] == 'card' or s['kind'] == 'map':
-            cur = -1
-        stretch[i] = cur
-    bounds = {}
-    for i, c in stretch.items():
-        if c >= 0:
-            a, b = bounds.get(c, (starts[i], starts[i]))
-            bounds[c] = (min(a, starts[i]), starts[i] + round(plan.shots[i]['dur'] * plan.fps))
-    chosen = set()
-    for c, (f0, f1) in bounds.items():
-        lo, hi = f0 / plan.fps, f1 / plan.fps
-        cands = sorted((t, key) for key, (t, i) in at.items() if stretch[i] == c)
-        said = sorted((a, b) for a, b in spans if lo - 1e-6 <= a < hi)
-        while True:
-            edges = [lo] + [x for sp in said for x in sp] + [hi]
-            gaps = [(edges[j], edges[j + 1]) for j in range(0, len(edges), 2)]
-            pick = None
-            for g0, g1 in gaps:
-                if g1 - g0 <= QUIET:
-                    continue
-                inside = [(t, key) for t, key in cands if g0 + QUIET_EDGE <= t <= g1 - QUIET_EDGE and key not in chosen]
-                if inside:
-                    pick = min(inside, key=lambda x: abs(x[0] - (g0 + g1) / 2))
-                    break
-            if pick is None:
-                break
-            chosen.add(pick[1])
-            said = sorted(said + [(pick[0], pick[0] + 2.0)])
-    return chosen
 
 
 def hunks_in(steps):
@@ -1044,15 +788,7 @@ def narrate(change, patches, verbose, mode, engine, name):
     # Again, each shot as long as its phrases need: the same shots, so the
     # same script (its keys do not depend on how long shots are).
     final = planmod.build(change, verbose, mode, patches, voice=Timed(phrases, seconds))
-    # A long silence in a file: a line on a hunk in it, said again and placed again.
-    fill = quiet_keys(final, phrases, seconds, fill_lines(final, patches))
-    if fill:
-        phrases = script(first, patches, fill)
-        lexicon = lexicon_for(phrases)
-        out_dir = script_dir(phrases, lexicon, name)
-        seconds = synth(phrases, lexicon, name, engine, out_dir)
-        final = planmod.build(change, verbose, mode, patches, voice=Timed(phrases, seconds))
-    if script(final, patches, fill) != phrases:
+    if script(final, patches) != phrases:
         raise AssertionError('the narrated plan says something else than the plan it was written from')
     final.voice = place(final, phrases, seconds, name, out_dir, lexicon)
     return final

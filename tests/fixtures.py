@@ -123,7 +123,7 @@ def make_callout_repo(tmp):
     root = commit(repo, 'Add the library')
     write(repo, 'lib.py', RANGE_LIB_A.replace('x + 1', 'x * 2').replace('x - 1', 'x * 3'))
     head = commit(repo, 'Change both\n\nfrob() now doubles its input. Nothing else changed here.\n'
-                        'The helper other() returns three times its input.\n\nSigned-off-by: T <t@example.com>')
+                        'The helper other() returns three times its input, so callers keep their scale.\n\nSigned-off-by: T <t@example.com>')
     return repo, {'root': root, 'head': head}
 
 

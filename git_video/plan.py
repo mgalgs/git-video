@@ -694,6 +694,7 @@ def _voice_holds(sc, clock, voice, key):
         need = voice.fit(key(hi), 0.0)[1]
         if not need:
             continue
+        need += 2 / FPS   # the shot's start and its length each round to a frame
         a, b = steps[i0]['at'], steps[i1]['at'] + steps[i1]['dur']
         nxt = steps[hunks[n + 1][1][0]]['at'] if n + 1 < len(hunks) else sc['natural']
         clk, span, dur, _ = edits.hold(clk, span, dur, a, b, min(need, b - a))

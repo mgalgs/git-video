@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import tempfile
 import tomllib
@@ -42,38 +43,42 @@ class TestScript(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def test_hunk_lines(self):
+    def test_silence_is_allowed(self):
+        # a file with hunks no sentence explains stays silent, however long it plays
         ch = collect.collect(fixtures.make_quiet_repo(self.tmp.name), 'HEAD')
-        lines = {}
-        for f in ch.files:
-            for h in f.hunks:
-                lines.setdefault(f.path, []).append(voice.hunk_line(ch, f, h))
-        self.assertEqual(lines['tests/test_graph.py'], ['Three new tests for the graph.'])
-        g = lines['graph.py']
-        self.assertEqual(g[:2], ["The file's opening comment changes.", 'It now imports math.'])
-        self.assertIn('A change to step_5.', g)
-        for line in (x for ls in lines.values() for x in ls):
-            self.assertNotRegex(line, r'(?i)\bsome changes\b|\bchanges here\b')
-
-    def test_quiet_files_get_a_line(self):
-        ch = collect.collect(fixtures.make_quiet_repo(self.tmp.name + '/q'), 'HEAD')
         for mode in ('tour', 'develop'):
             with mock.patch.dict(os.environ, {'XDG_CACHE_HOME': os.path.join(self.tmp.name, 'cache')}):
                 p = voice.narrate(ch, [ch], 0, mode, fixtures.FakeEngine(), 'bf_isabella')
-            plain = plan.build(ch, 0, mode)
-            said = [(x['start'], x['end'], x['shot'], x['text']) for x in p.voice['phrases']]
-            fills = [t for *_, t in said if t not in texts(voice.script(plain, [ch]))]
-            if mode == 'tour':   # develop types the file briskly enough to need none
-                self.assertTrue(fills, mode)
-            hunk_lines = {voice.hunk_line(ch, f, h) for f in ch.files for h in f.hunks}
-            self.assertTrue(set(fills) <= hunk_lines, (mode, fills))
-            starts, _ = plan.frame_starts(p.shots, p.fps)
-            enter = [i for i, s in enumerate(p.shots) if s['kind'] in ('dive', 'travel', 'open')]
-            for a, b in zip(enter, enter[1:] + [len(p.shots) - 1]):
-                t0, t1 = starts[a] / p.fps, starts[b] / p.fps
-                ts = [t0] + [x for s0, e0, i, _ in said if a <= i < b for x in (s0, e0)] + [t1]
-                gaps = [y - x for x, y in zip(ts[::2], ts[1::2])]
-                self.assertLessEqual(max(gaps), voice.QUIET + 0.5, (mode, p.shots[a].get('path'), gaps))
+            said = [(x['start'], x['end']) for x in p.voice['phrases']]
+            ts = [0.0] + [t for span in said for t in span] + [p.total]
+            gaps = [y - x for x, y in zip(ts[::2], ts[1::2])]
+            self.assertGreater(max(gaps), 8.0, (mode, gaps))
+            self.assertEqual({p.shots[x['shot']]['kind'] for x in p.voice['phrases']} - {'title', 'map', 'end'}, set(),
+                             mode)
+
+    def test_sparse_on_this_repos_history(self):
+        # nothing that only says what the editor shows: no lead-ins, no "a change to X",
+        # no "a new function, X", no filler over quiet files
+        revs = subprocess.run(['git', '-C', ROOT, 'log', '--format=%H', '-25'], capture_output=True,
+                              text=True).stdout.split()
+        if len(revs) < 25:
+            self.skipTest('not a git checkout with history')
+        editor_state = re.compile(r"^(?:First|Next|Then|Finally), |^This is all in |^A change to |^Changes to |"
+                                  r"^A new (?:test|function|method|class|setting)\b|new tests\b|^It now imports |"
+                                  r"opening comment changes")
+        for rev in revs:
+            ch = collect.collect(ROOT, rev)
+            for mode in ('tour', 'develop'):
+                p = plan.build(ch, 0, mode)
+                got = voice.script(p, [ch])
+                for t in texts(got):
+                    self.assertNotRegex(t, editor_state, (rev, mode))
+                self.assertEqual(got[0].key, ('title',))
+                self.assertEqual(got[-1].key, ('end',))
+                self.assertEqual(len([x for x in got if x.key == ('title',)]), 1)
+                for x in got:
+                    if x.key[0] in ('hunk', 'edit'):
+                        self.assertTrue(voice.reason(x.text), (rev, x.text))
 
     def test_wording_from_this_repos_history(self):
         # test and implementation jargon is not read out; prose around it is
@@ -136,10 +141,10 @@ class TestScript(unittest.TestCase):
     def test_develop_slot_is_the_callouts(self):
         # an unsayable first sentence leaves its slot empty: the phrase waits for the second card
         hunk = next(k for k in voice.shot_index(self.develop.shots) if k[0] == 'edit')
-        said = {(hunk[2], hunk[3]): ['frob(x) == x[0] * {2}; y = [z]', 'Now frob doubles its input.']}
+        said = {(hunk[2], hunk[3]): ['frob(x) == x[0] * {2}; y = [z]', 'Now frob doubles its input, so callers see more.']}
         with mock.patch.object(plan, 'develop_sentences', return_value=said):
             got = [p for p in voice.script(self.develop, [self.change]) if p.key == hunk]
-        self.assertEqual([(p.text, p.slot) for p in got], [('Now frob doubles its input.', 1)])
+        self.assertEqual([(p.text, p.slot) for p in got], [('Now frob doubles its input, so callers see more.', 1)])
 
     def test_deterministic(self):
         for p in (self.tour, self.develop):
@@ -151,12 +156,12 @@ class TestScript(unittest.TestCase):
     def test_tour_script(self):
         got = voice.script(self.tour, [self.change])
         self.assertEqual(texts(got), [
-            'This change changes both.', 'One file, four lines.', 'This is all in lib.py.',
-            'frob() now doubles its input.', 'The helper other() returns three times its input.',
-            "That's the change."])
+            'This change changes both. One file, four lines.',
+            'The helper other() returns three times its input, so callers keep their scale.',
+            "That's the change."])   # a sentence that only says what the code does is not read out
         keys = [p.key for p in got]
-        self.assertEqual(keys[:3], [('title',), ('title',), ('enter', 0, 'lib.py')])
-        self.assertEqual(keys[3][0], 'hunk')
+        self.assertEqual(keys[0], ('title',))
+        self.assertEqual(keys[1][0], 'hunk')
         self.assertEqual(keys[-1], ('end',))
         index = voice.shot_index(self.tour.shots)
         self.assertTrue(all(p.key in index for p in got))
@@ -170,13 +175,13 @@ class TestScript(unittest.TestCase):
         ch = collect.collect(repo, sha['change'])
         p = plan.build(ch)
         end = texts(voice.script(p, [ch]), 'end')
-        self.assertEqual(end, ["That's the change.", 'The next commit drops the binary.'])
+        self.assertEqual(end, ["That's the change. The next commit drops the binary."])
 
     def test_why(self):
         repo, sha = fixtures.make_repo(os.path.join(self.tmp.name, 'why'))
         ch = collect.collect(repo, sha['change'])
         got = voice.script(plan.build(ch), [ch])
-        self.assertEqual([(p.key, p.text) for p in got][2], (('map',), 'The app doubles instead of incrementing.'))
+        self.assertEqual([(p.key, p.text) for p in got][1], (('map',), 'The app doubles instead of incrementing.'))
         self.assertEqual(voice.why_line('A card was placed by the band alone and could sit over the row being '
                                         'typed in develop mode, or over the rows.\n\nMore.'),
                          'Before, a card was placed by the band alone and could sit over the row being typed in '
@@ -195,8 +200,8 @@ class TestScript(unittest.TestCase):
         change, patches = collect.series(repo, f'{sha["a"]}..{sha["c"]}')
         p = plan.build(change, 0, 'develop', patches)
         got = voice.script(p, patches)
-        self.assertEqual(texts(got, 'title')[:2], ['This is a series of two patches.',
-                                                   'The first patch doubles in frob.'])
+        self.assertEqual(texts(got, 'title'), ['This is a series of two patches. The first patch doubles in frob. '
+                                               'One file, four lines.'])
         self.assertEqual([(x.key, x.text) for x in got if x.key[0] == 'patch'],
                          [(('patch', 1), 'The next patch triples in other.')])
         self.assertEqual(texts(got, 'end'), ["That's the series."])
@@ -204,20 +209,12 @@ class TestScript(unittest.TestCase):
     def test_dive_line(self):
         repo, sha = fixtures.make_repo(os.path.join(self.tmp.name, 'dive'))
         ch = collect.collect(repo, sha['change'])
-        got = voice.script(plan.build(ch), [ch])
-        dives = [(x.key, x.text) for x in got if x.key[0] == 'xref']
-        self.assertEqual(dives[0], (('xref', 0, 'src/app.py', 5, 11, 'frob'), 'That calls frob, defined in lib.py.'))
-        self.assertEqual(texts(got, 'enter'), ['First, app.py.', 'Next, lib.py.', 'Finally, the tests in test_app.py.'])
-
-    def test_new_definition_line(self):
-        got = voice.script(plan.build(self.vchange), [self.vchange])
-        self.assertIn('A new function, draw_card.', texts(got, 'hunk'))
-        dev = voice.script(plan.build(self.vchange, 0, 'develop'), [self.vchange])
-        self.assertIn('A new function, draw_card.', texts(dev, 'edit'))
-        many = collect.collect(fixtures.make_many_defs_repo(self.tmp.name), 'HEAD')   # 15 bodies changed, no body
-        for mode in ('tour', 'develop'):
-            got = texts(voice.script(plan.build(many, 0, mode), [many]))
-            self.assertEqual(len([t for t in got if t.startswith('A change')]), 1, (mode, got))   # once a file
+        p = plan.build(ch)
+        self.assertEqual(texts(voice.script(p, [ch]), 'xref'), [])   # the body does not name frob
+        for c in [p.commit] + p.commit['commits']:
+            c['body'] = 'The app now calls frob, so the library does the work.'
+        dives = [(x.key, x.text) for x in voice.script(p, [ch]) if x.key[0] == 'xref']
+        self.assertEqual(dives, [(('xref', 0, 'src/app.py', 5, 11, 'frob'), 'That calls frob, defined in lib.py.')])
 
     def test_never_read_out(self):
         for mode in ('tour', 'develop'):
@@ -225,10 +222,9 @@ class TestScript(unittest.TestCase):
             for t in texts(got):
                 for bad in ('http', 'example.com', 'deadbeef', '```', '==', 'Signed-off', '<', '@'):
                     self.assertNotIn(bad, t, (mode, t))
-                self.assertLessEqual(len(t.split()), voice.MAX_WORDS, t)
+                for sentence in re.split(r'(?<=\.) ', t):
+                    self.assertLessEqual(len(sentence.split()), voice.MAX_WORDS, t)
                 self.assertTrue(t.endswith('.'), t)
-            said = ' '.join(texts(got))
-            self.assertIn('frob() now doubles.', said)
             long = next(t for t in texts(got) if t.startswith('The rework of other()'))
             self.assertEqual(long, 'The rework of other() keeps every caller working, because it still returns a number of '
                                    'the same kind.')   # cut at its last clause boundary in 20 words
@@ -330,7 +326,7 @@ class TestSynth(unittest.TestCase):
         e = fixtures.FakeEngine()
         a = self.narrate(e)
         n = len(a.voice['phrases'])
-        self.assertEqual(e.calls, n)
+        self.assertGreaterEqual(e.calls, n)   # a call per sentence
         self.assertTrue(a.voice['dir'].startswith(os.path.join(self.cache, 'git-video', 'voice') + os.sep))
         e2 = fixtures.FakeEngine()
         b = self.narrate(e2)
@@ -349,7 +345,7 @@ class TestSynth(unittest.TestCase):
         lex = voice.lexicon_for(phrases)
         d = voice.script_dir(phrases, lex, 'bf_isabella')
         with self.assertRaises(RuntimeError):
-            voice.synth(phrases, lex, 'bf_isabella', fixtures.FakeEngine(fail_after=2), d)
+            voice.synth(phrases, lex, 'bf_isabella', fixtures.FakeEngine(fail_after=3), d)   # the opening's two sentences, then one
         names = sorted(os.listdir(d))
         self.assertEqual(names, ['000.json', '000.vtt', '000.wav', '001.json', '001.vtt', '001.wav'])
         e = fixtures.FakeEngine()
