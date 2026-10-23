@@ -617,11 +617,11 @@ def _develop_body(change, verbose, patch):
     lines = sum(edits.weight(sc['steps']) for sc in scripts)
     budget = develop_budget(lines)
     target = budget   # what the speed-ups aim at: the budget less the time the folds are held
-    for _ in range(6):
+    for _ in range(12):
         s0, peak, spans = _pace(scripts, target, verbose)
         clocks = [_clock(sc, s0, (*spans[fi], peak) if fi in spans else None) for fi, sc in enumerate(scripts)]
         held = sum(c[3] for c in clocks)
-        if abs(budget - held - target) < 0.01 or budget - held <= 1.0:
+        if abs(budget - held - target) < 1e-4 or budget - held <= 1.0:
             break
         target = budget - held
     chosen = _match_callouts(change, [(f, h) for f in files if f.text is not None for h in f.hunks])
