@@ -119,6 +119,13 @@ class TestPlan(unittest.TestCase):
         mains = [s for s in kinds(self.plans[3], 'xref-push') if s['name'] == 'main']
         self.assertEqual([s['path'] for s in mains], ['tests/test_app.py'])
 
+    def test_definition_sites_are_not_candidates(self):
+        # `def tearDown` names a definition, not a use: never an xref from there.
+        from git_video import xref
+        text = 'def tearDownClass(cls):\n    helper_call(cls)\n'
+        names = [c.name for c in xref.candidates(text, 't.py', [1, 2])]
+        self.assertEqual(names, ['helper_call'])
+
     def test_total_duration(self):
         for p in self.plans.values():
             self.assertAlmostEqual(p.total, sum(s['dur'] for s in p.shots), places=6)

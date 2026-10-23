@@ -28,7 +28,7 @@ THEME = {
     Token.String: '#98c379',
     Token.String.Doc: '#7f9f6a',
     Token.Number: '#da8548',
-    Token.Comment: '#5b6268',
+    Token.Comment: '#848b98',   # lighter than doom-one's: video softens dim text
     Token.Operator: '#56b6c2',
     Token.Operator.Word: '#c678dd',
     Token.Punctuation: FG,

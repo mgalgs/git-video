@@ -103,6 +103,10 @@ class TestFilm(unittest.TestCase):
         end = self.tour.shot_frames[j] + round(self.plan.shots[j]['dur'] * self.plan.fps) - 1
         self.assertEqual(self.tour.state(end), ('src/app.py', ()))
 
+    def test_sweep_settles_to_a_wash(self):
+        self.assertEqual(film.settle(-1), 1.0)
+        self.assertAlmostEqual(film.settle(5), film.SETTLED)
+
     def test_unknown_scene_rejected(self):
         p = plan.Plan.from_json(self.plan.to_json())
         p.shots[1] = {**p.shots[1], 'scene': 'call-graph'}

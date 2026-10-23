@@ -47,7 +47,8 @@ LANGS = {
 KEYWORDS = frozenset('if for while switch return sizeof catch else do new delete case'.split())
 FUNCTION_KINDS = frozenset('def class function func fn struct enum trait type interface union defun defmacro '
                            'defn defclass cl-defun defsubst define'.split())
-SKIP = (Name.Builtin, Name.Namespace, Name.Decorator, Name.Attribute, Name.Tag, Name.Label, Name.Exception)
+# Name.Function and Name.Class mark a definition site (`def frob`), not a use.
+SKIP = (Name.Function, Name.Class, Name.Builtin, Name.Namespace, Name.Decorator, Name.Attribute, Name.Tag, Name.Label, Name.Exception)
 AMBIGUOUS = 5     # a name defined more often than this is skipped (main, setUp, ...)
 MIN_LEN = 3
 
@@ -130,5 +131,7 @@ def resolve(cand, defs, use_path):
 
 
 def rank_key(cand, d, use_path):
-    """Sort key: a definition elsewhere, a call, a function or class, a longer name."""
-    return (d.path == use_path, not cand.is_call, d.kind not in FUNCTION_KINDS, -len(cand.name))
+    """Sort key: a definition elsewhere, a call, a function or class, a use in
+    source rather than a test, a longer name."""
+    return (d.path == use_path, not cand.is_call, d.kind not in FUNCTION_KINDS, collect.is_test(use_path),
+            -len(cand.name))

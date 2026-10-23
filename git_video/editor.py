@@ -149,7 +149,8 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
     moved (None: solid). `marks_added`: lines with a `+` in the fringe;
     `marks_removed_at`: lines before which removed lines sat (a `−` and a rule
     on that boundary). `tints`: (first, last) line ranges washed in the added
-    colour. `sweeps`: (line, progress) highlighter strokes over a line's text.
+    colour. `sweeps`: (line, progress[, strength]) highlighter strokes over a
+    line's text, `strength` (default 1) scaling the band's alpha.
     `boxes`: (line, col, length) words outlined. `modeline`: (left, right)
     strings, default buffer name and position. `echo`: the echo-area text,
     with a cursor after it when `echo_cursor`.
@@ -174,13 +175,14 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                 for ln in range(max(a, first), min(b, last) + 1):
                     cv.rect(tb.x - cw * 0.3, lay.line_y(ln, scroll_top), tb.w + cw * 0.3, lh, theme.tint_added,
                             alpha=theme.tint_alpha)
-            for ln, p in sweeps:
+            for ln, p, *rest in sweeps:
+                fade = rest[0] if rest else 1.0
                 if ln in lines and p > 0:
                     c0, c1 = _text_extent(buf.lines[ln])
                     if c1 > c0:
                         y = lay.line_y(ln, scroll_top)
                         highlighter_swipe(cv, lay.col_x(c0) - cw * 0.25, y + lh * 0.1, (c1 - c0 + 0.5) * cw,
-                                          lh * 0.8, p, color=theme.sweep, alpha=theme.sweep_alpha, seed=ln)
+                                          lh * 0.8, p, color=theme.sweep, alpha=theme.sweep_alpha * fade, seed=ln)
             with cv.clip(*tb.pad(0, 0, -lh, 0)):
                 for ln in lines:
                     y = lay.line_y(ln, scroll_top)

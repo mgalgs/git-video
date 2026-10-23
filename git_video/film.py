@@ -20,6 +20,7 @@ from . import editor, highlight, plan as P, sidebar, sounds
 THEME = editor.Theme()
 FORMATS = ('16x9', '9x16', '1x1')
 UI = 'sans-serif'
+SETTLED = 0.45  # a swept band's strength once it has settled
 FADE = 0.35   # an editor shot next to a card fades in or out over this long
 
 
@@ -323,8 +324,15 @@ def _hunk(tour, cv, st, shot, t, i, before, after):
     shown = [n - 1 for x, y in shot['added'] for n in range(x, y + 1) if b <= n - 1 < b + rows]
     p = vb.clamp01((t - P.HUNK_SCROLL) / P.HUNK_SWEEP)
     k = len(shown)
-    sweeps = [(ln, vb.ease_in_out_quart(vb.clamp01(p * k - j))) for j, ln in enumerate(shown)]
+    sweeps = [(ln, vb.ease_in_out_quart(vb.clamp01(p * k - j)), settle(t - P.HUNK_SCROLL - P.HUNK_SWEEP))
+              for j, ln in enumerate(shown)]
     _pane(tour, cv, st, after, top=top, sweeps=sweeps, blink=max(0.0, t - P.HUNK_SCROLL))
+
+
+def settle(t):
+    """A swept band's strength `t` s after the sweep ends: full, then easing down to
+    a light wash so the text under it stays easy to read."""
+    return 1 - (1 - SETTLED) * _ease(t, 0.0, 0.6)
 
 
 def _xref_push(tour, cv, st, shot, t, i, before, after):
@@ -346,7 +354,8 @@ def _xref_push(tour, cv, st, shot, t, i, before, after):
         return
     d = after.cursor
     p = vb.clamp01((t - P.XREF_SWITCH) / P.XREF_SWEEP)
-    _pane(tour, cv, st, after, sweeps=[(d[0], vb.ease_in_out_quart(p))], boxes=[(d[0], d[1], len(name))],
+    band = (d[0], vb.ease_in_out_quart(p), settle(t - P.XREF_SWITCH - P.XREF_SWEEP))
+    _pane(tour, cv, st, after, sweeps=[band], boxes=[(d[0], d[1], len(name))],
           blink=t - P.XREF_SWITCH)
 
 
