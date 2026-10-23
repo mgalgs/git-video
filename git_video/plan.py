@@ -59,7 +59,8 @@ FOCUS_OUT = 0.3           # ... and comes back up before the shot ends
 CALLOUT_IN = 0.8          # a commit sentence's card fades in and its line runs to the words
 CALLOUT_EACH = 2.6        # each callout stays at least this long (the hunk's read grows to fit)
 CALLOUT_MAX_PER_HUNK = 2
-INTER_DUR = 2.6           # the card between two patches of a --series
+INTER_DUR = 2.6           # the card between two patches of a --series ...
+INTER_REVEAL = 1.2        # ... the next patch's card comes to the top of the deck over this long
 
 # Develop mode's pacing. The performance (its edit shots) aims at
 # SECONDS_PER_LINE per changed line, never under PERF_FLOOR; typing runs up to

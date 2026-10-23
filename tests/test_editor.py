@@ -44,6 +44,32 @@ class TestEditor(unittest.TestCase):
             for name, b in cv.marks:
                 self.assertTrue(box.contains(b), (box, name, b))
 
+    def test_region_fold_progress_marks(self):
+        for box in (vb.Box(0, 0, 1256, 1032), vb.Box(300, 200, 700, 500)):
+            cv = vb.Canvas(1920, 1080, '#000')
+            lay = editor.layout(box, FONT, minimap=True)
+            editor.draw(cv, lay, buffer(), 3, cursor=(6, 2), region=((5, 4), (7, 2)), folds=[(9, 37)],
+                        progress=(12, 225))
+            marks = dict(cv.marks)
+            for name in ('editor.region', 'editor.fold', 'editor.progress'):
+                self.assertIn(name, marks, (box, name))
+                self.assertTrue(box.contains(marks[name]), (box, name))
+            self.assertTrue(marks['editor.modeline'].contains(marks['editor.progress']))
+            self.assertFalse(marks['editor.region'].intersects(marks['editor.fold']))
+            cv = vb.Canvas(1920, 1080, '#000')
+            editor.draw(cv, lay, buffer(), 3, cursor=(6, 2))
+            names = {n for n, _ in cv.marks}
+            self.assertFalse(names & {'editor.region', 'editor.fold', 'editor.progress'})
+        # the region is outlined, not only shaded: its edge colour is on its border
+        cv = vb.Canvas(1000, 700, '#000')
+        lay = editor.layout(vb.Box(0, 0, 1000, 700), FONT)
+        theme = editor.Theme()
+        editor.draw(cv, lay, buffer(), 0, region=((2, 0), (2, 6)), theme=theme)
+        r = dict(cv.marks)['editor.region']
+        edge = tuple(round(c * 255) for c in vb.rgba(theme.region_edge)[:3])
+        b, g, red, _ = pixel(cv, r.x + r.w / 2, r.y + 2)
+        self.assertEqual((red, g, b), edge)
+
     def test_minimap(self):
         box = vb.Box(0, 0, 1000, 700)
         plain = editor.layout(box, FONT)

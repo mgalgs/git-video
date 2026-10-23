@@ -389,17 +389,27 @@ def source_time(t, clock):
 
 
 def shot_time(src, clock):
-    """The inverse of `source_time`: when natural time `src` is on screen."""
-    lo, hi = 0.0, clock['times'][-1]
-    while source_time(hi, clock) < src:
-        hi = hi * 2 + 1
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        if source_time(mid, clock) < src:
-            lo = mid
-        else:
-            hi = mid
-    return hi
+    """The inverse of `source_time`: when natural time `src` is on screen
+    (the speed is linear between keyframes, so each piece is a quadratic)."""
+    times, speeds = clock['times'], clock['speeds']
+    acc = speeds[0] * times[0]
+    if src <= acc:
+        return src / speeds[0]
+    for (t0, s0), (t1, s1) in zip(zip(times, speeds), zip(times[1:], speeds[1:])):
+        seg = (t1 - t0) * (s0 + s1) / 2
+        if src <= acc + seg:
+            need, k = src - acc, (s1 - s0) / (2 * (t1 - t0))
+            if abs(k) < 1e-12:
+                return t0 + need / s0
+            return t0 + (-s0 + math.sqrt(s0 * s0 + 4 * k * need)) / (2 * k)
+        acc += seg
+    return times[-1] + (src - acc) / speeds[-1]
+
+
+def speed_at(t, clock):
+    """How many natural seconds play per second on screen at `t`."""
+    from videobuilder.capabilities.principles.time_remapping import speed_at as at
+    return at(t, clock['times'], clock['speeds'])
 
 
 def clock(natural, s0, fast=None, ramp=0.4):

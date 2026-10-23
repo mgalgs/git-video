@@ -521,6 +521,126 @@ class TestFilm(unittest.TestCase):
         v = self.tour.views[i][0]
         return v.top, 4, lay.rows, len(self.tour.buffers[0, 'src/app.py', 'new'].lines)
 
+    def develop_tours(self):
+        if not hasattr(self, '_develop'):
+            out = {}
+            for name, (repo, rev) in {
+                    'change': (self.repo, self.sha['change']),
+                    'big': (fixtures.make_big_repo(self.tmp.name + '/dbig'), 'HEAD'),
+                    'callout': (fixtures.make_callout_repo(self.tmp.name + '/dcall')[0], 'HEAD'),
+                    'develop': (fixtures.make_develop_repo(self.tmp.name + '/ddev'), 'HEAD')}.items():
+                ch = collect.collect(repo, rev)
+                p = plan.build(ch, 0, 'develop')
+                out[name] = film.Tour(p, ch, log=io.StringIO())
+            type(self)._develop = out
+        return self._develop
+
+    def test_develop_keyframes_all_formats(self):
+        tours = self.develop_tours()
+        labels = {name: [label for _, label in t.film.keyframes] for name, t in tours.items()}
+        for want in ('typing src/lib.py', 'kill src/lib.py', 'end'):
+            self.assertIn(want, labels['change'])
+        self.assertTrue(any(x.startswith('speedup ') for x in labels['big']), labels['big'])
+        self.assertTrue(any(x.startswith('elision ') for x in labels['develop']), labels['develop'])
+        want_mark = {'kill': 'editor.region', 'speedup': 'editor.badge', 'elision': 'editor.fold'}
+        for name, tour in tours.items():
+            for n, label in tour.film.keyframes:
+                kind = label.split()[0]
+                i, t = tour.at(n)
+                if kind in ('typing', 'kill', 'speedup', 'elision'):
+                    self.assertEqual(tour.shots[i]['kind'], 'edit', label)
+                for fmt in ('16x9', '9x16', '1x1'):
+                    cv = tour.film.frame(n, fmt)
+                    st = film.stage(cv)
+                    marks = dict(cv.marks)
+                    if kind not in ('typing', 'kill', 'speedup', 'elision'):
+                        continue
+                    self.assertIn('editor.progress', marks, (name, label, fmt))
+                    if kind in want_mark:
+                        self.assertIn(want_mark[kind], marks, (name, label, fmt))
+                    cursor = tour.performance(i).state_at(film.edits.source_time(t, tour.shots[i]['clock'])).cursor
+                    lay = film.editor.layout(st.main, st.mono, digits=tour.edit_texts[i][2], minimap=True)
+                    _, top = tour.performance(i).view(film.edits.source_time(t, tour.shots[i]['clock']), lay.rows)
+                    self.assertTrue(top <= cursor[0] < top + lay.rows, (name, label, fmt))
+                    side = [b for m, b in cv.marks if m.startswith('sidebar.')]
+                    for m, b in cv.marks:
+                        if m.startswith(('editor.', 'callout.')):
+                            self.assertTrue(st.main.contains(b), (name, label, fmt, m, b))
+                            for c in side:
+                                self.assertFalse(b.intersects(c), (name, label, fmt, m))
+                    if 'editor.badge' in marks and 'callout.card' in marks:
+                        self.assertFalse(marks['editor.badge'].intersects(marks['callout.card']), (label, fmt))
+                    if 'editor.badge' in marks:
+                        self.assertTrue(marks['editor.text'].contains(marks['editor.badge']), (label, fmt))
+
+    def test_develop_callout_on_screen(self):
+        tour = self.develop_tours()['callout']
+        (i,) = [k for k, s in enumerate(tour.shots) if s['kind'] == 'edit']
+        c = tour.shots[i]['callouts'][0]
+        n = tour.shot_frames[i] + round((c['at'] + 1.0) * tour.fps)
+        for fmt in ('16x9', '9x16', '1x1'):
+            marks = dict(tour.film.frame(n, fmt).marks)
+            self.assertIn('callout.card', marks, fmt)
+            self.assertTrue(marks['editor.text'].contains(marks['callout.card']), fmt)
+            self.assertFalse(marks['callout.card'].intersects(marks['callout.target']), fmt)
+
+    def test_develop_draw_is_pure_and_flat(self):
+        import time
+        ch = collect.collect(fixtures.make_budget_repo(self.tmp.name + '/flat'), 'HEAD')
+        tour = film.Tour(plan.build(ch, 2, 'develop'), ch, formats=('16x9',), log=io.StringIO())
+        (i,) = [k for k, s in enumerate(tour.shots) if s['kind'] == 'edit']
+        first, last = tour.shot_frames[i] + 3, tour.shot_frames[i + 1] - 3
+        mid = (first + last) // 2
+        for n in (first, mid, last, mid + 1):
+            a = tour.film.frame(n, '16x9').bgra()
+            tour.film.frame(n + 11, '16x9')
+            self.assertEqual(a, tour.film.frame(n, '16x9').bgra(), n)
+
+        def cost(n):
+            best = None
+            for _ in range(3):
+                t0 = time.perf_counter()
+                tour.film.frame(n, '16x9')
+                dt = time.perf_counter() - t0
+                best = dt if best is None else min(best, dt)
+            return best
+
+        self.assertLessEqual(cost(last), 4 * cost(first))
+
+    def test_develop_recap(self):
+        tour = self.develop_tours()['change']
+        files, written = film.recap(tour.plan)
+        self.assertEqual(files, ['src/lib.py', 'src/app.py', 'tests/test_app.py'])
+        self.assertIn(('frob', 'src/lib.py', 1), written)
+        n = next(n for n, label in tour.film.keyframes if label == 'end')
+        for fmt in ('16x9', '9x16', '1x1'):
+            marks = dict(tour.film.frame(n, fmt).marks)
+            for name in ('card.header', 'card.visited', 'card.defs'):
+                self.assertIn(name, marks, fmt)
+
+    def test_develop_views_meet_at_the_cuts(self):
+        tour = self.develop_tours()['change']
+        for i, s in enumerate(tour.shots):
+            if s['kind'] != 'edit' or i + 1 >= len(tour.shots) or tour.shots[i + 1]['scene'] == 'card':
+                continue
+            end = tour.film.frame(tour.shot_frames[i + 1] - 1, '16x9')
+            start = tour.film.frame(tour.shot_frames[i + 1], '16x9')
+            a, b = dict(end.marks)['editor.text'], dict(start.marks)['editor.text']
+            for x, y in zip(a, b):
+                self.assertAlmostEqual(x, y, delta=1.0)
+
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'needs ffmpeg')
+    def test_render_develop_smoke(self):
+        from videobuilder.render import render
+        tour = self.develop_tours()['change']
+        (i,) = [k for k, s in enumerate(tour.shots) if s['kind'] == 'edit'][:1]
+        out = os.path.join(self.tmp.name, 'develop.mp4')
+        f0 = tour.shot_frames[i]
+        render(tour.film, out, format='16x9', jobs=1, frames=(f0, f0 + 10), log=io.StringIO())
+        r = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-of', 'json', out], capture_output=True,
+                           text=True, check=True)
+        self.assertIn('video', [s['codec_type'] for s in json.loads(r.stdout)['streams']])
+
     @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'needs ffmpeg')
     def test_render_smoke(self):
         from videobuilder.render import render

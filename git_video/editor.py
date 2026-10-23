@@ -63,6 +63,11 @@ class Theme:
     minimap_bar: str = '#4b5263'
     minimap_bar_changed: str = '#98be65'
     minimap_view: str = '#51afef'
+    region: str = '#3e4451'      # the marked region about to be killed ...
+    region_edge: str = '#ff6c6b' # ... outlined, so it reads without its colour
+    fold_fg: str = '#7a8291'
+    progress_done: str = '#98be65'
+    progress_todo: str = '#3f444a'
 
 
 @dataclass
@@ -241,7 +246,8 @@ def _clipped(b, area):
 
 def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), marks_removed_at=(),
          tints=(), sweeps=(), boxes=(), modeline=None, echo='', echo_cursor=False, minimap=None,
-         morphs=(), morph_p=1.0, focus=None, focus_amount=0.0, motion=None, theme=Theme()):
+         morphs=(), morph_p=1.0, focus=None, focus_amount=0.0, motion=None, region=None, folds=(),
+         progress=None, theme=Theme()):
     """Draw the pane and return its Placement.
 
     `cursor`: (line, col) of point, a block; `blink`: seconds since point last
@@ -269,6 +275,12 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
     `motion`: (degrees, stretch, streak px) while the view scrolls fast: the
     text leans and stretches by the first two, and a faint copy trails
     `streak` px behind it.
+
+    `region`: ((line, col), (line, col)) the marked region, shaded and
+    outlined. `folds`: (line, count) rows drawn under `line` over what is
+    there, `… count lines` in a dashed box: an elided run still pouring in.
+    `progress`: (done, total) lines, as a count and a thin bar in the mode
+    line.
     """
     box, tb, lh, cw = lay.box, lay.text_box, lay.line_h, lay.cell_w
     n = len(buf.lines)
@@ -322,6 +334,8 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                 if h > 0.5:
                     cv.rect(tb.x - cw * 0.3, tops[k], tb.w + cw * 0.3, h, theme.removed_fg,
                             alpha=theme.removed_alpha * (1 - _phase(p, GLIDE)))
+            if region is not None:
+                _region(cv, lay, buf, region, y_of, lineset, theme)
             for ln, sp, *rest in sweeps:
                 fade = rest[0] if rest else 1.0
                 if ln in lineset and sp > 0:
@@ -387,6 +401,8 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                     y = y_of(ln)
                     b = vb.Box(lay.col_x(col), y, length * cw, lh)
                     cv.outline(b.x - 3, b.y + 1, b.w + 6, b.h - 2, theme.xref_box, width=2.5, radius=4)
+            for ln, count in folds:
+                _fold(cv, lay, y_of(ln) + lh, count, small, theme)
             if cursor is not None:
                 cl, cc = cursor
                 cursor_box = lay.word_box(cl, cc, 1, scroll_top)
@@ -427,9 +443,12 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
         left, right = modeline if modeline is not None else modeline_text(buf, cursor)
         my = mb.y + (mb.h - lh) / 2
         bold = vb.Font(font.family, font.size, weight=700, line_height=font.line_height)
-        lb = vbtext.draw(cv, [left], bold, mb.x + cw * 0.5, my, theme.modeline_fg)
-        rw = vbtext.measure(right, font)
-        vbtext.draw(cv, [right], font, max(lb.right + cw * 2, mb.right - rw - cw * 0.5), my, theme.modeline_accent)
+        rx = mb.right - vbtext.measure(right, font) - cw * 0.5
+        if progress is not None:
+            left_end = _progress(cv, lay, progress, left, bold, rx - cw * 2, my, theme)
+        else:
+            left_end = vbtext.draw(cv, [left], bold, mb.x + cw * 0.5, my, theme.modeline_fg).right
+        vbtext.draw(cv, [right], font, max(left_end + cw * 2, rx), my, theme.modeline_accent)
         cv.mark('editor.modeline', *mb)
         eb = lay.echo_box
         ey = eb.y + (eb.h - lh) / 2
@@ -439,6 +458,105 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
             cv.rect(eb.x + cw * (0.5 + len(echo)), ey, cw, lh, theme.cursor)
         cv.mark('editor.echo', *eb)
     return Placement(lay, scroll_top, lay.visible_range(scroll_top, n), cursor_box)
+
+
+def _region(cv, lay, buf, region, y_of, lineset, theme):
+    """The marked region: each row's stretch shaded, the whole outlined (a
+    step at each row whose ends differ), so it reads without its colour.
+    A row the region runs past ends one cell after its text, for the newline."""
+    (l0, c0), (l1, c1) = sorted(region)
+    if (l0, c0) == (l1, c1):
+        return
+    cw, lh = lay.cell_w, lay.line_h
+    rows = []
+    for ln in range(l0, l1 + 1):
+        if ln not in lineset:
+            continue
+        n = len(''.join(t for _, t in buf.lines[ln])) if ln < len(buf.lines) else 0
+        a = c0 if ln == l0 else 0
+        b = c1 if ln == l1 else n + 1
+        if b > a:
+            rows.append((lay.col_x(a), lay.col_x(b), y_of(ln)))
+    if not rows:
+        return
+    for x0, x1, y in rows:
+        cv.rect(x0, y, x1 - x0, lh, theme.region, alpha=0.95)
+    w, e = 2.0, theme.region_edge
+    for k, (x0, x1, y) in enumerate(rows):
+        cv.line(x0, y, x0, y + lh, e, width=w)
+        cv.line(x1, y, x1, y + lh, e, width=w)
+        if k == 0:
+            cv.line(x0, y, x1, y, e, width=w)
+        else:
+            px0, px1, _ = rows[k - 1]
+            if px0 != x0:
+                cv.line(min(px0, x0), y, max(px0, x0), y, e, width=w)
+            if px1 != x1:
+                cv.line(min(px1, x1), y, max(px1, x1), y, e, width=w)
+        if k == len(rows) - 1:
+            cv.line(x0, y + lh, x1, y + lh, e, width=w)
+    top, bottom = rows[0][2], rows[-1][2] + lh
+    left, right = min(r[0] for r in rows), max(r[1] for r in rows)
+    m = _clipped(vb.Box(left - w, top - w, right - left + 2 * w, bottom - top + 2 * w),
+                 vb.Box(lay.box.x, lay.box.y, lay.box.w, lay.modeline_box.y - lay.box.y))
+    if m is not None:
+        cv.mark('editor.region', *m)
+
+
+def _fold(cv, lay, y, count, font, theme):
+    """An elided run's fold row at `y`: `… count lines` in a dashed box over
+    the row, the count falling as the lines pour in above it."""
+    tb, cw, lh = lay.text_box, lay.cell_w, lay.line_h
+    if y + lh <= tb.y or y >= tb.bottom:
+        return
+    label = f'\u2026 {count} line{"s" if count != 1 else ""}'
+    w = (len(label) + 3) * cw
+    box = vb.Box(tb.x, y + lh * 0.08, w, lh * 0.84)
+    gx = lay.box.x + lay.fringe_w   # a row of its own: no line number shows through
+    cv.rect(gx, y, tb.right - gx, lh, theme.bg)
+    cv.rect(*box, theme.fringe_bg, radius=4)
+    dash, gap = cw * 0.6, cw * 0.4
+    x = box.x
+    while x < box.right:
+        x1 = min(box.right, x + dash)
+        cv.line(x, box.y, x1, box.y, theme.fold_fg, width=1.5)
+        cv.line(x, box.bottom, x1, box.bottom, theme.fold_fg, width=1.5)
+        x += dash + gap
+    cv.line(box.x, box.y, box.x, box.bottom, theme.fold_fg, width=1.5)
+    cv.line(box.right, box.y, box.right, box.bottom, theme.fold_fg, width=1.5)
+    vbtext.draw(cv, [label], lay.font, box.x + cw * 1.5, y, theme.fold_fg)
+    m = _clipped(box, tb)
+    if m is not None:
+        cv.mark('editor.fold', *m)
+
+
+def _progress(cv, lay, progress, left, bold, right_x, y, theme):
+    """The mode line's left text (cut from the left to make room) and the lines
+    done of the total, as `done/total` and a thin bar ending before `right_x`.
+    Returns where it ends."""
+    from .sidebar import ellipsize_left
+    mb, cw = lay.modeline_box, lay.cell_w
+    done, total = progress
+    label = f'{done}/{total} lines'
+    small = vb.Font(lay.font.family, lay.font.size * 0.85, line_height=lay.font.line_height)
+    lw = vbtext.measure(label, small)
+    bar_w = max(cw * 4, min(cw * 14, (right_x - mb.x) * 0.25))
+    strip_w = lw + cw + bar_w
+    x0 = mb.x + cw * 0.5
+    room = right_x - x0 - strip_w - cw * 2
+    if room < cw * 6:   # no room for the strip: the left text as it is
+        return vbtext.draw(cv, [left], bold, x0, y, theme.modeline_fg).right
+    lb = vbtext.draw(cv, [ellipsize_left(left, bold, room)], bold, x0, y, theme.modeline_fg)
+    sx = max(lb.right + cw * 2, right_x - strip_w)
+    vbtext.draw(cv, [label], small, sx, y + (vbtext.line_height(bold) - vbtext.line_height(small)) / 2,
+                theme.modeline_fg)
+    bx, by, bh = sx + lw + cw, mb.y + mb.h / 2 - 3, 6
+    frac = done / total if total else 1.0
+    cv.rect(bx, by, bar_w, bh, theme.progress_todo, radius=3)
+    if frac > 0:
+        cv.rect(bx, by, bar_w * min(1.0, frac), bh, theme.progress_done, radius=3)
+    cv.mark('editor.progress', sx, mb.y, bx + bar_w - sx, mb.h)
+    return bx + bar_w
 
 
 def _moving(cv, tb, motion):

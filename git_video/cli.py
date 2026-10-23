@@ -121,8 +121,6 @@ def main(argv=None):
     if args.plan_json:
         print(tour.to_json())
         return 0
-    if args.mode == 'develop':
-        return _fail('--mode develop renders land with the film; use --plan-json for now', 2)
     from . import film
     formats = list(FORMATS) if args.format == 'all' else [args.format]
     tour = film.Tour(tour, change, formats=formats, font=args.font, patches=patches)

@@ -1,4 +1,5 @@
 import io
+import math
 import os
 import tempfile
 import unittest
@@ -10,7 +11,8 @@ from git_video import collect, film, plan, sounds
 from tests import fixtures
 
 FULL = [('pro_typing_key/tick', 'key'), ('pro_click/mouse', 'click'), ('pro_hover_tick/soft', 'tick'),
-        ('whoosh_fast/tight', 'whoosh'), ('whoosh_fast/sleeve', 'whoosh'), ('pro_hover_tick/detent', 'tick')]
+        ('whoosh_fast/tight', 'whoosh'), ('whoosh_fast/sleeve', 'whoosh'), ('pro_hover_tick/detent', 'tick'),
+        ('pro_typing_run/fast', 'typing')]
 
 
 class TestSounds(unittest.TestCase):
@@ -97,6 +99,52 @@ class TestSounds(unittest.TestCase):
         h = plan.shot('editor', 'hunk', 4.0, path='a.py', scroll='far', callouts=[])
         self.assertEqual(sounds.cues([h], [0], 30), [(sounds.frame_at(0, 0.1, 30), 'whoosh-soft'),
                                                      (sounds.frame_at(0, plan.HUNK_SCROLL_FAR, 30), 'tick')])
+
+    def test_edit_cues(self):
+        from git_video import edits
+        steps = [{'kind': 'jump', 'at': 0.0, 'dur': 1.0, 'times': [0.0, 0.18, 0.4, 0.5], 'land': 0.5,
+                  'scroll': 'far', 'line': 80, 'col': 0},
+                 {'kind': 'kill', 'at': 1.0, 'dur': 0.6, 'mark': 0.1, 'cut': 0.4},
+                 {'kind': 'type', 'at': 1.6, 'dur': 1.0, 'times': [0.0, 0.01, 0.2, 0.4], 'open': False},
+                 {'kind': 'fill', 'at': 2.6, 'dur': 1.0}]
+        clk, dur, _ = edits.clock(3.6, 1.0)
+        shot = plan.shot('editor', 'edit', dur, steps=steps, clock=clk, fast=[], callouts=[{'at': 2.0}])
+        cues = sounds.cues([shot], [0], 30)
+        keys = [f for f, c in cues if c == 'key']
+        # jump keys, the kill's mark and cut, typed keys (0.01 s after the one before is not heard alone)
+        want = [0.0, 0.18, 0.4, 0.5, 1.1, 1.4, 1.6, 1.8, 2.0]
+        self.assertEqual(keys, [sounds.frame_at(0, t, 30) for t in want])
+        self.assertIn((sounds.frame_at(0, 0.5, 30), 'whoosh-soft'), cues)
+        self.assertIn((sounds.frame_at(0, 2.6, 30), 'typing-run'), cues)
+        self.assertIn((sounds.frame_at(0, 2.0 + 0.75 * plan.CALLOUT_IN, 30), 'tick'), cues)
+        # a speed-up: no keys inside it, a typing run at its start and every RUN_EVERY s
+        steps = [{'kind': 'type', 'at': 0.0, 'dur': 30.0, 'times': [k * 0.1 for k in range(300)], 'open': False}]
+        clk, dur, span = edits.clock(30.0, 1.0, (2.0, 29.0, 8.0), 0.4)
+        shot = plan.shot('editor', 'edit', dur, steps=steps, clock=clk, fast=[span], callouts=[])
+        cues = sounds.cues([shot], [0], 30)
+        inside = [f for f, c in cues if c == 'key' and span['at'] * 30 <= f <= span['until'] * 30]
+        self.assertEqual(inside, [])
+        runs = [f for f, c in cues if c == 'typing-run']
+        self.assertEqual(runs[0], sounds.frame_at(0, span['at'], 30))
+        self.assertEqual(len(runs), math.ceil((span['until'] - span['at']) / sounds.RUN_EVERY))
+        self.assertTrue([f for f, c in cues if c == 'key'])
+
+    def test_develop_counts_with_full_pack(self):
+        ch = collect.collect(fixtures.make_big_repo(self.tmp.name), 'HEAD')
+        p = plan.build(ch, 0, 'develop')
+        with self.pack('fulldev', FULL):
+            f, frames = film.build(p, ch, log=io.StringIO())
+        by = {}
+        for s in f.sounds:
+            by[s.effect] = by.get(s.effect, 0) + 1
+        self.assertGreater(by.get('pro_typing_run/fast', 0), 0)
+        self.assertGreater(by.get('pro_typing_key/tick', 0), 0)
+        fps = p.fps
+        for i, s in enumerate(p.shots):
+            for span in s.get('fast') or ():
+                a, b = frames[i] + span['at'] * fps, frames[i] + span['until'] * fps
+                keys = [x for x in f.sounds if x.effect == 'pro_typing_key/tick' and a < x.at < b - 1]
+                self.assertEqual(keys, [])
 
     def test_keystroke_frames_deterministic(self):
         a = sounds.cues(self.plan.shots, [0] * len(self.plan.shots), 30)

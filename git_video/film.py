@@ -30,7 +30,7 @@ from videobuilder.capabilities.ui.cursor_state_change import draw_cursor as draw
 from videobuilder.capabilities.principles.time_remapping import speed_ramp
 from videobuilder.capabilities.ui.scroll_velocity_skew import scroll_velocity, velocity_skew
 
-from . import editor, graph as graphmod, highlight, plan as P, repomap, sidebar, sounds
+from . import edits, editor, graph as graphmod, highlight, plan as P, repomap, sidebar, sounds
 
 THEME = editor.Theme()
 FORMATS = ('16x9', '9x16', '1x1')
@@ -83,6 +83,8 @@ class View:
     extra: int = 0              # rows a morph's old lines add past the file's end before they go
     patch: int = 0              # the --series patch whose text is shown
     variant: str = 'new'        # the file as the patch leaves it (`new`) or finds it (`old`)
+    edit: int | None = None     # develop: the edit shot whose buffer is shown, ...
+    end: bool = False           # ... as it ends (else as it starts)
 
 
 SCRATCH_TEXT = (';; This buffer is for text that is not saved, and for Lisp evaluation.\n'
@@ -138,8 +140,11 @@ class Tour:
                 added = [(a - 1, b - 1) for a, b in m.get('added', ())]
                 self.marks[k, f['path']] = (sorted({n for a, b in added for n in range(a, b + 1)}),
                                             sorted(set(m.get('removed_at', ()))), added)
+        self.develop = plan.mode == 'develop'
         for s in self.shots:
             k = s.get('patch', 0)
+            if self.develop and s['kind'] in ('edit', 'open', 'dive', 'travel'):
+                continue   # develop draws a performance's buffer, not a file's text
             for path in (s.get('path'), s.get('to'), (s.get('definition') or {}).get('path')):
                 if path and (k, path, 'new') not in self.buffers:
                     ch = self.patches[k]
@@ -158,12 +163,20 @@ class Tour:
                     for g in s['morph']['segments'])
         self.graph_layouts = {}   # the call graph per side-bar box, laid out once
         self.graph_nodes = {n['id'] for n in (plan.graph or {}).get('nodes', ())}
-        self.graph_home = []   # per shot: the node of the last hunk shown in its file
+        self.graph_home = []   # per shot: the node of the last hunk shown (or written) in its file
+        self.graph_written = {}   # develop: edit shot -> [(at, node id)] it writes, in order
+        for n in (plan.graph or {}).get('nodes', ()):
+            if n['touched'] and self.shots[n['first']]['kind'] == 'edit':
+                self.graph_written.setdefault(n['first'], []).append((n.get('at', 0.0), n['id']))
         home = {}
-        for s in self.shots:
+        for i, s in enumerate(self.shots):
             if s['kind'] == 'hunk':
                 home[s['path']] = s.get('node')
             self.graph_home.append(dict(home))
+            if s['kind'] == 'edit' and i in self.graph_written:
+                home[s['path']] = sorted(self.graph_written[i])[-1][1]
+        self.performances = {}   # develop: edit shot -> its edits.Performance, made on first use
+        self.edit_texts = {}     # develop: edit shot -> (old lines' runs, new lines' runs, digits, mode)
         self.callout_text = {}   # (shot, callout, width) -> its wrapped lines, once per format
         self.minimaps = {}   # the minimap per buffer: bars and marks, computed once
         for (k, path, variant), buf in self.buffers.items():
@@ -192,6 +205,20 @@ class Tour:
         """The editor.Buffer `view` shows (the scratch buffer for no file)."""
         return self.buffers[view.patch, view.path, view.variant] if view.path else SCRATCH
 
+    def performance(self, i):
+        """The edit shot i's script played on its file's old text."""
+        if i not in self.performances:
+            s = self.shots[i]
+            ch = self.patches[s.get('patch', 0)]
+            old_text = ch.old_text(s['path']) or ''
+            new_text = ch.text(s['path']) or ''
+            old, new = edits.split_lines(old_text), edits.split_lines(new_text)
+            self.performances[i] = edits.Performance(old, s['steps'])
+            self.edit_texts[i] = (highlight.highlight_lines(old_text, s['path']) if old else (),
+                                  highlight.highlight_lines(new_text, s['path']) if new else (),
+                                  max(3, len(str(max(len(old), len(new)) + 1))), _mode(s['path']))
+        return self.performances[i]
+
     def map_layout(self, box):
         k = tuple(box)
         if k not in self.maps:
@@ -214,6 +241,11 @@ class Tour:
             before, kind, k = cur, s['kind'], s.get('patch', 0)
             if kind == 'map':
                 cur = View(None, 0, 0, (0, 0), cur.stack)
+            elif kind in ('open', 'dive', 'travel') and self.develop:   # into the next edit, as it starts
+                j = next((j for j in range(len(out) + 1, len(self.shots)) if self.shots[j]['kind'] == 'edit'), None)
+                cur = View(s.get('to', s['path']), 0, 0, (0, 0), cur.stack, patch=k, variant='old', edit=j)
+            elif kind == 'edit':
+                cur = View(s['path'], 0, 0, (0, 0), cur.stack, patch=k, variant='new', edit=len(out), end=True)
             elif kind in ('open', 'dive', 'travel'):
                 cur = View(s.get('to', s['path']), 0, 0, (0, 0), cur.stack, patch=k)
             elif kind == 'hunk':
@@ -253,6 +285,7 @@ class Tour:
 
     def keyframes(self):
         out, hunks, travels, seen, graphed = [], 0, 0, set(), False
+        seen_edit = {}
         for i, s in enumerate(self.shots):
             f0, kind = self.shot_frames[i], s['kind']
             if kind == 'map':
@@ -288,6 +321,10 @@ class Tour:
                 if m and 'ghost' not in seen and not any(g['new'] for g in m['segments']):
                     seen.add('ghost')
                     out.append((f0 + round((m['at'] + 0.3 * m['dur']) * self.fps), f'ghost {name}'))
+            elif kind == 'edit':
+                out += self._edit_keyframes(i, s, seen_edit)
+            elif kind == 'patch':
+                out.append((f0 + round(P.INTER_REVEAL * 0.5 * self.fps), f'interstitial {s["patch"]}'))
             elif kind == 'xref-push':
                 out.append((f0 + round((P.XREF_CLICK + 0.12) * self.fps), f'xref {s["name"]} click'))
                 out.append((f0 + round((P.XREF_SWITCH + P.XREF_REVEAL * 0.4) * self.fps), f'xref {s["name"]} dive'))
@@ -299,6 +336,43 @@ class Tour:
                             f'xref {s["name"]} def'))
         out.sort(key=lambda kf: kf[0])   # stills numbered in the order they are seen
         return tuple((min(n, self.frames - 1), label) for n, label in out)
+
+    def _edit_keyframes(self, i, s, seen):
+        """An edit shot's key moments: typing (the longest typed step outside a
+        speed-up, in the first three files), the first kill, speed-up and
+        elision."""
+        f0, path, clk = self.shot_frames[i], s['path'], s['clock']
+        out = []
+
+        def at(src):
+            return f0 + round(edits.shot_time(src, clk) * self.fps)
+
+        fast = [(f['at'], f['until']) for f in s['fast']]
+
+        def calm(src):
+            t = edits.shot_time(src, clk)
+            return not any(a - 0.1 <= t <= b + 0.1 for a, b in fast)
+
+        typed = [st for st in s['steps'] if st['kind'] == 'type' and calm(st['at']) and calm(st['at'] + st['dur'])]
+        if typed and seen.get('typing', 0) < 3:
+            seen['typing'] = seen.get('typing', 0) + 1
+            st = max(typed, key=lambda x: (len(x['text']), -x['at']))
+            out.append((at(st['at'] + st['times'][len(st['times']) * 2 // 3 - 1 if len(st['times']) > 1 else 0]
+                           + 0.01), f'typing {path}'))
+        kills = [st for st in s['steps'] if st['kind'] == 'kill' and calm(st['at'] + st['cut'])]
+        if kills and 'kill' not in seen:
+            seen['kill'] = 1
+            out.append((at(kills[0]['at'] + kills[0]['cut'] - 0.08), f'kill {path}'))
+        if fast and 'speedup' not in seen:
+            seen['speedup'] = 1
+            f = s['fast'][0]
+            out.append((f0 + round((f['times'][1] + f['times'][2]) / 2 * self.fps), f'speedup {path}'))
+        fills = [st for st in s['steps'] if st['kind'] == 'fill']
+        if fills and 'elision' not in seen:
+            seen['elision'] = 1
+            st = fills[0]
+            out.append((at(st['at'] + st['dur'] * edits.FILL_POUR * 0.45), f'elision {path}'))
+        return out
 
     # ---- drawing ----
     def draw(self, n, cv):
@@ -335,18 +409,21 @@ class Tour:
             self.graph_layouts[k] = graphmod.layout(self.plan.graph, box, scale)
         return self.graph_layouts[k]
 
-    def graph_current(self, i, path, stack):
-        """The node on screen: the top of the xref stack, else the last hunk's
-        node in the file in view."""
+    def graph_current(self, i, path, stack, t=0.0):
+        """The node on screen: the top of the xref stack, else the definition an
+        edit shot is writing, else the last hunk's node in the file in view."""
         if stack:
             name, p, _ = stack[-1]
             nid = f'{p}:{name}'
             return nid if nid in self.graph_nodes else None
+        written = [nid for at, nid in self.graph_written.get(i, ()) if at <= t]
+        if written:
+            return written[-1]
         return self.graph_home[i].get(path)
 
     def draw_graph(self, cv, box, i, t, path, stack, scale):
         trail = [f'{p}:{name}' for name, p, _ in stack]
-        state = graphmod.state_at(self.plan.graph, self.shots, i, t, self.graph_current(i, path, stack), trail)
+        state = graphmod.state_at(self.plan.graph, self.shots, i, t, self.graph_current(i, path, stack, t), trail)
         graphmod.draw(cv, self.graph_layout(box, scale), self.plan.graph, state, color=THEME.cursor,
                       accent=THEME.xref_box, bg=sidebar.Style().bg, scale=scale)
 
@@ -500,7 +577,12 @@ def _counters(cv, b, plan, t, meta_f, digits, cell_h):
 
 # ---- the closing card ----
 def recap(plan):
-    """(files visited, in order; definitions dived into, as (name, path, line))."""
+    """(files visited, in order; definitions dived into, as (name, path, line)).
+    For develop: the files edited, and the definitions written."""
+    if plan.mode == 'develop':
+        files = list(dict.fromkeys(s['path'] for s in plan.shots if s['kind'] == 'edit'))
+        nodes = [n for n in (plan.graph or {}).get('nodes', ()) if n['touched']]
+        return files, [(n['name'], n['path'], n['line']) for n in nodes]
     files, defs = [], []
     for s in plan.shots:
         if s['kind'] in ('dive', 'travel', 'open'):
@@ -588,7 +670,8 @@ def _end_card(tour, cv, box, shot, t):
 
     a, layer = show(0)
     with layer:
-        vbtext.draw(cv, ['END OF TOUR'], kicker, hb.x, hb.y, THEME.cursor)
+        vbtext.draw(cv, ['END OF SESSION' if plan.mode == 'develop' else 'END OF TOUR'], kicker, hb.x, hb.y,
+                    THEME.cursor)
         ty = hb.y + vbtext.line_height(kicker) + 8
         vbtext.draw(cv, lines, title, hb.x, ty, '#e6e9ef')
         sb = vb.Box(hb.x, ty + len(lines) * vbtext.line_height(title) + 6, hb.w, 40)
@@ -619,11 +702,12 @@ def _end_card(tour, cv, box, shot, t):
 
     _, layer = show(1)
     with layer:
-        _rows(cv, vbox, f'VISITED  {len(files)}', files, F, style, file_row)
+        _rows(cv, vbox, f'{"EDITED" if plan.mode == "develop" else "VISITED"}  {len(files)}', files, F, style,
+              file_row)
     cv.mark('card.visited', *vbox)
     _, layer = show(2)
     with layer:
-        _rows(cv, dbox, 'DIVED INTO', defs, F, style, def_row, per=2)
+        _rows(cv, dbox, 'WRITTEN' if plan.mode == 'develop' else 'DIVED INTO', defs, F, style, def_row, per=2)
     cv.mark('card.defs', *dbox)
     if nbox is not None:
         _, layer = show(3)
@@ -674,6 +758,9 @@ def draw_editor(tour, cv, box, shot, t, i, st):
 
 def _pane(tour, cv, st, view, top=None, **kw):
     """Draw the editor showing `view` (its scroll fitted to this format's rows)."""
+    if view.edit is not None:   # develop: an edit shot's buffer as it starts or ends
+        s = tour.shots[view.edit]
+        return _edit_pane(tour, cv, st, view.edit, s['natural'] if view.end else 0.0, **kw)[0]
     buf = tour.buffer(view)
     lay = _layout(st, buf)
     if top is None:
@@ -881,6 +968,7 @@ def _callout_card(tour, cv, st, where, key, c, t, target, band, outline=True):
             vbtext.draw(cv, lines, font, x, y, '#e6e9ef')
     cv.mark('callout.card', *card)
     cv.mark('callout.target', *target)
+    return card
 
 
 def settle(t):
@@ -1008,7 +1096,139 @@ def _xref_pop(tour, cv, st, shot, t, i, before, after):
     _reveal(cv, st.main, back, leaving, 1 - q, (cx, cy), wb.h * 0.4)
 
 
-EDITOR_KINDS = {'open': _open, 'hunk': _hunk, 'xref-push': _xref_push, 'xref-pop': _xref_pop}
+# ---- develop: the performance ----
+class _Runs:
+    """A performance's lines as highlighted runs, looked up when drawn: a line
+    from the old or the new file takes its colours from that file, lexed
+    whole once; a line being edited is lexed on its own."""
+
+    def __init__(self, lines, old, new, path):
+        self.lines, self.old, self.new, self.path = lines, old, new, path
+
+    def __len__(self):
+        return len(self.lines) or 1   # an empty buffer still has the line point sits on
+
+    def __getitem__(self, i):
+        if not self.lines:
+            return ()
+        origin, text = self.lines[i]
+        if origin is not None:
+            runs = self.old if origin[0] == 'old' else self.new
+            if origin[1] < len(runs):
+                return runs[origin[1]]
+        return highlight.highlight_lines(text, self.path)[0] if text else ()
+
+
+def _changed_ranges(lines):
+    """0-based (first, last) ranges of the lines not as the old file had them."""
+    out = []
+    for n, (origin, _) in enumerate(lines):
+        if origin is None or origin[0] == 'new':
+            if out and out[-1][1] == n - 1:
+                out[-1][1] = n
+            else:
+                out.append([n, n])
+    return [tuple(r) for r in out]
+
+
+ECHO_PROMPT = 'Goto line: '
+
+
+def _edit_pane(tour, cv, st, i, src, **kw):
+    """The edit shot i's buffer at natural time `src`: point, the marked
+    region, a fold still pouring, the window scrolled as Emacs would, the
+    progress strip. Returns (Placement, edits.State)."""
+    s = tour.shots[i]
+    perf = tour.performance(i)
+    old_runs, new_runs, digits, mode = tour.edit_texts[i]
+    state = perf.state_at(src)
+    buf = editor.Buffer(s['path'], _Runs(state.lines, old_runs, new_runs, s['path']), mode)
+    lay = editor.layout(st.main, st.mono, digits=digits, minimap=True)
+    scroll, top = perf.view(src, lay.rows)
+    motion = None
+    if scroll is not None:
+        a, b, into, dur, far = scroll
+        if far:
+            top = scroll_at(into, a, b, dur)
+            if 0 < into < dur:
+                v = scroll_velocity(lambda x: scroll_at(x, a, b, dur), into) * lay.line_h
+                deg, stretch = velocity_skew(v, max_degrees=MOTION_DEGREES, per_degree=MOTION_PER_DEGREE,
+                                             max_stretch=MOTION_STRETCH)
+                motion = (deg, stretch, math.copysign(min(lay.line_h * 0.8, abs(v) * STREAK), v))
+        else:
+            top = vb.interpolate(into, [0, dur], [a, b], vb.ease_in_out_quart)
+    ranges = _changed_ranges(state.lines)
+    bars = editor.minimap_bars(buf.lines[k] for k in range(len(state.lines)))
+    done = s['done_before'] + state.done
+    kw.setdefault('echo', state.echo)
+    kw.setdefault('echo_cursor', state.echo.startswith(ECHO_PROMPT))
+    kw.setdefault('blink', state.since)
+    where = editor.draw(cv, lay, buf, top, cursor=state.cursor,
+                        marks_added=[n for a, b in ranges for n in range(a, b + 1)],
+                        marks_removed_at=state.removed,
+                        minimap=editor.Minimap(bars, tuple(ranges), tuple(state.removed)),
+                        region=state.region, folds=[state.fold] if state.fold else (),
+                        progress=(math.floor(done + 1e-6), s['total_lines']), motion=motion, theme=THEME, **kw)
+    return where, state
+
+
+BADGE_BG = '#ecbe7b'
+BADGE_INK = '#1c1f24'
+
+
+def _speed_badge(cv, st, where, shot, t, avoid=None):
+    """The fast-forward badge while a speed-up runs: `▶▶ ×N` in a pill at the
+    text area's top right (its bottom right when a callout card is up there),
+    fading in and out with the speed and bumping as it reaches the peak."""
+    from videobuilder.capabilities.ui.badge_count_bump import bump_scale
+    clk = shot['clock']
+    for f in shot['fast']:
+        if not f['at'] <= t <= f['until']:
+            continue
+        s0 = clk['speeds'][0]
+        speed = edits.speed_at(t, clk)
+        a = vb.clamp01((speed - s0) / max(1e-6, f['peak'] - s0))
+        if a <= 0.02:
+            return None
+        lay = where.layout
+        area = _text_area(lay)
+        font = vb.Font(UI, 26 if not st.compact else 22, weight=800)
+        label = f'▶▶ ×{round(f["peak"])}'
+        tw = vbtext.measure(label, font)
+        h = vbtext.line_height(font) * 1.35
+        w = tw + h * 0.9
+        pad = lay.line_h * 0.5
+        x, y = area.right - w - pad, area.y + pad
+        if avoid is not None and avoid.intersects(vb.Box(x, y, w, h)):
+            y = area.bottom - h - pad
+        k = bump_scale(t - f['times'][1])
+        cx, cy = x + w / 2, y + h / 2
+        with cv.layer(opacity=a, dx=cx * (1 - k), dy=cy * (1 - k), scale=k):
+            cv.rect(x, y, w, h, BADGE_BG, radius=h / 2)
+            vbtext.draw(cv, [label], font, x + (w - tw) / 2, y + (h - vbtext.line_height(font)) / 2, BADGE_INK)
+        box = vb.Box(cx - w * k / 2, cy - h * k / 2, w * k, h * k)
+        cv.mark('editor.badge', *box)
+        return box
+    return None
+
+
+def _edit(tour, cv, st, shot, t, i, before, after):
+    """Develop: the file edited from its old text to its new one, the script
+    played on the shot's clock; the commit sentence of the hunk being
+    written beside point, and the fast-forward badge through a speed-up."""
+    where, state = _edit_pane(tour, cv, st, i, edits.source_time(t, shot['clock']))
+    card = None
+    for k, c in enumerate(shot.get('callouts') or ()):
+        if c['at'] <= t < c['until']:
+            lay = where.layout
+            line, col = state.cursor
+            band = where.line_box(line)
+            target = where.word_box(line, 0, max(1, col))
+            card = _callout_card(tour, cv, st, where, (i, k), c, t, target, band, outline=False)
+    _speed_badge(cv, st, where, shot, t, avoid=card)
+
+
+EDITOR_KINDS = {'open': _open, 'hunk': _hunk, 'xref-push': _xref_push, 'xref-pop': _xref_pop, 'edit': _edit}
 
 
 # ---- the repo map ----
