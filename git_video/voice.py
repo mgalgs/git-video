@@ -224,15 +224,19 @@ _CLAUSE_BEFORE = {'and', 'but', 'so', 'which', 'while', 'because', 'or', 'then',
 
 _DANGLING = {'and', 'but', 'or', 'so', 'with', 'the', 'a', 'an', 'to', 'of', 'in', 'on', 'at', 'for', 'by',
              'from', 'which', 'that', 'while', 'when', 'where', 'then', 'its', 'their', 'is', 'are', 'as'}
+# what can never end a clause, even one that ends at a comma ("what it is," can)
+_NEVER_LAST = {'and', 'but', 'or', 'with', 'the', 'a', 'an', 'to', 'of', 'in', 'on', 'at', 'for', 'by', 'from',
+               'its', 'their'}
 _END = re.compile(r'(?<=[.!?])\s+(?=[A-Za-z_`])')
 
 
 def finish(s, cut=False):
     """`s` as a phrase: no dangling comma (nor, when `cut` short, a dangling
-    conjunction or preposition) at its end, a full stop, a capital first
+    conjunction or preposition; `cut` may be the set of such words) at its end, a full stop, a capital first
     letter (unless it starts with an identifier)."""
     words = s.strip().rstrip(',;: ').split()
-    while cut and len(words) > 1 and words[-1].lower().strip(',;:') in _DANGLING:
+    dangling = _DANGLING if cut is True else cut or ()
+    while len(words) > 1 and words[-1].lower().strip(',;:') in dangling:
         words.pop()
     s = ' '.join(words).rstrip(',;: ')
     if not s:
@@ -263,8 +267,11 @@ def shorten(text, most=MAX_WORDS, least=MIN_WORDS):
     for k in range(least, most + 1):   # cut before words[k]
         if k < len(words) and (_CLAUSE_AFTER.search(words[k - 1]) or words[k].lower() in _CLAUSE_BEFORE):
             cut = k
-    # a clause boundary ends a whole clause; only a hard cut can leave "... to the."
-    return finish(' '.join(words[:cut or most]), cut=cut is None and len(words) > most)
+    # a hard cut can end anywhere ("... to the"); a clause boundary only on a
+    # word no clause ends with ("... the patch speed and,")
+    if cut is None:
+        return finish(' '.join(words[:most]), cut=len(words) > most)
+    return finish(' '.join(words[:cut]), cut=_NEVER_LAST)
 
 
 _FRAGMENT = re.compile(r'^\s*(?:(?:and|but|or|so|for|then|which|while)\b|["\u201d]|\.\.\.|\u2026)')
@@ -459,6 +466,18 @@ def _opening(plan):
 
 
 _BEFORE = re.compile(r"\b(?:was|were|could|did|used to|had|wasn't|couldn't|didn't)\b")
+# a past tense after one of these is in a subordinate clause ("edits each
+# file from what it was"), not the main verb; "now" says the clause is today
+_NOT_MAIN = re.compile(r"\b(?:what|that|which|who|whom|whose|where|when|how|if|whether|because|while|since|"
+                       r"until|after|before|so|now)\b", re.I)
+
+
+def _was(s):
+    """Whether sentence `s` tells how things were: a past-tense marker in its
+    first clause, ahead of any subordinate clause, and no "now" there."""
+    first = re.split(r'[,;:]', s)[0]
+    m = _BEFORE.search(first)
+    return bool(m) and not _NOT_MAIN.search(first[:m.start()]) and not re.search(r'\bnow\b', first, re.I)
 
 
 def _why(plan, patches, used):
@@ -480,7 +499,7 @@ def why_line(body, used=()):
     s = clean(units[0])
     if not s:
         return None
-    if _BEFORE.search(s.split(',')[0]) and not callouts_mod._looks_like_code(s.split()[0]):
+    if _was(s) and not callouts_mod._looks_like_code(s.split()[0]):
         s = 'Before, ' + s[0].lower() + s[1:]
     return shorten(s)
 

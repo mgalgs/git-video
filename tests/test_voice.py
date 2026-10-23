@@ -90,6 +90,12 @@ class TestScript(unittest.TestCase):
                                         'typed in develop mode, or over the rows.\n\nMore.'),
                          'Before, a card was placed by the band alone and could sit over the row being typed in '
                          'develop mode.')
+        # a past tense in a subordinate clause, or a clause that says "now", is not how things were
+        self.assertEqual(voice.why_line('Develop mode edits each file from what it was into what it is, so a '
+                                        'change has to say what a file was at its base.'),
+                         'Develop mode edits each file from what it was into what it is.')
+        self.assertEqual(voice.why_line("A fill held there now plays at speed; the midpoint could land there."),
+                         'A fill held there now plays at speed; the midpoint could land there.')
         self.assertIsNone(voice.why_line('- one thing\n- another'))
         self.assertIsNone(voice.why_line('Used here.', used={'Used here.'}))
 
@@ -155,6 +161,13 @@ class TestScript(unittest.TestCase):
         self.assertEqual(voice.shorten(words + ' to the'), voice.shorten(words))
         self.assertEqual(voice.shorten(' '.join(f'w{k}' for k in range(19)) + ' to the end'),
                          'W0 ' + ' '.join(f'w{k}' for k in range(1, 19)) + '.')
+        # a cut at a clause boundary drops a conjunction left before its comma, but not a verb
+        self.assertEqual(voice.shorten('A fill was set in natural seconds and the clock divided it by the patch '
+                                       'speed and, so the fold was up for one frame and then it was gone again'),
+                         'A fill was set in natural seconds and the clock divided it by the patch speed.')
+        self.assertEqual(voice.shorten('Develop mode edits each file from what it was into what it is, so a change '
+                                       'has to say what a file was at its base by its old path'),
+                         'Develop mode edits each file from what it was into what it is.')
         # an aside goes before the clauses split, so no half of it is left
         self.assertEqual(voice.clean('Plays at speed with the badge hidden; it lands there (26d4929964, README.md: '
                                      'speed 1.0 against a peak).'),
