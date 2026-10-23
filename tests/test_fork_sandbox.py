@@ -90,10 +90,13 @@ class TestForkSandbox(unittest.TestCase):
         self.env = mock.patch.dict(os.environ, self.fake.env(XDG_CACHE_HOME=self.cache,
                                                              FAKE_NARRATION=json.dumps(self.good)))
         self.env.start()
+        self.scratch = mock.patch.object(narrator, 'SCRATCH_ROOT', os.path.join(self.tmp.name, 'claude-scratch'))
+        self.scratch.start()
         os.environ.pop('GIT_VIDEO_NARRATOR_MODEL', None)
         os.environ.pop('GIT_VIDEO_NARRATOR_ARGS', None)
 
     def tearDown(self):
+        self.scratch.stop()
         self.env.stop()
         self.tmp.cleanup()
 
@@ -127,6 +130,20 @@ class TestForkSandbox(unittest.TestCase):
         self.assertEqual(w.run_dir, os.path.join(self.fake.state, 'run-0'))
         self.assertTrue(os.path.isdir(w.run_dir))                      # ... the run dir is left
         self.assertEqual(fixtures.git(self.repo, 'status', '--porcelain'), '')
+
+    def test_handoff_in_scratch_root(self):
+        # fork-sandbox refuses a handoff outside /var/tmp/claude-scratch/, or in its forks/ dir
+        self.scratch.stop()
+        self.assertEqual(narrator.SCRATCH_ROOT, '/var/tmp/claude-scratch')
+        try:
+            self.writer()(self.plan)
+        finally:
+            self.scratch.start()
+        handoff = os.path.realpath(self.fake.argv()[-1])
+        root = os.path.realpath('/var/tmp') + '/claude-scratch'
+        self.assertTrue(handoff.startswith(root + '/git-video-narrate-'), handoff)
+        self.assertNotIn('/forks/', handoff[len(root):])
+        self.assertFalse(os.path.exists(os.path.dirname(handoff)))      # staged, then removed
 
     def test_model_and_args_from_env(self):
         creds = os.path.join(self.tmp.name, 'my creds.json')
@@ -194,6 +211,16 @@ class TestForkSandbox(unittest.TestCase):
         self.assertIn(os.path.join(self.fake.state, 'run-0'), warn)
         self.assertIn('heuristic', warn)
 
+    def test_fallback_says_why_launcher_refused(self):
+        with mock.patch.dict(os.environ, {'FAKE_MODE': 'no-run-dir'}):
+            log = io.StringIO()
+            self.writer(fallback=True, log=log)(self.plan)
+        warn = [ln for ln in log.getvalue().splitlines() if 'warning' in ln]
+        self.assertEqual(len(warn), 1)
+        self.assertIn('error: something went wrong before launch', warn[0])
+        self.assertEqual(narrator._last_word('a\nError: no handoff\n  more detail\n'), 'Error: no handoff')
+        self.assertEqual(narrator._last_word('a\n b \n\n'), 'b')
+
 
 class TestNarratorFlag(unittest.TestCase):
     def setUp(self):
@@ -202,6 +229,9 @@ class TestNarratorFlag(unittest.TestCase):
         self.repo, self.sha = fixtures.make_callout_repo(self.tmp.name)
         self.env = mock.patch.dict(os.environ, self.fake.env(XDG_CACHE_HOME=os.path.join(self.tmp.name, 'cache')))
         self.env.start()
+        scratch = mock.patch.object(narrator, 'SCRATCH_ROOT', os.path.join(self.tmp.name, 'claude-scratch'))
+        scratch.start()
+        self.addCleanup(scratch.stop)
         self.engine = mock.patch('git_video.voice.make_engine', return_value=fixtures.FakeEngine())
         self.engine.start()
 

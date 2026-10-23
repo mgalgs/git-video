@@ -361,6 +361,8 @@ class Narrator:
             if not self.fallback:
                 raise
             where = f'run dir {e.run_dir}' if e.run_dir else 'no run dir'
+            said = _last_word(e.output)
+            where += f'; it said: {said}' if said else ''
             print(f'git video: warning: fork-sandbox narrator failed ({e.reason or e}; {where}); '
                   f'using the heuristic narrator', file=self.log)
             return voice.script(plan, self.patches)
@@ -389,13 +391,24 @@ DEFAULT_MODEL = 'opus'
 VERSION = 1   # of the brief and how its answer is read: part of the cache key
 TEMPLATE_ID = 'git-video-narrate-v1'
 _RUN_DIR = re.compile(r'^\s*run dir:\s+(\S.*?)\s*$', re.M)
+# fork-sandbox refuses a handoff that does not resolve under here, or that
+# sits in its forks/ machinery dir: briefs are staged in a dir of our own.
+SCRATCH_ROOT = '/var/tmp/claude-scratch'
 
 
 def _error(reason, run_dir=None, output=''):
     where = f' (run dir {run_dir})' if run_dir else ''
     e = NarratorError(reason + where + (f':\n{output.strip()}' if output.strip() else ''))
-    e.reason, e.run_dir = reason, run_dir
+    e.reason, e.run_dir, e.output = reason, run_dir, output
     return e
+
+
+def _last_word(output):
+    """The line of fork-sandbox's `output` that best says why it stopped:
+    its last `Error:` line, else its last non-blank one."""
+    lines = [x.strip() for x in output.splitlines() if x.strip()]
+    errors = [x for x in lines if re.match(r'(\S+:\s*)?error:', x, re.I)]
+    return (errors or lines or [''])[-1]
 
 
 def cache_key(change, plan, patches, mode, series, verbose, model):
@@ -428,7 +441,8 @@ def run_fork_sandbox(change, plan, patches, model, key, log):
     session leaves in its outbox: ([voice.Phrase], run dir). NarratorError
     (with `reason` and `run_dir`) when it fails, prints no run dir, leaves
     no narration.json, or one that does not pass."""
-    tmp = tempfile.mkdtemp(prefix='git-video-narrate-')
+    os.makedirs(SCRATCH_ROOT, mode=0o700, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix='git-video-narrate-', dir=SCRATCH_ROOT)
     try:
         handoff = os.path.join(tmp, 'narrate.md')
         with open(handoff, 'w', encoding='utf-8') as f:
