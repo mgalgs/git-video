@@ -79,11 +79,13 @@ FAST_LEAD = 2.0
 FAST_MIN = 2.0            # natural seconds a file must have left to be sped up
 FAST_PEAK_MIN = 8.0
 FAST_PEAK_MAX = 64.0
+FAST_PEAK_CONDENSED = 256.0   # ... with --duration, as fast as the target needs, up to this
 FAST_RAMP = 0.4
 ELIDE_LINES = {0: 30, 1: 80}   # --verbose -> the typed run long enough to elide (2 and 3 never)
 DEVELOP_CALLOUT_MIN = 1.2      # a develop callout shorter than this is dropped
 FILL_SHOWN = 1.0               # an elided run's fold fills in over at least this long on screen
                                # (its natural length if shorter), whatever the speed around it
+APPLY_SHOWN = 0.6              # ... and an applied run's marker (--duration) is up this long
 
 XREF_TRAVEL = 0.7         # the pointer glides to the word
 XREF_CLICK = 0.7          # ... and clicks it
@@ -113,6 +115,13 @@ TRAVEL_SHRINK = 0.4
 TRAVEL_CAM = (0.25, 1.0)
 TRAVEL_GROW = (0.85, 1.25)
 TRAVEL_SWITCH = 0.85
+
+
+def camera_scale(s):
+    """How far a dive's or travel's camera timings are compressed: its length
+    over the nominal one (--duration may shrink it), never past 1 (a longer
+    one, stretched for the voice, holds at the end)."""
+    return min(1.0, s['dur'] / (DIVE_DUR if s['kind'] == 'dive' else TRAVEL_DUR))
 
 
 def light_start(k, n):
@@ -197,11 +206,15 @@ class Plan:
     # clips are in, and each phrase's text, shot and times. Left out of the
     # JSON without --voice, so the plan is the same as without the flag.
     voice: dict | None = None
+    # With --duration, the target length in seconds (condense); left out of
+    # the JSON without it.
+    duration: float | None = None
 
     def to_json(self):
         d = asdict(self)
-        if d['voice'] is None:
-            del d['voice']
+        for k in ('voice', 'duration'):
+            if d[k] is None:
+                del d[k]
         return json.dumps(d, indent=2, sort_keys=True, ensure_ascii=False)
 
     @classmethod
@@ -404,16 +417,21 @@ def patch_entry(change, first_shot):
     """One patch of the plan: its commit and files (what the side bar shows while
     it plays), its size, and from which shot it plays. The develop planner adds
     its budget: `lines` performed, the `budget`, the `natural` and the `perf`
-    (played) length of its edit shots, in seconds."""
+    (played) length of its edit shots, in seconds. With --duration, condense
+    adds its content `target` (seconds), the `hunks` it chose from, the hunks
+    `kept` ({path: [{'index', 'score', 'why'}]}, in story order) and the files
+    `left_out` (not visited, the most important first)."""
     return {'commit': _commit_info(change), 'files': file_entries(change), 'added': change.added,
             'deleted': change.deleted, 'lines': None, 'budget': None, 'natural': None, 'perf': None,
-            'first_shot': first_shot}
+            'first_shot': first_shot, 'target': None, 'hunks': None, 'kept': None, 'left_out': []}
 
 
-def _tour_body(change, verbose, patch, voice=None):
+def _tour_body(change, verbose, patch, voice=None, keep=None, xref_cap=None):
     """The tour of one change: per file an `enter` (resolved later) and its hunk
     shots, the commit sentences placed, the xref visits inserted after their
-    hunks. Shot indices in the body are its own, from 0."""
+    hunks. Shot indices in the body are its own, from 0. With `keep`
+    ({path: hunk indices}, --duration) only those hunks are shown and only
+    their files visited; `xref_cap` holds the visits to that many."""
     shots = []
     hunk_shots = 0
     hunks = []   # (index into shots of the hunk shot, file, candidates)
@@ -421,9 +439,13 @@ def _tour_body(change, verbose, patch, voice=None):
     for f in change.files:
         if f.text is None:
             continue   # deleted or binary: listed in the side bar, not visited
+        if keep is not None and f.path not in keep:
+            continue   # condensed away: lit on the map, listed on the closing card
         shots.append(shot('map', 'enter', 0, path=f.path, patch=patch))   # resolved once the xrefs are known
         last_top = 0   # where the view is when the scroll to the next hunk starts
         for i, h in enumerate(f.hunks):
+            if keep is not None and i not in keep[f.path]:
+                continue
             if hunk_shots >= MAX_HUNK_SHOTS and i > 0:
                 break
             hunk_shots += 1
@@ -477,6 +499,10 @@ def _tour_body(change, verbose, patch, voice=None):
                 picks.setdefault(si, []).append((c, d))
                 file_used[f.path] = file_used.get(f.path, 0) + 1
                 total -= 1
+    if xref_cap is not None:   # the first few, in story order
+        for si in sorted(picks):
+            picks[si] = picks[si][:max(0, xref_cap)]
+            xref_cap -= len(picks[si])
     tops = {si: top for si, _, top, _ in hunks}
     out = []
     for si, s in enumerate(shots):
@@ -592,13 +618,14 @@ def _busiest(steps, length, lo, hi):
     return max(starts, key=lambda a: (bisect.bisect_right(keys, a + length) - bisect.bisect_left(keys, a), -a))
 
 
-def _pace(scripts, budget, verbose):
+def _pace(scripts, budget, verbose, most=FAST_PEAK_MAX):
     """(s0, peak, {file index: (natural start, natural end)}): the speed every
     script plays at and, when that is not enough for the budget, the speed-up
     sequences and their peak, chosen so the performance meets the budget: the
     peak rises from FAST_PEAK_MIN to FAST_PEAK_MAX over whole files' spans;
     below FAST_PEAK_MIN the spans shorten instead (a ×5 badge would hardly
-    read as a fast-forward next to typing already at NATURAL_MAX)."""
+    read as a fast-forward next to typing already at NATURAL_MAX). `most`
+    is the highest peak allowed."""
     natural = sum(sc['natural'] for sc in scripts)
     if verbose >= 3 or natural <= 0:
         return 1.0, None, {}
@@ -615,9 +642,9 @@ def _pace(scripts, budget, verbose):
         F = len(avail)
         R = sum(b - a for a, b in avail.values())
         room = budget - (natural - R) / s0 - F * r
-        peak = (R - F * r * s0) / room if room > 0 else FAST_PEAK_MAX
+        peak = (R - F * r * s0) / room if room > 0 else most
         if peak >= FAST_PEAK_MIN:
-            peak = min(FAST_PEAK_MAX, peak)
+            peak = min(most, peak)
             spans = avail
         else:   # the whole spans at the least peak would undershoot: run shorter ones, where most is typed
             peak = FAST_PEAK_MIN
@@ -630,12 +657,12 @@ def _pace(scripts, budget, verbose):
         if not short:
             return s0, peak, spans
         if spans is avail:   # whole spans: the longest few, at a peak they all have room to ramp to
-            return _longest_spans(avail, natural, budget, s0, r)
+            return _longest_spans(avail, natural, budget, s0, r, most)
         avail = {k: v for k, v in avail.items() if k not in short}
     return s0, None, {}
 
 
-def _longest_spans(avail, natural, budget, s0, r):
+def _longest_spans(avail, natural, budget, s0, r, most=FAST_PEAK_MAX):
     """When not every file's span has room to ramp to the peak the budget
     needs: of the files with the m longest spans, for each m, the peak that
     meets the budget held to what the shortest of them can ramp to; the
@@ -647,9 +674,9 @@ def _longest_spans(avail, natural, budget, s0, r):
         ks = order[:m]
         F, R = m, sum(avail[k][1] - avail[k][0] for k in ks)
         room = budget - (natural - R) / s0 - F * r
-        need = (R - F * r * s0) / room if room > 0 else FAST_PEAK_MAX
+        need = (R - F * r * s0) / room if room > 0 else most
         fit = (min(avail[k][1] - avail[k][0] for k in ks) / r - s0) * 0.99   # some plateau left
-        peak = min(FAST_PEAK_MAX, need, fit)
+        peak = min(most, need, fit)
         if peak < FAST_PEAK_MIN:
             continue
         perf = (natural - R) / s0 + F * r + (R - F * r * s0) / peak
@@ -662,13 +689,15 @@ def _longest_spans(avail, natural, budget, s0, r):
 
 def _clock(sc, s0, fast):
     """A script's clock at speed s0 with the speed-up `fast`, each fill held on
-    screen for FILL_SHOWN: (clock, duration, fast span, seconds the holds add)."""
+    screen for FILL_SHOWN, each applied run (--duration) for APPLY_SHOWN:
+    (clock, duration, fast span, seconds the holds add)."""
     clk, dur, span = edits.clock(sc['natural'], s0, fast, FAST_RAMP)
     added = 0.0
     for st in sc['steps']:
-        if st['kind'] == 'fill':
+        if st['kind'] in ('fill', 'apply'):
+            shown = FILL_SHOWN if st['kind'] == 'fill' else APPLY_SHOWN
             clk, span, dur, extra = edits.hold(clk, span, dur, st['at'], st['at'] + st['dur'],
-                                               min(st['dur'], FILL_SHOWN))
+                                               min(st['dur'], shown))
             added += extra
     return clk, dur, span, added
 
@@ -677,6 +706,8 @@ def _hunk_steps(steps):
     """{hunk: (first step, last step)} of an edit script, in the order it reaches them."""
     out = {}
     for k, st in enumerate(steps):
+        if st['kind'] == 'apply':
+            continue   # applied, not performed
         a, _ = out.get(st['hunk'], (k, k))
         out[st['hunk']] = (a, k)
     return out
@@ -705,31 +736,42 @@ def _voice_holds(sc, clock, voice, key):
     return clk, dur, span, added
 
 
-def _develop_body(change, verbose, patch, voice=None):
+def _develop_body(change, verbose, patch, voice=None, keep=None, budget=None, duration=False):
     """Develop mode for one change: per file (in `order_files` order) an
     `enter` and an `edit` shot playing its edit script, paced to the budget.
     Returns (shots, patch fields, {id(edit shot): {new line: time on screen it
-    is written}})."""
+    is written}}). With --duration (`duration` true): only the files in `keep`
+    ({path: hunk indices}) are performed, their other hunks applied in a step
+    each run of them; `budget` is what the performance aims at, typing at
+    most at --verbose 2's pace, and the voice's holds come out of it."""
     files = order_files(change)
+    if keep is not None:
+        files = [f for f in files if f.path in keep]
     elide = ELIDE_LINES.get(verbose)
     scripts = []
     for f in files:
         old = edits.split_lines(change.old_text(f.path) or '')
         new = edits.split_lines(f.text or '')
-        scripts.append(edits.build(old, new, f.hunks, elide=elide, seed=f.path))
+        scripts.append(edits.build(old, new, f.hunks, elide=elide, seed=f.path,
+                                   shown=keep[f.path] if keep is not None else None))
     lines = sum(edits.weight(sc['steps']) for sc in scripts)
-    budget = develop_budget(lines)
-    target = budget   # what the speed-ups aim at: the budget less the time the folds are held
+    budget = develop_budget(lines) if budget is None else budget
+    pace = min(verbose, 2) if duration else verbose
+    hold = (lambda sc, c, f: _voice_holds(sc, c, voice, lambda hi: ('edit', patch, f.path, hi))) \
+        if voice is not None else None
+    target = budget   # what the speed-ups aim at: the budget less the time the folds (and the voice) hold
     for _ in range(12):
-        s0, peak, spans = _pace(scripts, target, verbose)
+        s0, peak, spans = _pace(scripts, target, pace, FAST_PEAK_CONDENSED if duration else FAST_PEAK_MAX)
         clocks = [_clock(sc, s0, (*spans[fi], peak) if fi in spans else None) for fi, sc in enumerate(scripts)]
         held = sum(c[3] for c in clocks)
+        if duration and hold is not None:   # narrated hunks take their time from the rest
+            voiced = [hold(sc, c, f) for f, sc, c in zip(files, scripts, clocks)]
+            held += sum(v[1] - c[1] for v, c in zip(voiced, clocks))
         if abs(budget - held - target) < 1e-4 or budget - held <= 1.0:
             break
         target = budget - held
-    if voice is not None:
-        clocks = [_voice_holds(sc, c, voice, lambda hi, f=f: ('edit', patch, f.path, hi))
-                  for f, sc, c in zip(files, scripts, clocks)]
+    if hold is not None:
+        clocks = [hold(sc, c, f) for f, sc, c in zip(files, scripts, clocks)]
     chosen = _match_callouts(change, [(f, h) for f in files if f.text is not None for h in f.hunks])
     keys = [(fi, hi) for fi, f in enumerate(files) if f.text is not None for hi in range(len(f.hunks))]
     shots, written, done = [], {}, 0
@@ -744,6 +786,8 @@ def _develop_body(change, verbose, patch, voice=None):
             span_h = sc['hunks'][hi] if kf == fi and hi < len(sc['hunks']) else None
             if kf != fi or not span_h or k not in chosen:
                 continue
+            if keep is not None and hi not in keep[f.path]:
+                continue   # applied, not typed: nothing to say over it
             a, b = steps[span_h[0]], steps[span_h[1]]
             t0, t1 = on_screen(a['at']), on_screen(b['at'] + b['dur'])
             picks = _picks(chosen[k])
@@ -781,11 +825,12 @@ def _develop_body(change, verbose, patch, voice=None):
                    'perf': perf, 'speed': s0, 'peak': peak}, written
 
 
-def build(change, verbose=0, mode='tour', patches=None, voice=None):
+def build(change, verbose=0, mode='tour', patches=None, voice=None, duration=None):
     """The Plan of `change` in `mode`: a tour, or with `patches` (the change's
     commits as changes of their own, oldest first) one tour per patch. With a
     `voice` (voice.Timed: the narration's phrases and their lengths), every
-    shot lasts at least as long as what is said over it."""
+    shot lasts at least as long as what is said over it. With a `duration`
+    (seconds), the plan is condensed to about that long (condense)."""
     patches = patches or [change]
     files = file_entries(change)
     name = repo_name(change.repo)
@@ -796,11 +841,20 @@ def build(change, verbose=0, mode='tour', patches=None, voice=None):
     if lit:   # nothing changed on the map (only deletions): nothing to show there
         shots.append(_stretch(shot('map', 'map', MAP_DUR, lit=lit, patch=0), voice, VOICE_MAP_AT))
     entries, written = [], {}
+    if duration is not None:
+        from . import condense
+        budgets = condense.split_budget(duration, patches, bool(lit))
+        xrefs = condense.xref_cap(duration)
     for k, ch in enumerate(patches):
         entries.append(patch_entry(ch, len(shots)))   # from its card, after the first
         if k:
             shots.append(_stretch(shot('card', 'patch', INTER_DUR, patch=k), voice, VOICE_PATCH_AT))
-        if mode == 'develop':
+        if duration is not None:
+            body, fields, w, used = condense.body(ch, verbose, mode, k, voice, budgets[k], xrefs)
+            entries[-1].update(fields)
+            written.update(w)
+            xrefs = None if xrefs is None else xrefs - used
+        elif mode == 'develop':
             body, fields, w = _develop_body(ch, verbose, k, voice)
             entries[-1].update(fields)
             written.update(w)
@@ -809,6 +863,8 @@ def build(change, verbose=0, mode='tour', patches=None, voice=None):
         shots += body
     shots.append(_stretch(shot('card', 'end', END_DUR, patch=len(patches) - 1), voice, VOICE_END_AT))
     out = _resolve_enters(shots, tiled, voice)   # one shot per shot: each patch's first_shot still holds
+    if duration is not None:
+        condense.resize(out, duration, voice)
     nxt = {'short': change.next.short, 'subject': change.next.subject} if change.next else None
     def make(ch, sub, k=0):
         if mode == 'develop':
@@ -819,7 +875,7 @@ def build(change, verbose=0, mode='tour', patches=None, voice=None):
     call_graph = graphmod.by_patch(patches, out, make) if len(patches) > 1 else make(change, out)
     return Plan(VERSION, FPS, change.base, change.target, change.label, change.is_range, _commit_info(change),
                 files, verbose, out, round(sum(s['dur'] for s in out), 3), repo=name, next=nxt,
-                map=tree_map, graph=call_graph, mode=mode, patches=entries)
+                map=tree_map, graph=call_graph, mode=mode, patches=entries, duration=duration)
 
 
 def plan(change, verbose=0):

@@ -58,8 +58,57 @@ class TestCli(unittest.TestCase):
     def test_help_lists_options(self):
         h = cli.parser().format_help()
         for opt in ('--format', '-o', '--out', '--jobs', '--plan-json', '-C', '--font', '--stills',
-                    '--mode', '--series', '--verbose', '--voice', '--quality'):
+                    '--mode', '--series', '--verbose', '--voice', '--quality', '--duration'):
             self.assertIn(opt, h)
+
+    def test_duration_spellings(self):
+        for text, secs in (('60', 60), ('60s', 60), ('1m30s', 90), ('2m', 120), ('90.5', 90.5)):
+            with self.subTest(text=text):
+                self.assertEqual(cli.parse(['--duration', text]).duration, secs)
+        self.assertIsNone(cli.parse([]).duration)
+        for text in ('abc', '1h', '30x', 'm', ''):
+            with self.subTest(text=text):
+                code, _, err = quiet(cli.parse, ['--duration', text])
+                self.assertEqual(code, 2)
+                self.assertIn('invalid duration', err)
+                self.assertIn('1m30s', err)
+
+    def test_duration_too_short(self):
+        from unittest import mock
+        for text in ('14.9', '5', '10s'):
+            with self.subTest(text=text), mock.patch('git_video.collect.collect') as c, \
+                    mock.patch('git_video.collect.series') as s:
+                code, _, err = quiet(cli.main, ['--duration', text, '--plan-json', 'HEAD'])
+                self.assertEqual(code, 2)
+                self.assertIn('the shortest usable target is 15s', err)
+                c.assert_not_called()
+                s.assert_not_called()
+        import tempfile
+        from tests import fixtures
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, sha = fixtures.make_repo(tmp)
+            code, out, err = quiet(cli.main, ['-C', repo, '--duration', '15', '--plan-json', sha['change']])
+            self.assertEqual(code, 0, err)
+
+    def test_small_change_stays_short_with_a_note(self):
+        import json
+        import tempfile
+        from unittest import mock
+        from git_video import collect, plan
+        from tests import fixtures
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, sha = fixtures.make_repo(tmp)
+            code, out, err = quiet(cli.main, ['-C', repo, '--duration', '120', '--plan-json', sha['root']])
+            self.assertEqual(code, 0, err)
+            total = json.loads(out)['total']
+            nominal = plan.build(collect.collect(repo, sha['root'])).total
+            self.assertLess(total, 120)
+            self.assertGreater(total, nominal)
+            with mock.patch('git_video.film.Tour'), mock.patch('videobuilder.render.render'):
+                code, _, err = quiet(cli.main, ['-C', repo, '--duration', '120', '-o', os.path.join(tmp, 'v.mp4'),
+                                                sha['root']])
+            self.assertEqual(code, 0, err)
+            self.assertIn(f'git video: the change fills only {total:.1f}s of the 120s target', err)
 
     def test_module_entry(self):
         r = subprocess.run([sys.executable, '-m', 'git_video', '--help'], cwd=ROOT, capture_output=True, text=True)

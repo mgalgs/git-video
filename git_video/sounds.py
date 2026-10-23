@@ -60,10 +60,10 @@ def cues(shots, shot_frames, fps):
             lit = s.get('lit', [])
             out += [(frame_at(f0, planmod.light_start(k, len(lit)) + planmod.MAP_LIGHT_FADE / 2, fps), 'tile')
                     for k in range(min(len(lit), planmod.MAP_MAX_TICKS))]
-        elif kind == 'dive':
-            out.append((frame_at(f0, 0.35, fps), 'whoosh-soft'))
+        elif kind == 'dive':   # a --duration plan's shorter camera moves whoosh as early in them
+            out.append((frame_at(f0, 0.35 * planmod.camera_scale(s), fps), 'whoosh-soft'))
         elif kind == 'travel':
-            out.append((frame_at(f0, 0.6, fps), 'whoosh-soft'))
+            out.append((frame_at(f0, 0.6 * planmod.camera_scale(s), fps), 'whoosh-soft'))
         elif kind == 'open':
             keys, letters, ret, _ = planmod.open_timing(s['path'])
             out += [(frame_at(f0, t, fps), 'key') for t in (*keys, *letters, ret)]
@@ -121,6 +121,10 @@ def _edit_cues(s, f0, fps):
             t = edits.shot_time(st['at'], clk)
             if not quiet(t):
                 out.append((frame_at(f0, t, fps), 'typing-run'))
+        elif st['kind'] == 'apply':   # hunks put in at once
+            t = edits.shot_time(st['at'], clk)
+            if not quiet(t):
+                out.append((frame_at(f0, t, fps), 'whoosh-soft'))
     for a, b in fast:
         t = a
         while t < b:

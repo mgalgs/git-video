@@ -10,7 +10,7 @@ from unittest import mock
 
 import videobuilder as vb
 
-from git_video import cli, collect, editor, film, plan, sidebar
+from git_video import cli, collect, editor, edits, film, plan, sidebar
 from tests import fixtures
 from tests.test_cli import quiet
 
@@ -396,8 +396,60 @@ class TestFilm(unittest.TestCase):
         self.assertEqual(len(film.avatars(['a'] * 6)), 6)
 
     def test_recap(self):
+        # without --duration nothing is left out, so the card lists nothing as also changed
         self.assertEqual(film.recap(self.plan), (['src/app.py', 'src/lib.py', 'tests/test_app.py'],
-                                                 [('frob', 'src/lib.py', 1)]))
+                                                 [('frob', 'src/lib.py', 1)], []))
+
+    def test_end_card_lists_also_changed(self):
+        big = collect.collect(fixtures.make_big_repo(os.path.join(self.tmp.name, 'also')), 'HEAD')
+        p = plan.build(big, duration=15)
+        files, _, also = film.recap(p)
+        self.assertEqual(len(also), 1)
+        self.assertEqual(set(files) | set(also), {'big.py', 'long.txt'})
+        tour = film.Tour(p, big, log=io.StringIO())
+        n = next(n for n, label in tour.film.keyframes if label == 'end')
+        for fmt in ('16x9', '9x16', '1x1'):
+            cv = tour.film.frame(n, fmt)
+            marks = dict(cv.marks)
+            self.assertIn('card.also', marks, fmt)
+            self.assertTrue(marks['card.visited'].contains(marks['card.also']), fmt)
+            frame = vb.Box.of(cv)
+            names = ['card.header', 'card.visited', 'card.defs']
+            for k, a in enumerate(names):
+                self.assertTrue(frame.contains(marks[a]), (fmt, a))
+                for b in names[k + 1:]:
+                    self.assertFalse(marks[a].intersects(marks[b]), (fmt, a, b))
+
+    def test_apply_marker_is_drawn(self):
+        dev = collect.collect(fixtures.make_develop_repo(os.path.join(self.tmp.name, 'apply')), 'HEAD')
+        p = plan.build(dev, 0, 'develop', duration=20)
+        tour = film.Tour(p, dev, log=io.StringIO())
+        n, label = next((n, label) for n, label in tour.film.keyframes if label.startswith('apply '))
+        i, t = tour.at(n)
+        s = tour.shots[i]
+        self.assertEqual(label, f'apply {s["path"]}')
+        src = edits.source_time(t, s['clock'])
+        st = next(st for st in s['steps'] if st['at'] <= src < st['at'] + st['dur'])
+        self.assertEqual(st['kind'], 'apply')
+        for fmt in ('16x9', '9x16', '1x1'):
+            self.assertIn('editor.fold', dict(tour.film.frame(n, fmt).marks), fmt)
+
+    def test_short_dive_and_travel_land(self):
+        # a --duration plan's camera moves are shorter: the pane still lands on their last frame
+        p = plan.build(self.change, duration=15)
+        tour = film.Tour(p, self.change, log=io.StringIO())
+        moves = [i for i, s in enumerate(tour.shots) if s['kind'] in ('dive', 'travel')]
+        self.assertTrue(any(tour.shots[i]['dur'] < plan.DIVE_DUR for i in moves), [tour.shots[i] for i in moves])
+        for i in moves:
+            s = tour.shots[i]
+            last, first = tour.shot_frames[i + 1] - 1, tour.shot_frames[i + 1]
+            self.assertEqual(tour.state(last)[0], s.get('to', s['path']), s)
+            a = dict(tour.film.frame(last, '16x9').marks)['editor.text']
+            b = dict(tour.film.frame(first, '16x9').marks)['editor.text']
+            for x, y in zip(a, b):
+                self.assertAlmostEqual(x, y, delta=1.0, msg=s)
+            mid = tour.film.frame(tour.shot_frames[i] + round(0.5 * s['dur'] * tour.fps), '16x9')
+            self.assertLess(dict(mid.marks).get('editor.text', vb.Box(0, 0, 0, 0)).w, b.w - 10, s)
 
     def test_end_card_regions(self):
         delete = collect.collect(self.repo, self.sha['delete'])
@@ -951,7 +1003,7 @@ class TestFilm(unittest.TestCase):
 
     def test_develop_recap(self):
         tour = self.develop_tours()['change']
-        files, written = film.recap(tour.plan)
+        files, written, _ = film.recap(tour.plan)
         self.assertEqual(files, ['src/lib.py', 'src/app.py', 'tests/test_app.py'])
         self.assertIn(('frob', 'src/lib.py', 1), written)
         n = next(n for n, label in tour.film.keyframes if label == 'end')

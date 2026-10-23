@@ -15,7 +15,12 @@ The planner's half is `build`: an edit script, a list of steps as plain data
   electric indent puts it there); with `open` the trailing newline is put in
   first (C-o), so typing above a line does not drag it along;
 - `fill` -- an elided run: `text` (whole lines) poured in after (`line`,
-  `col`) over the step, behind a fold marker counting what is left.
+  `col`) over the step, behind a fold marker counting what is left;
+- `apply` -- hunks condensed away (--duration), put in at once: each of
+  its `parts`, [line, old rows, new text, settle], replaces that many whole
+  lines from `line` (in order: each part's line counts the parts before it
+  as done), the file jumping to its new state there, marked by a fold row
+  under `line` saying how many hunks were applied (`count`, the `hunks`).
 
 Coordinates are 0-based lines and columns of the file with tabs expanded
 (`split_lines`), every line ending with a newline; (`len(lines)`, 0) is the
@@ -64,6 +69,7 @@ TAIL = 0.6                # the finished file held before the next shot
 ELIDE_HEAD = 4            # an elided run types this many lines before it fills
 FILL_PER_LINE, FILL_MIN, FILL_MAX = 0.03, 0.6, 2.5
 FILL_POUR = 0.85          # a fill's lines are all in this far through it; the rest is a hold
+APPLY_DUR = 0.6           # an applied run, natural seconds (the planner holds it on screen)
 SNAP_EVERY = 16
 MARGIN = 3                # rows kept between point and the window's edge
 
@@ -104,6 +110,9 @@ def apply(lines, steps):
         elif st['kind'] in ('type', 'fill'):
             p = (st['line'], st['col'])
             lines = _splice(lines, p, p, st['text'])[0]
+        elif st['kind'] == 'apply':
+            for at, k, text, _ in st['parts']:
+                lines = _splice(lines, (at, 0), (at + k, 0), text)[0]
     return lines
 
 
@@ -270,6 +279,22 @@ class _Script:
         for r, j in settle:
             self.written[j] = self.steps[-1]['at'] + dur * FILL_POUR * r / len(rows)
 
+    def apply(self, run, new):
+        """Blocks `run` (consecutive, of hunks not shown) put in at once, in
+        one step: each block's old lines become its new ones, the lines
+        between them untouched. Everything above a block is new by then, so
+        its new line index is where it starts."""
+        parts = []
+        for _, at, k, n in run:
+            text = ''.join(r + '\n' for r in new[at:at + n])
+            parts.append([at, k, text, [[r, at + r] for r in range(n)]])
+            self.cur = _splice(self.cur, (at, 0), (at + k, 0), text)[0]
+        _, at, _, n = run[-1]
+        hunks = sorted({b[0] for b in run})
+        self.add({'kind': 'apply', 'dur': APPLY_DUR, 'parts': parts, 'line': max(0, at + n - 1),
+                  'count': len(hunks), 'hunks': hunks, 'lines': sum(k + n for _, _, k, n in run)}, hunks[0])
+        self.point = (min(at + n, len(self.cur)), 0)
+
     # ---- what a block becomes ----
     def kill_lines(self, at, k, hunk):
         end = (at + k, 0)
@@ -325,12 +350,14 @@ class _Script:
             i0, j0 = i + 1, j + 1
 
 
-def build(old, new, hunks, *, elide=None, seed=''):
+def build(old, new, hunks, *, elide=None, seed='', shown=None):
     """The edit script that turns `old` lines into `new` (both from
     `split_lines`) hunk by hunk: {'steps', 'hunks' ([first, last] step index
     per hunk, or None), 'natural' (seconds), 'written' ({new line index:
     natural time it is finished})}. `elide`: a typed run of at least this many
-    lines types ELIDE_HEAD of them and fills the rest."""
+    lines types ELIDE_HEAD of them and fills the rest. `shown` (hunk
+    indices, --duration): the other hunks are not performed; each run of
+    them is one `apply` step, and their lines are not in `written`."""
     found = blocks(hunks)
     for attempt in (found, None):
         bs = attempt if attempt is not None else _diff_blocks(old, new)
@@ -339,7 +366,14 @@ def build(old, new, hunks, *, elide=None, seed=''):
             sc.kill((0, 0), (len(old), 0), 0, len(old), keys='C-x h')
         else:
             last_hunk = None
+            run = []   # blocks of hunks not shown, waiting to be applied together
             for hi, at, k, n in bs:
+                if shown is not None and hi not in shown:
+                    run.append((hi, at, k, n))
+                    continue
+                if run:
+                    sc.apply(run, new)
+                    run = []
                 if hi != last_hunk:
                     sc.t += HUNK_PAUSE
                     if abs(at - sc.point[0]) > JUMP_ROWS:
@@ -348,6 +382,8 @@ def build(old, new, hunks, *, elide=None, seed=''):
                         sc.move((at, 0), hi)
                     last_hunk = hi
                 sc.block(hi, at, k, new[at:at + n], list(range(at, at + n)), elide)
+            if run:
+                sc.apply(run, new)
         if sc.cur == list(new):
             break
     sc.t += TAIL
@@ -546,6 +582,13 @@ class Performance:
             removed = _shift(removed, l0, old_n, new_n)
             body = st['text'][:-1] if st.get('open') else st['text']
             return lines2, tuple(removed), _end_of(p, body), done + st['lines']
+        if kind == 'apply':
+            for at, k, text, settle in st['parts']:
+                lines, l0, l1, old_n, new_n = self._splice(lines, (at, 0), (at + k, 0), text, settle)
+                removed = _shift(removed, l0, old_n, new_n)
+                if k and not text:   # whole lines gone: marked as a kill marks them
+                    removed = sorted(set(removed) | {at})
+            return lines, tuple(removed), _applied_point(st, len(lines)), done + st['lines']
         return lines, removed, (st['line'], st['col']), done
 
     # -- a moment --
@@ -635,6 +678,9 @@ class Performance:
             cur = _end_of(p, ins)
             return State(lines2, cur, None, (cur[0], len(rows) - m), '', done + st['lines'] * m / len(rows),
                          tuple(removed), None, k)
+        if kind == 'apply':   # in at once; the marker under the run's last line while the step lasts
+            lines2, removed, cur, done2 = self._apply(state, st)
+            return State(lines2, cur, None, (st['line'], st['count'], 'applied'), '', done2, removed, None, k)
         return State(lines, point, None, None, '', done, removed, None, k)
 
     # -- the window --
@@ -717,6 +763,8 @@ class Performance:
             m = _poured(len(rows), tau, st['dur'])
             p = (st['line'], st['col'])
             return _end_of(p, '\n' + '\n'.join(rows[:m]) if m else '')
+        if kind == 'apply':
+            return _applied_point(st, None)
         return start
 
     def view(self, t, rows, cols=None):
@@ -734,6 +782,14 @@ class Performance:
         lines = self.state_at(t).lines if cols else ()
         before = self.state_at(st['at']).lines if cols and st['kind'] == 'kill' and tau >= st.get('cut', tau) else None
         return self._top_in(k, tau, rows, tops[k], lines, cols, before)
+
+
+def _applied_point(st, n):
+    """Point after an `apply` step: the start of the line after its last
+    part (the buffer's last line when that ends it)."""
+    at, _, text, _ = st['parts'][-1]
+    line = at + text.count('\n')
+    return (line if n is None else max(0, min(line, n - 1)), 0)
 
 
 def _poured(n, tau, dur):

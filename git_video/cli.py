@@ -83,6 +83,12 @@ def parser():
                         'warning if it fails). GIT_VIDEO_NARRATOR_MODEL picks the model (default opus) and '
                         'GIT_VIDEO_NARRATOR_ARGS adds fork-sandbox options. A script is cached in '
                         '$XDG_CACHE_HOME/git-video/narration')
+    p.add_argument('--duration', type=_duration, metavar='TIME',
+                   help='target length of the whole video, cards included (60, 60s, 1m30s): the planner keeps '
+                        'the most important hunks that fit, in story order, and lists the files it leaves out on '
+                        'the closing card; it lands within a tenth of it (3s under 30s), or stays shorter, with a note, when '
+                        f'the change is too small to fill it. Never under {MIN_DURATION:g}s. With --verbose 3, '
+                        'develop still elides nothing but types at the speed the target needs')
     p.add_argument('--format', choices=(*FORMATS, 'all'), default='16x9', help='output shape (default 16x9)')
     p.add_argument('--quality', choices=tuple(QUALITY_CRF), default='high',
                    help='encoder quality: high (x264 CRF 18, the default), medium (CRF 23), small (CRF 28, about '
@@ -98,6 +104,14 @@ def parser():
     p.add_argument('--stills', metavar='DIR',
                    help="write a PNG of each key moment plus sheet.png to DIR and exit without rendering")
     return p
+
+
+MIN_DURATION = 15.0   # the shortest target that still shows a change honestly
+
+
+def _duration(text):
+    from .condense import parse_duration
+    return parse_duration(text)
 
 
 def parse(argv):
@@ -157,6 +171,9 @@ def main(argv=None):
     from . import collect, plan
     if args.narrator is not None and args.voice is None:
         return _fail('--narrator needs --voice', 2)
+    if args.duration is not None and args.duration < MIN_DURATION:
+        return _fail(f'--duration {args.duration:g}s is too short to show anything honestly; the shortest usable '
+                     f'target is {MIN_DURATION:g}s', 2)
     if args.voice is not None:   # before any git work: no model, no render
         from . import narrator, voice
         try:
@@ -191,10 +208,16 @@ def main(argv=None):
         except narrator.NarratorError as e:
             return _fail(f'fork-sandbox narrator: {e}', 1)
     else:
-        tour = plan.build(change, args.verbose, args.mode, patches)
+        tour = plan.build(change, args.verbose, args.mode, patches, duration=args.duration)
     if args.plan_json:
         print(tour.to_json())
         return _ran(writer)
+    if args.duration is not None:
+        from . import condense
+        print(condense.summary(tour), file=sys.stderr)
+        if tour.total < args.duration - condense.tolerance(args.duration):
+            print(f'git video: the change fills only {tour.total:.1f}s of the {args.duration:g}s target',
+                  file=sys.stderr)
     from . import film
     tour = film.Tour(tour, change, formats=formats, font=args.font, patches=patches)
     if args.stills:

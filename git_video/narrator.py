@@ -125,7 +125,8 @@ def shot_rows(plan, patches):
         if s['kind'] == 'edit':
             at = {}
             for st in s['steps']:
-                at.setdefault(st['hunk'], edits.shot_time(st['at'], s['clock']))
+                if st['kind'] != 'apply':   # applied at once (--duration): nothing to say over
+                    at.setdefault(st['hunk'], edits.shot_time(st['at'], s['clock']))
             his = list(at)
             for n, hi in enumerate(his):
                 a = at[hi] if n else 0.0

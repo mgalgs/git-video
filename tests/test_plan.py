@@ -36,6 +36,30 @@ class TestPlan(unittest.TestCase):
         self.assertLessEqual({'map', 'dive', 'travel'}, {s['kind'] for s in doc['shots']})
         self.assertEqual([g['label'] for g in doc['map']['groups']], ['repo', 'src/', 'tests/'])
 
+    def test_without_duration_the_json_has_no_duration(self):
+        doc = json.loads(self.plans[0].to_json())
+        self.assertNotIn('duration', doc)
+        for e in doc['patches']:
+            self.assertIsNone(e['kept'])
+            self.assertIsNone(e['target'])
+            self.assertEqual(e['left_out'], [])
+
+    def test_plan_json_with_duration(self):
+        code, out, err = quiet(cli.main, ['-C', self.repo, '--plan-json', '--duration', '30', self.sha['change']])
+        self.assertEqual(code, 0, err)
+        doc = json.loads(out)
+        self.assertEqual(doc['duration'], 30.0)
+        (e,) = doc['patches']
+        self.assertIsInstance(e['target'], float)
+        self.assertTrue(e['kept'])
+        for path, hs in e['kept'].items():
+            for h in hs:
+                self.assertEqual(set(h), {'index', 'score', 'why'})
+        self.assertIsInstance(e['left_out'], list)
+        back = plan.Plan.from_json(out)
+        self.assertEqual(back.duration, 30.0)
+        self.assertEqual(json.loads(back.to_json()), doc)
+
     def test_bad_rev_exit_code(self):
         code, _, err = quiet(cli.main, ['-C', self.repo, 'nope'])
         self.assertEqual(code, 1)
@@ -491,6 +515,19 @@ class TestDevelopPlan(unittest.TestCase):
         if (name, verbose) not in self.plans:
             self.plans[name, verbose] = plan.build(getattr(self, name), verbose, 'develop')
         return self.plans[name, verbose]
+
+    def test_develop_budget_from_duration(self):
+        for verbose in (0, 3):
+            p = plan.build(self.budget, verbose, 'develop', duration=30)
+            (e,) = p.patches
+            enters = sum(s['dur'] for s in plan.build(self.budget, verbose, 'develop').shots
+                         if s['kind'] in ('dive', 'travel'))
+            self.assertAlmostEqual(e['budget'], e['target'] - enters, places=2)
+            self.assertAlmostEqual(plan.perf_time(p), e['budget'], delta=0.1)
+            edits_ = [s for s in p.shots if s['kind'] == 'edit']
+            self.assertTrue(any(s['fast'] for s in edits_) or e['speed'] > 1, verbose)
+            if verbose == 3:
+                self.assertFalse(any(st['kind'] == 'fill' for s in edits_ for st in s['steps']))
 
     def test_develop_file_order(self):
         order = plan.order_files(collect.collect(fixtures.make_order_repo(self.tmp.name), 'HEAD'))

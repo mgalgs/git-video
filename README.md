@@ -25,6 +25,11 @@ Options:
            change and explains its approach; heuristic works from
            the commit message. auto (default) uses fork-sandbox when
            it is on PATH, else heuristic.
+--duration <time>
+           Target length of the whole video, cards included:
+           60, 60s, 1m30s. The planner keeps the hunks that matter
+           most and lists the files it leaves out on the closing
+           card. Never under 15s.
 --format   16x9, 9x16, 1x1, all (default 16x9)
 --quality  high, medium, small (default high): the encoder's
            quality, x264 CRF 18, 23 or 28. small is about a third
@@ -196,6 +201,8 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
   card has room for, then the type shrinks, and only then is it cut, with
   an ellipsis after a whole word: never inside a word or at a hyphen.
 - `--voice`: a narration with captions, paced into the film (see below).
+- `--duration <time>`: a target length for the whole video, whatever the
+  size of the change (see below).
 - `--quality high|medium|small`: the encoder's quality (x264 CRF 18, 23
   or 28), set on videobuilder's own render; `small` is about a third the
   size of the default `high`.
@@ -292,6 +299,42 @@ current patch marked, and the side bar follows the patch. One opening and
 one closing card frame the whole. A single rev is the same with or without
 `--series`.
 
+## --duration
+
+`--duration 60` makes a video of any change set, one small commit or a
+whole release, run about 60 seconds (`60s` and `1m30s` work too), cards
+included: within 10% of the target, or 3 s under 30 s. It still tells the
+story of the change rather than playing its first minute: condensing is
+selection first, then speed.
+
+- Every hunk is scored: the size of the change, new definitions,
+  definitions other changed code calls (through the xref index; the more
+  callers the higher, on a log scale), hunks the commit messages talk about
+  (the callout matcher), new files over edits, source over docs, fixtures
+  and tests, and a top-level README (above all when the change adds it:
+  it says what the project is).
+- The cards and the map shrink first, to floors that keep them readable.
+  The highest-scoring hunks that fit what is left are kept (a hunk less
+  than half as important as one that did not fit does not take its place),
+  and shown in story order (the tour's file order, develop's top-to-bottom order).
+  Files with nothing kept are not visited: they stay lit on the map, the
+  opening card's totals still count the whole change, and the closing card
+  lists them under ALSO CHANGED with their `+`/`−` counts, the most
+  important first. A release leans
+  on the map: the camera dives into its few most important files.
+- Only then is every shot sized, by one factor within its limits, to land
+  on the target: kept hunks keep their natural read when they fit at it,
+  and the camera's dives and travels play their moves faster when they are
+  shortened. No xref dive under 30 s, at most one under 60 s.
+- Develop types only the kept hunks, at the speed the target needs (up to
+  ×256 under `--duration`); the rest of a visited file is put in at once,
+  one step per run of hunks, under a `⇥ N hunks applied` marker (only the
+  changed lines are marked as changed).
+- A target under 15 s is an error that says so. A change too small to fill
+  the target stays shorter (its shots stretch only so far), with a note on
+  stderr. Rendering prints what was kept and why, one line per hunk, and
+  each file left out, to stderr.
+
 ## The plan seam
 
 A tour is built in four steps: collect the git facts, plan a list of shots,
@@ -316,9 +359,13 @@ carries its `node` and `edge`.
 
 The plan also says its `mode` and lists its `patches` (one without
 `--series`): each with its `commit`, `files` and, for develop, the `lines`
-performed, the `budget`, and the `natural` and played (`perf`) seconds. A
+performed, the `budget`, and the `natural` and played (`perf`) seconds;
+with `--duration`, its content `target` in seconds, how many `hunks` it
+chose from, the hunks `kept` (per file, each with its `index`, `score` and
+`why`) and the files `left_out`, and the plan says its `duration`. A
 develop `edit` shot carries its file's edit script as `steps` (`move`,
-`jump`, `kill`, `type`, `fill`, each with its times in natural seconds),
+`jump`, `kill`, `type`, `fill`, and with `--duration` `apply`, each with
+its times in natural seconds),
 the `clock` that maps the shot's seconds to the script's (speed keyframes
 for `time-remapping`'s `speed_ramp`), its `fast` spans and `elisions` in
 seconds on screen, its `callouts`, and where it stands in the patch's lines

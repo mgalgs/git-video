@@ -31,6 +31,12 @@ class TestSounds(unittest.TestCase):
         return mock.patch.dict(os.environ, {vb.sfx.ENV: fixtures.fake_pack(os.path.join(self.tmp.name, name),
                                                                             entries)})
 
+    def test_apply_cue(self):
+        s = {'kind': 'edit', 'dur': 2.0, 'clock': {'times': [0.0, 2.0], 'speeds': [1.0, 1.0]}, 'fast': [],
+             'callouts': [], 'steps': [{'kind': 'apply', 'at': 0.5, 'dur': 0.6, 'hunk': 0, 'line': 0,
+                                        'parts': [[0, 1, 'x\n', [[0, 0]]]], 'count': 1, 'lines': 2, 'hunks': [0]}]}
+        self.assertEqual(sounds.cues([s], [0], 30), [(15, 'whoosh-soft')])
+
     def test_voice_mix(self):
         from git_video import voice
         repo, sha = fixtures.make_callout_repo(os.path.join(self.tmp.name, 'mix'))   # a phrase over typing

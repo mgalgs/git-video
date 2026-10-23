@@ -26,6 +26,16 @@ class TestFormat(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
+    def test_applied_hunks_have_no_rows(self):
+        dev = collect.collect(fixtures.make_develop_repo(self.tmp.name), 'HEAD')
+        p = plan.build(dev, 0, 'develop', duration=20)
+        applied = {(s['path'], h) for s in p.shots if s['kind'] == 'edit' for st in s['steps']
+                   if st['kind'] == 'apply' for h in st['hunks']}
+        self.assertTrue(applied)
+        rows = narrator.shot_rows(p, [dev])
+        self.assertFalse({(r.key[2], r.key[3]) for r in rows if r.key[0] == 'edit'} & applied)
+        self.assertEqual([r.key for r in rows], [k for s in p.shots for k in voice.keys_of(s)])
+
     def test_rows_name_every_key(self):
         for p in (self.tour, self.develop):
             rows = narrator.shot_rows(p, [self.change])

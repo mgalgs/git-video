@@ -478,6 +478,7 @@ class TestVoiceFlag(unittest.TestCase):
         self.assertIn("git-video[voice]", entry)
         self.assertIn('bf_isabella', entry)
         self.assertIn('--quality', man)
+        self.assertIn('--duration <time>', man)
 
 
 class TestPacing(unittest.TestCase):

@@ -490,6 +490,34 @@ def make_voice_repo(tmp):
     return repo, {'root': root, 'head': head}
 
 
+def _stage(i):
+    """mod_{i}.py for make_series_repo: step_{i}(), 40 lines, calling the step before."""
+    head = f'from mod_{i - 1} import step_{i - 1}\n\n\n' if i else ''
+    body = [f'    value = value * {k + 2} + {i}  # stage {i}, part {k}\n' for k in range(36)]
+    prev = f'    value = step_{i - 1}(value)\n' if i else '    value = value + 1\n'
+    return head + f'def step_{i}(value):\n' + prev + ''.join(body) + '    return value\n'
+
+
+def make_series_repo(tmp, n=12):
+    """A line of `n` commits on a one-file root: commit i adds mod_i.py, a
+    40-line step_i() calling step_{i-1}(), with a two-sentence body naming
+    step_i(); commits 5 and 9 also add three lines to tests/test_all.py.
+    Returns (repo, [root sha, then one sha per commit])."""
+    repo = os.path.join(tmp, 'series')
+    init(repo)
+    write(repo, 'README.md', '# pipeline\n\nA pipeline of steps.\n')
+    shas = [commit(repo, 'Start the pipeline')]
+    tests = ''
+    for i in range(n):
+        write(repo, f'mod_{i}.py', _stage(i))
+        if i in (5, 9):
+            tests += f'def test_step_{i}():\n    from mod_{i} import step_{i}\n    assert step_{i}(1)\n'
+            write(repo, 'tests/test_all.py', tests)
+        shas.append(commit(repo, f'Add stage {i}\n\nstep_{i}() adds stage {i} to the pipeline. '
+                                 f'It calls the stage before, so the order holds.'))
+    return repo, shas
+
+
 class FakeEngine:
     """A stand-in for videobuilder's Kokoro engine, for `vb.speech.say`: the
     phonemes are the text, and each phrase comes out as a tone about as long

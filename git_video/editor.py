@@ -502,7 +502,9 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
 
     `region`: ((line, col), (line, col)) the marked region, shaded and
     outlined. `folds`: (line, count) rows drawn under `line` over what is
-    there, `… count lines` in a dashed box: an elided run still pouring in.
+    there, `… count lines` in a dashed box: an elided run still pouring in;
+    (line, count, 'applied'): `⇥ count hunks applied`, a run of hunks put in
+    at once (--duration).
     `progress`: (done, total) lines, as a count and a thin bar in the mode
     line.
     """
@@ -633,9 +635,9 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                 if ln in lineset:
                     for x, y, w in geo.pieces(ln, col, col + length):
                         cv.outline(x - 3, y + 1, w + 6, lh - 2, theme.xref_box, width=2.5, radius=4)
-            for ln, count in folds:
+            for ln, count, *how in folds:
                 _fold(cv, lay, (y_of(ln) + geo.height(ln)) if 0 <= ln < n else lay.line_y(ln + 1, scroll_top),
-                      count, small, theme)
+                      count, small, theme, applied=bool(how and how[0] == 'applied'))
             if cursor is not None:
                 cl, cc = cursor
                 a = 1.0 if blink is None else cursor_on(blink, since=0.5)
@@ -766,13 +768,16 @@ def _region(cv, lay, buf, region, geo, lineset, theme):
         cv.mark('editor.region', *m)
 
 
-def _fold(cv, lay, y, count, font, theme):
+def _fold(cv, lay, y, count, font, theme, applied=False):
     """An elided run's fold row at `y`: `… count lines` in a dashed box over
-    the row, the count falling as the lines pour in above it."""
+    the row, the count falling as the lines pour in above it; `applied`, the
+    run of hunks put in at once above it: `⇥ count hunks applied`."""
     tb, cw, lh = lay.text_box, lay.cell_w, lay.line_h
     if y + lh <= tb.y or y >= tb.bottom:
         return
     label = f'\u2026 {count} line{"s" if count != 1 else ""}'
+    if applied:
+        label = f'\u21e5 {count} hunk{"s" if count != 1 else ""} applied'
     w = (len(label) + 3) * cw
     box = vb.Box(tb.x, y + lh * 0.08, w, lh * 0.84)
     gx = lay.box.x + lay.fringe_w   # a row of its own: no line number shows through

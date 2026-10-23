@@ -371,8 +371,9 @@ class Tour:
         i, t = self.at(n)
         before, after = self.views[i]
         kind = self.shots[i]['kind']
+        cam = P.camera_scale(self.shots[i]) if kind in ('dive', 'travel') else 1.0
         switch = {'open': self.timings[i][2] if kind == 'open' else 0, 'xref-push': P.XREF_SWITCH,
-                  'xref-pop': P.POP_SWITCH, 'dive': P.DIVE_SWITCH, 'travel': P.TRAVEL_SWITCH}.get(kind, 0)
+                  'xref-pop': P.POP_SWITCH, 'dive': P.DIVE_SWITCH * cam, 'travel': P.TRAVEL_SWITCH * cam}.get(kind, 0)
         v = after if t >= switch else before
         return v.path, v.stack
 
@@ -475,6 +476,12 @@ class Tour:
             seen['elision'] = 1
             st = fills[0]
             out.append((at(st['at'] + st['dur'] * edits.FILL_POUR * 0.45), f'elision {path}'))
+        applied = [st for st in s['steps'] if st['kind'] == 'apply']
+        if applied and 'apply' not in seen:
+            seen['apply'] = 1
+            st = applied[0]
+            out.append((f0 + round((edits.shot_time(st['at'], clk) + edits.shot_time(st['at'] + st['dur'], clk))
+                                   / 2 * self.fps), f'apply {path}'))
         return out
 
     # ---- drawing ----
@@ -827,8 +834,15 @@ def _counters(cv, b, plan, t, meta_f, digits, cell_h):
 
 # ---- the closing card ----
 def recap(plan):
-    """(files visited, in order; definitions dived into, as (name, path, line)).
-    For develop: the files edited, and the definitions written."""
+    """(files visited, in order; definitions dived into, as (name, path, line);
+    files --duration left out, which the card lists as also changed). For
+    develop: the files edited, and the definitions written."""
+    files, defs = _recap(plan)
+    also = [p for e in plan.patches or () for p in e.get('left_out') or ()]
+    return files, defs, [p for p in dict.fromkeys(also) if p not in files]
+
+
+def _recap(plan):
     if plan.mode == 'develop':
         files = list(dict.fromkeys(s['path'] for s in plan.shots if s['kind'] == 'edit'))
         # A definition a later --series patch rewrites is listed once, at its
@@ -851,11 +865,14 @@ def recap(plan):
     return files, defs
 
 
-def _end_slots(box, portrait, header, bodies, link, gap=16):
+def _end_slots(box, portrait, header, bodies, link, gap=16, whole=False):
     """The closing card's boxes: header, visited, defs, and next (or None),
     the whole centred in `box`. Side by side like end_card_slots in landscape
     and square frames (`bodies` tall at the most); stacked in portrait, each
-    panel its own height."""
+    panel its own height. end_card_slots keeps a gap for the link even
+    without one, which costs the panels that much; `whole` gives it back
+    (with --duration's "also changed" rows; without them the card is drawn
+    as it always was)."""
     if portrait:
         total = header + sum(bodies) + gap + (gap + link if link else 0)
         b = box.anchor(box.w, min(total, box.h))
@@ -864,7 +881,7 @@ def _end_slots(box, portrait, header, bodies, link, gap=16):
         d = vb.Box(b.x, v.bottom + gap, b.w, bodies[1])
         return hb, v, d, (vb.Box(b.x, d.bottom + gap, b.w, link) if link else None)
     body = max(bodies)
-    total = header + body + (gap + link if link else 0)
+    total = header + body + (gap + link if link else gap if whole else 0)
     s = end_card_slots(box.anchor(box.w, min(total, box.h)), header=header, gap=gap, link=link, split=0.55)
     return s['header'], s['video'], s['subscribe'], (s['link'] if link else None)
 
@@ -895,11 +912,16 @@ def _rows(cv, b, head, rows, F, style, draw_row, per=1):
             vbtext.draw(cv, [f'+{len(rows) - len(shown)} more'], F['row'], inner.x, y, style.muted)
 
 
+ALSO = object()   # the closing card's "also changed" header row
+
+
 def _end_card(tour, cv, box, shot, t):
     """The recap: what the tour visited and dived into, and what comes next."""
     plan, style = tour.plan, sidebar.Style()
     portrait = cv.height > cv.width
-    files, defs = recap(plan)
+    files, defs, also = recap(plan)
+    # the files --duration left out, under a header row of their own
+    rows = files + ([ALSO] + also if also else [])
 
     def sized(k):
         """The card's type and boxes with every size scaled by k."""
@@ -909,7 +931,7 @@ def _end_card(tour, cv, box, shot, t):
         chrome = 2 * 22 + vbtext.line_height(F['head']) + 12
         kicker = vb.Font(UI, 24 * k, weight=700, tracking=0.2)
         link = 84 * k if plan.next else 0
-        want = [chrome + max(1, n) * rh + 8 for n in (len(files), 2 * len(defs))]
+        want = [chrome + max(1, n) * rh + 8 for n in (len(rows), 2 * len(defs))]
 
         def layout(title, n):
             header = vbtext.line_height(kicker) + 8 + n * vbtext.line_height(title) + 6 + 40 * k + 16 + 20
@@ -940,7 +962,7 @@ def _end_card(tour, cv, box, shot, t):
             if whole and total <= box.h * 0.8:
                 break
     F, rh, kicker, title, lines, header, link, bodies, _, _ = sized(k)
-    hb, vbox, dbox, nbox = _end_slots(box, portrait, header, bodies, link)
+    hb, vbox, dbox, nbox = _end_slots(box, portrait, header, bodies, link, whole=bool(also))
     stats = {f['path']: f for f in plan.files}
     p = t / P.END_REVEAL
 
@@ -959,10 +981,17 @@ def _end_card(tour, cv, box, shot, t):
     cv.mark('card.header', *hb)
 
     def file_row(path, x, y, w):
+        if path is ALSO:
+            small = vb.Font(UI, 17 * k, weight=700, tracking=0.14)
+            label = f'ALSO CHANGED  {len(also)}'
+            vbtext.draw(cv, [label], small, x, y + (rh - vbtext.line_height(small)) / 2, style.muted)
+            cv.mark('card.also', x, y, w, rh)
+            return
         f = stats.get(path, {})
         stat = sidebar.stat_text(f) if f else ''
         sw = vbtext.measure(stat, F['row'])
-        vbtext.draw(cv, [sidebar.ellipsize_left(path, F['row'], w - sw - 24)], F['row'], x, y, style.fg)
+        vbtext.draw(cv, [sidebar.ellipsize_left(path, F['row'], w - sw - 24)], F['row'], x, y,
+                    style.muted if path in also else style.fg)
         sx = x + w - sw
         if f.get('binary') or not stat:
             vbtext.draw(cv, [stat], F['row'], sx, y, style.muted)
@@ -982,7 +1011,7 @@ def _end_card(tour, cv, box, shot, t):
 
     _, layer = show(1)
     with layer:
-        _rows(cv, vbox, f'{"EDITED" if plan.mode == "develop" else "VISITED"}  {len(files)}', files, F, style,
+        _rows(cv, vbox, f'{"EDITED" if plan.mode == "develop" else "VISITED"}  {len(files)}', rows, F, style,
               file_row)
     cv.mark('card.visited', *vbox)
     _, layer = show(2)
@@ -2073,6 +2102,7 @@ def _all_lit(lay):
 
 def _dive(tour, cv, st, lay, shot, t, before, after):
     box, tile = st.main, lay.tile(shot['path'])
+    t = t / P.camera_scale(shot)   # a --duration plan's shorter dive plays the same moves faster
     cam = _wide(box) if tile is None else fly_to(vb.ease_in_out_quart(vb.clamp01(t / P.DIVE_CAM)), _wide(box),
                                                    _close(box, tile))
     q = vb.clamp01((t - P.DIVE_MORPH[0]) / (P.DIVE_MORPH[1] - P.DIVE_MORPH[0]))
@@ -2083,6 +2113,7 @@ def _dive(tour, cv, st, lay, shot, t, before, after):
 def _travel(tour, cv, st, lay, shot, t, before, after):
     box = st.main
     a, b = lay.tile(shot['path']), lay.tile(shot['to'])
+    t = t / P.camera_scale(shot)   # a --duration plan's shorter travel plays the same moves faster
     if a is None or b is None:
         _pane(tour, cv, st, after if t >= P.TRAVEL_SWITCH else before)
         return

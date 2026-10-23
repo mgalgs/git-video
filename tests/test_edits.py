@@ -69,6 +69,39 @@ class TestEdits(unittest.TestCase):
         old, new, sc = script_of(self.develop, 'tabs.py')
         self.assertEqual(old[1], '    if True:')   # tabs expanded, as the editor draws them
 
+    def test_apply_steps_reproduce_new_text(self):
+        big = collect.collect(fixtures.make_big_repo(self.tmp.name), 'HEAD')
+        for ch, path in ((self.develop, 'core.py'), (big, 'big.py')):
+            old, new, _ = script_of(ch, path)
+            f = next(f for f in ch.files if f.path == path)
+            n = len(f.hunks)
+            self.assertGreaterEqual(n, 2)
+            for shown in ({0}, set(), {n - 1}, set(range(1, n, 2)), {1, n - 2}):
+                with self.subTest(path=path, shown=shown):
+                    self.check_shown(old, new, f.hunks, path, shown)
+
+    def check_shown(self, old, new, hunks, path, shown):
+        n = len(hunks)
+        sc = edits.build(old, new, hunks, seed=path, shown=shown)
+        steps = sc['steps']
+        self.assertEqual(edits.apply(old, steps), new)
+        perf = edits.Performance(old, steps)
+        self.assertEqual([x for _, x in perf.state_at(sc['natural']).lines], new)
+        # one apply step per run of hunks not shown, in order
+        runs = sum(1 for hi in range(n) if hi not in shown and (hi == 0 or hi - 1 in shown))
+        applied = [st for st in steps if st['kind'] == 'apply']
+        self.assertEqual(len(applied), runs)
+        self.assertEqual(sorted(h for st in applied for h in st['hunks']), [h for h in range(n) if h not in shown])
+        settled = {j for st in applied for *_, settle in st['parts'] for _, j in settle}
+        self.assertFalse(settled & set(sc['written']))
+        for st in applied:   # the marker shows while the step runs, and the lines between hunks keep their origin
+            state = perf.state_at(st['at'] + st['dur'] / 2)
+            self.assertEqual(state.fold[1:], (len(st['hunks']), 'applied'))
+            self.assertEqual([x for _, x in state.lines], edits.apply(old, steps[:steps.index(st) + 1]))
+            for (a, _, ta, _), (b, _, _, _) in zip(st['parts'], st['parts'][1:]):
+                between = state.lines[a + ta.count('\n'):b]
+                self.assertTrue(all(o and o[0] == 'old' for o, _ in between), (a, b))
+
     def test_lines_are_coloured_from_their_file(self):
         for f in plan.order_files(self.develop):
             old, new, sc = script_of(self.develop, f.path, 30)

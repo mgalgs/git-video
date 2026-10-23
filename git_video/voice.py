@@ -620,8 +620,9 @@ def script(plan, patches):
 
 
 def hunks_in(steps):
-    """The hunk indices an edit script performs, in the order it reaches them."""
-    return list(dict.fromkeys(st['hunk'] for st in steps))
+    """The hunk indices an edit script performs, in the order it reaches them
+    (not those an `apply` step puts in at once)."""
+    return list(dict.fromkeys(st['hunk'] for st in steps if st['kind'] != 'apply'))
 
 
 def keys_of(s):
@@ -775,7 +776,8 @@ def anchors(s):
     if kind == 'edit':
         first = {}
         for st in s['steps']:
-            first.setdefault(st['hunk'], st['at'])
+            if st['kind'] != 'apply':
+                first.setdefault(st['hunk'], st['at'])
         return {('edit', s.get('patch', 0), s['path'], hi): edits.shot_time(at, s['clock'])
                 for hi, at in first.items()}
     return {}
