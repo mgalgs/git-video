@@ -32,7 +32,7 @@ def stat_text(f):
     return f'+{f["added"]} {MINUS}{f["deleted"]}'
 
 
-def _ellipsize_left(s, font, width):
+def ellipsize_left(s, font, width):
     if vbtext.measure(s, font) <= width:
         return s
     while s and vbtext.measure('…' + s, font) > width:
@@ -40,7 +40,7 @@ def _ellipsize_left(s, font, width):
     return '…' + s
 
 
-def _ellipsize(s, font, width):
+def ellipsize(s, font, width):
     if vbtext.measure(s, font) <= width:
         return s
     while s and vbtext.measure(s + '…', font) > width:
@@ -109,12 +109,12 @@ def _commit(cv, box, commit, F, style):
         slh = vbtext.line_height(F['subject'])
         sub = list(sub[:3])
         if len(vbtext.wrap(commit['subject'], F['subject'], box.w)) > 3:
-            sub[-1] = _ellipsize(sub[-1] + '…', F['subject'], box.w)
+            sub[-1] = ellipsize(sub[-1] + '…', F['subject'], box.w)
         vbtext.draw(cv, sub, F['subject'], box.x, y, style.strong)
         y += slh * len(sub) + 6
         date = commit.get('date', '')[:10]
         meta = ' · '.join(x for x in (commit.get('short'), commit.get('author'), date) if x)
-        vbtext.draw(cv, [_ellipsize(meta, F['meta'], box.w)], F['meta'], box.x, y, style.muted)
+        vbtext.draw(cv, [ellipsize(meta, F['meta'], box.w)], F['meta'], box.x, y, style.muted)
         y += vbtext.line_height(F['meta']) + 14
         blh = vbtext.line_height(F['body'])
         room = int((box.bottom - y) // blh)
@@ -127,7 +127,7 @@ def _commit(cv, box, commit, F, style):
                     lines.append('')
                 lines += vbtext.wrap(' '.join(para.split()), F['body'], box.w)
         else:   # a range: one row per commit
-            lines = [_ellipsize(f'{c["short"]} {c["subject"]}', F['body'], box.w)
+            lines = [ellipsize(f'{c["short"]} {c["subject"]}', F['body'], box.w)
                      for c in commit.get('commits', [])] if len(commit.get('commits', [])) > 1 else []
         lines = trim(lines, room, F['body'], box.w)
         if lines:   # a subject-only commit, or a one-commit range, has no body to show
@@ -143,7 +143,7 @@ def trim(lines, room, font, width):
     while lines and not lines[-1].strip():
         lines.pop()
     if lines:
-        lines[-1] = _ellipsize(lines[-1] + ' \u2026', font, width)
+        lines[-1] = ellipsize(lines[-1] + ' \u2026', font, width)
     return lines
 
 
@@ -174,7 +174,7 @@ def _files(cv, box, files, current_path, rows, F, style):
             stat = stat_text(f)
             sw = vbtext.measure(stat, F['row'])
             path_w = box.w - 2 * cell - sw - cell * 1.5
-            put(_ellipsize_left(f['path'], font, path_w), font, box.x + 2 * cell, style.strong if is_cur else style.fg)
+            put(ellipsize_left(f['path'], font, path_w), font, box.x + 2 * cell, style.strong if is_cur else style.fg)
             x = box.right - sw
             if f.get('binary'):
                 put(stat, F['row'], x, style.muted)
@@ -204,7 +204,7 @@ def _xref(cv, box, stack, rows, F, style):
             font = F['row_bold'] if top else F['row']
             if top:
                 vbtext.draw(cv, [MARK], font, box.x, y, style.head)
-            label = _ellipsize(f'{name} → {path}:{line}', font, box.w - 2 * cell)
+            label = ellipsize(f'{name} → {path}:{line}', font, box.w - 2 * cell)
             vbtext.draw(cv, [label], font, box.x + 2 * cell, y, style.strong if top else style.fg)
             y += rh
 
@@ -219,7 +219,7 @@ def draw_strip(cv, box, *, commit, files, current_path, xref_stack, ui='sans-ser
         inner = box.pad(14, 22)
         subject = vb.Font(ui, 24, weight=700)
         cv.mark('sidebar.commit', inner.x, inner.y, inner.w, vbtext.line_height(subject))
-        vbtext.draw(cv, [_ellipsize(commit['subject'], subject, inner.w)], subject, inner.x, inner.y,
+        vbtext.draw(cv, [ellipsize(commit['subject'], subject, inner.w)], subject, inner.x, inner.y,
                     style.strong)
         lh = vbtext.line_height(F['row'])
         y1 = inner.y + vbtext.line_height(subject) + 8
@@ -229,7 +229,7 @@ def draw_strip(cv, box, *, commit, files, current_path, xref_stack, ui='sans-ser
             f = files[cur]
             tail = f'  {stat_text(f)}  ({cur + 1}/{len(files)})'
             tw = vbtext.measure(tail, F['row'])
-            path = _ellipsize_left(f['path'], F['row_bold'], inner.w - tw - 2 * vbtext.measure('M', F['row']))
+            path = ellipsize_left(f['path'], F['row_bold'], inner.w - tw - 2 * vbtext.measure('M', F['row']))
             line = f'{MARK} {path}'
             b = vbtext.draw(cv, [line], F['row_bold'], inner.x, y1, style.strong)
             vbtext.draw(cv, [tail], F['row'], b.right, y1, style.muted)
@@ -240,4 +240,4 @@ def draw_strip(cv, box, *, commit, files, current_path, xref_stack, ui='sans-ser
         if xref_stack:
             name, path, line = xref_stack[-1]
             label = f'xref {MARK} {name} → {path}:{line}  (depth {len(xref_stack)})'
-            vbtext.draw(cv, [_ellipsize(label, F['row'], inner.w)], F['row'], inner.x, y2, style.fg)
+            vbtext.draw(cv, [ellipsize(label, F['row'], inner.w)], F['row'], inner.x, y2, style.fg)

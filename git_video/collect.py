@@ -122,13 +122,18 @@ def resolve(repo, spec):
     return base, target, short(repo, target), False
 
 
+def _one(repo, rev):
+    """The Commit of one rev, with its body."""
+    out = git(repo, 'log', '-1', '--format=%H%n%h%n%an%n%aI%n%s%n%b', rev)
+    sha, sh, author, date, subject, *body = out.split('\n')
+    return Commit(sha, sh, subject, '\n'.join(body).strip(), author, date)
+
+
 def commit_meta(repo, base, target, is_range):
     """The commits of the change, oldest first. A single rev's carries its body;
     a range's commits carry their subjects only."""
     if not is_range:
-        out = git(repo, 'log', '-1', '--format=%H%n%h%n%an%n%aI%n%s%n%b', target)
-        sha, sh, author, date, subject, *body = out.split('\n')
-        return [Commit(sha, sh, subject, '\n'.join(body).strip(), author, date)]
+        return [_one(repo, target)]
     out = git(repo, 'log', '--reverse', '-z', '--format=%H%x1f%h%x1f%an%x1f%aI%x1f%s', f'{base}..{target}')
     commits = []
     for rec in filter(None, out.split('\0')):
