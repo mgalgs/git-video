@@ -44,6 +44,25 @@ class TestEditor(unittest.TestCase):
             for name, b in cv.marks:
                 self.assertTrue(box.contains(b), (box, name, b))
 
+    def test_hscroll_keeps_point_in_view(self):
+        from git_video import film
+        text = 'x = [' + ', '.join(str(i) for i in range(60)) + ']\n'
+        lay = editor.layout(vb.Box(0, 0, 900, 600), FONT, minimap=True)
+        col = len(text) - 2
+        self.assertGreater(col, lay.cols)
+        h = film.hscroll_for(col, lay.cols)
+        self.assertEqual(film.hscroll_for(3, lay.cols), 0)
+        self.assertTrue(0 < h <= col < h + lay.cols - film.HSCROLL_MARGIN)
+        cv = vb.Canvas(1000, 700, '#000')
+        where = editor.draw(cv, lay, buffer(text), 0, cursor=(0, col), region=((0, 1), (0, col)), hscroll=h)
+        tb = lay.text_box
+        self.assertTrue(tb.contains(where.cursor_box), (tb, where.cursor_box))
+        self.assertTrue(tb.contains(where.word_box(0, h, col - h)))
+        self.assertGreaterEqual(dict(cv.marks)['editor.region'].x, tb.x - lay.cell_w)
+        cv = vb.Canvas(1000, 700, '#000')
+        where = editor.draw(cv, lay, buffer(text), 0, cursor=(0, col))
+        self.assertGreater(where.cursor_box.x, tb.right)
+
     def test_region_fold_progress_marks(self):
         for box in (vb.Box(0, 0, 1256, 1032), vb.Box(300, 200, 700, 500)):
             cv = vb.Canvas(1920, 1080, '#000')

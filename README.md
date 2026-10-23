@@ -159,8 +159,10 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
   another changed file's new lines use goes first, tests last, otherwise
   diff order. The camera pulls back to the repo map and dives into the next
   file (or `C-x C-f` for one the map does not show).
-- Pacing: about 60 s per 500 changed lines (added + removed), never under
-  15 s, plus the cards and camera moves. Typing runs up to four times its
+- Pacing: about 60 s per 500 changed lines (added + removed), plus the
+  cards and camera moves. A change is never sped up to fit less than 15 s;
+  one that types out in under 15 s at natural pace plays at natural pace,
+  without padding. Typing runs up to four times its
   natural pace; past that, each file after its first moments is a speed-up
   sequence with a `▶▶ ×N` badge, ramped in and out, the keystrokes thinned to
   a typing run. A long new block (30 lines or more) is typed for a few lines,

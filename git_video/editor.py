@@ -15,7 +15,7 @@ clipped to the box; the canvas size is never consulted.
 """
 import contextlib
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Sequence
 
 import videobuilder as vb
@@ -91,13 +91,19 @@ class Layout:
     modeline_box: vb.Box
     echo_box: vb.Box
     minimap_box: vb.Box | None = None   # the strip at the text area's right edge, when asked for
+    hscroll: int = 0                    # columns scrolled off the left edge
+
+    @property
+    def cols(self):
+        """Whole text columns the text area shows."""
+        return max(1, int(self.text_box.w // self.cell_w))
 
     def line_y(self, line, scroll_top):
         """Top of `line` when the view starts at `scroll_top`."""
         return self.text_box.y + (line - scroll_top) * self.line_h
 
     def col_x(self, col):
-        return self.text_box.x + col * self.cell_w
+        return self.text_box.x + (col - self.hscroll) * self.cell_w
 
     def line_box(self, line, scroll_top):
         """The full-width text row of `line`."""
@@ -117,7 +123,7 @@ class Layout:
         tb = self.text_box
         if not (tb.x <= x < tb.right and tb.y <= y < tb.bottom):
             return None
-        return math.floor((y - tb.y) / self.line_h + scroll_top), math.floor((x - tb.x) / self.cell_w)
+        return math.floor((y - tb.y) / self.line_h + scroll_top), math.floor((x - tb.x) / self.cell_w) + self.hscroll
 
 
 def layout(box, font, digits=3, minimap=False):
@@ -247,7 +253,7 @@ def _clipped(b, area):
 def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), marks_removed_at=(),
          tints=(), sweeps=(), boxes=(), modeline=None, echo='', echo_cursor=False, minimap=None,
          morphs=(), morph_p=1.0, focus=None, focus_amount=0.0, motion=None, region=None, folds=(),
-         progress=None, theme=Theme()):
+         progress=None, hscroll=0, theme=Theme()):
     """Draw the pane and return its Placement.
 
     `cursor`: (line, col) of point, a block; `blink`: seconds since point last
@@ -280,8 +286,11 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
     outlined. `folds`: (line, count) rows drawn under `line` over what is
     there, `… count lines` in a dashed box: an elided run still pouring in.
     `progress`: (done, total) lines, as a count and a thin bar in the mode
-    line.
+    line. `hscroll`: columns scrolled off the left edge, as Emacs scrolls the
+    window sideways to keep point in view.
     """
+    if hscroll != lay.hscroll:
+        lay = replace(lay, hscroll=hscroll)
     box, tb, lh, cw = lay.box, lay.text_box, lay.line_h, lay.cell_w
     n = len(buf.lines)
     p = vb.clamp01(morph_p)
@@ -475,8 +484,9 @@ def _region(cv, lay, buf, region, y_of, lineset, theme):
         n = len(''.join(t for _, t in buf.lines[ln])) if ln < len(buf.lines) else 0
         a = c0 if ln == l0 else 0
         b = c1 if ln == l1 else n + 1
-        if b > a:
-            rows.append((lay.col_x(a), lay.col_x(b), y_of(ln)))
+        x0, x1 = max(lay.col_x(a), lay.text_box.x - cw * 0.3), lay.col_x(b)
+        if x1 > x0:
+            rows.append((x0, x1, y_of(ln)))
     if not rows:
         return
     for x0, x1, y in rows:

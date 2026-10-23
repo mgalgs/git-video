@@ -1232,6 +1232,19 @@ def _changed_ranges(lines):
 
 
 ECHO_PROMPT = 'Goto line: '
+HSCROLL_MARGIN = 4   # columns kept clear right of point before the window scrolls sideways
+
+
+def hscroll_for(col, cols):
+    """Columns scrolled off the left with point at `col` in a window `cols`
+    wide: none while point is clear of the right edge, else half windows at a
+    time, as Emacs's automatic hscroll recentres point (a function of `col`
+    alone, so a frame never depends on the one before)."""
+    room = cols - HSCROLL_MARGIN
+    if col < room:
+        return 0
+    step = max(1, cols // 2)
+    return ((col - room) // step + 1) * step
 
 
 def _edit_pane(tour, cv, st, i, src, **kw):
@@ -1258,6 +1271,7 @@ def _edit_pane(tour, cv, st, i, src, **kw):
         else:
             top = vb.interpolate(into, [0, dur], [a, b], vb.ease_in_out_quart)
     ranges = _changed_ranges(state.lines)
+    kw.setdefault('hscroll', hscroll_for(state.cursor[1] if state.cursor else 0, lay.cols))
     bars = editor.minimap_bars(buf.lines[k] for k in range(len(state.lines)))
     done = s['done_before'] + state.done
     kw.setdefault('echo', state.echo)
@@ -1323,7 +1337,8 @@ def _edit(tour, cv, st, shot, t, i, before, after):
             lay = where.layout
             line, col = state.cursor
             band = where.line_box(line)
-            target = where.word_box(line, 0, max(1, col))
+            h = lay.hscroll
+            target = where.word_box(line, h, max(1, col - h))
             card = _callout_card(tour, cv, st, where, (i, k), c, t, target, band, outline=False)
     _speed_badge(cv, st, where, shot, t, avoid=card)
 
