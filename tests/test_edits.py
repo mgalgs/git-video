@@ -2,7 +2,7 @@ import bisect
 import tempfile
 import unittest
 
-from git_video import collect, edits, plan, worddiff
+from git_video import collect, editor, edits, plan, worddiff
 from tests import fixtures
 
 
@@ -138,6 +138,35 @@ class TestEdits(unittest.TestCase):
                 if scroll is None:
                     line = perf.state_at(t).cursor[0]
                     self.assertTrue(top <= line < top + rows, (rows, t, top, line))
+
+    def test_view_counts_wrapped_rows_and_never_bobs(self):
+        ch = collect.collect(fixtures.make_wrap_repo(self.tmp.name), 'HEAD')
+        old, new, sc = script_of(ch, 'wrap.py')
+        self.assertIn('kill', [st['kind'] for st in sc['steps']])
+        for rows, cols in ((20, 40), (26, 67)):
+            perf = edits.Performance(old, sc['steps'])
+            m = min(edits.MARGIN, (rows - 1) // 4)
+            self.assertNotEqual(perf.tops(rows, cols), perf.tops(rows), (rows, cols))   # the wrap is counted
+            prev, scrolling = None, False
+            for k in range(int(sc['natural'] * 30)):
+                t = k / 30
+                scroll, top = perf.view(t, rows, cols)
+                state = perf.state_at(t)
+                if scroll is not None:
+                    a, b, into, dur, far = scroll
+                    if not scrolling and prev is not None:
+                        self.assertEqual(a, prev, (rows, cols, t))   # a jump glides from where the view was
+                    top, scrolling = a + (b - a) * into / dur, True
+                    prev = top
+                    continue
+                scrolling = False
+                line = state.cursor[0]
+                if prev is not None and top < prev:
+                    self.assertLess(line, prev + m, (rows, cols, t, prev, top))   # only point near the top scrolls back
+                wrapped = [editor.wrap_rows(len(x), cols) for _, x in state.lines]
+                self.assertLessEqual(top, line, (rows, cols, t))
+                self.assertLessEqual(sum(wrapped[top:line + 1]), rows, (rows, cols, t))   # all of point's line shows
+                prev = top
 
     def test_jumps_to_far_hunks(self):
         ch = collect.collect(fixtures.make_far_repo(self.tmp.name), 'HEAD')

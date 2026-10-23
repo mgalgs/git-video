@@ -681,7 +681,7 @@ class TestFilm(unittest.TestCase):
                         self.assertIn(want_mark[kind], marks, (name, label, fmt))
                     cursor = tour.performance(i).state_at(film.edits.source_time(t, tour.shots[i]['clock'])).cursor
                     lay = film.editor.layout(st.main, st.mono, digits=tour.edit_texts[i][2], minimap=True)
-                    _, top = tour.performance(i).view(film.edits.source_time(t, tour.shots[i]['clock']), lay.rows)
+                    _, top = tour.performance(i).view(film.edits.source_time(t, tour.shots[i]['clock']), lay.rows, lay.cols)
                     self.assertTrue(top <= cursor[0] < top + lay.rows, (name, label, fmt))
                     side = [b for m, b in cv.marks if m.startswith('sidebar.')]
                     for m, b in cv.marks:

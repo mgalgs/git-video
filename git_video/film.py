@@ -1445,20 +1445,16 @@ def _edit_pane(tour, cv, st, i, src, **kw):
     state = perf.state_at(src)
     buf = editor.Buffer(s['path'], _Runs(state.lines, old_runs, new_runs, s['path']), mode)
     lay = editor.layout(st.main, st.mono, digits=digits, minimap=True)
-    scroll, top = perf.view(src, lay.rows)
+    scroll, top = perf.view(src, lay.rows, lay.cols)   # long lines wrap: the window counts their rows
     motion = None
     if scroll is not None:
         a, b, into, dur, far = scroll
-        if state.cursor and state.cursor[0] >= b:   # wrapping can push the end down; the glide still runs
-            b = editor.keep_in_view(lay, buf.lines, b, state.cursor[0])
         if far:
             top = scroll_at(into, a, b, dur)
             if 0 < into < dur:
                 motion = scroll_motion(a, b, into, dur, lay.line_h)
         else:
             top = vb.interpolate(into, [0, dur], [a, b], vb.ease_in_out_quart)
-    elif state.cursor:   # long lines wrap (no sideways scroll): keep all of point's line in view
-        top = editor.keep_in_view(lay, buf.lines, top, state.cursor[0])
     ranges = _changed_ranges(state.lines)
     bars = editor.minimap_bars(buf.lines[k] for k in range(len(state.lines)))
     done = s['done_before'] + state.done

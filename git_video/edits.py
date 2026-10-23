@@ -38,6 +38,8 @@ from collections import namedtuple
 
 from videobuilder.type.typewriter import schedule
 
+from .highlight import TAB
+
 from . import highlight, worddiff
 
 # Natural timings, seconds: the pace of a person typing at ease.
@@ -486,7 +488,7 @@ class Performance:
     for a frame), and `view(t, rows)`, where the window is."""
 
     def __init__(self, old, steps, snap_every=SNAP_EVERY):
-        self.steps = steps
+        self.old, self.steps = old, steps
         self.starts = [st['at'] for st in steps]
         self.snap_every = snap_every
         self.replays = 0   # steps replayed by the last state_at (the tests bound it)
@@ -636,27 +638,38 @@ class Performance:
         return State(lines, point, None, None, '', done, removed, None, k)
 
     # -- the window --
-    def tops(self, rows):
-        """The window's top line when each step starts, for a window of `rows`."""
-        if rows not in self._tops:
+    def tops(self, rows, cols=None):
+        """The window's top line when each step starts, for a window of `rows`
+        (`cols` wide: long lines wrap, and take the rows they wrap onto)."""
+        key = (rows, cols)
+        if key not in self._tops:
             out, top = [], 0
+            state = (tuple((('old', i), s) for i, s in enumerate(self.old)), (), (0, 0), 0.0)
             for k, st in enumerate(self.steps):
                 out.append(top)
-                top = self._top_in(k, st['dur'], rows, top)[1]
+                before, state = state[0], self._apply(state, st)
+                top = self._top_in(k, st['dur'], rows, top, state[0], cols, before)[1]
             out.append(top)
-            self._tops[rows] = out
-        return self._tops[rows]
+            self._tops[key] = out
+        return self._tops[key]
 
-    def _top_in(self, k, tau, rows, top):
+    def _top_in(self, k, tau, rows, top, lines=(), cols=None, before=None):
         """(scroll, top) `tau` s into step k from window top `top`: scroll is
-        (from, to, seconds into the scroll, its length, far) while a jump scrolls."""
+        (from, to, seconds into the scroll, its length, far) while a jump scrolls.
+        With `cols`, `lines` (the buffer then; `before`, before the step, for
+        a kill once it has cut) wrap, and the window keeps all of point's line
+        in it."""
         st, m = self.steps[k], min(MARGIN, max(0, (rows - 1) // 4))
+
+        def follow(top, line, lines=lines):
+            return _fit(_follow(top, line, rows, m), line, lines, rows, cols, m)
         kind = st['kind']
         if kind == 'jump':
             if tau < st['land']:
                 return None, top
             line = st['line']
             to = top if top + m <= line <= top + rows - 1 - m else max(0, line - rows // 3)
+            to = _fit(to, line, lines, rows, cols, m)
             into = tau - st['land']
             if to != top and into < st['scroll_dur']:
                 return (top, to, into, st['scroll_dur'], st['scroll'] == 'far'), to
@@ -666,18 +679,18 @@ class Performance:
         cur = self._cursor_in(k, tau)
         if kind == 'kill':
             a = tuple(st['from'])
-            top = _follow(top, a[0] if tau >= st['glide'] else cur[0], rows, m)
+            top = follow(top, a[0] if tau >= st['glide'] else cur[0])
             if st['mark'] <= tau < st['cut']:
-                top = _follow(top, cur[0], rows, m)
-            elif tau >= st['cut']:
-                top = _follow(_follow(top, st['to'][0], rows, m), a[0], rows, m)
+                top = follow(top, cur[0])
+            elif tau >= st['cut']:   # where the region's end took the window, in the lines it was cut from
+                top = follow(follow(top, st['to'][0], lines if before is None else before), a[0])
             return None, top
         if kind in ('type', 'fill'):
             p = (st['line'], st['col'])
             if tau >= st.get('glide', 0.0):
-                top = _follow(top, p[0], rows, m)
-            return None, _follow(top, cur[0] + (1 if kind == 'fill' else 0), rows, m)
-        return None, _follow(top, cur[0], rows, m)
+                top = follow(top, p[0])
+            return None, follow(top, cur[0] + (1 if kind == 'fill' else 0))
+        return None, follow(top, cur[0])
 
     def _cursor_in(self, k, tau):
         st = self.steps[k]
@@ -706,19 +719,21 @@ class Performance:
             return _end_of(p, '\n' + '\n'.join(rows[:m]) if m else '')
         return start
 
-    def view(self, t, rows):
-        """(scroll, top) at natural time `t` for a window of `rows`: scroll as
-        in `_top_in`, top the line the window starts at (where a scroll is
-        going)."""
+    def view(self, t, rows, cols=None):
+        """(scroll, top) at natural time `t` for a window of `rows` (`cols`
+        wide, long lines wrapping): scroll as in `_top_in`, top the line the
+        window starts at (where a scroll is going)."""
         k = bisect.bisect_right(self.starts, t) - 1
         if k < 0:
             return None, 0
-        tops = self.tops(rows)
+        tops = self.tops(rows, cols)
         st = self.steps[k]
         tau = t - st['at']
         if tau >= st['dur']:
             return None, tops[k + 1]
-        return self._top_in(k, tau, rows, tops[k])
+        lines = self.state_at(t).lines if cols else ()
+        before = self.state_at(st['at']).lines if cols and st['kind'] == 'kill' and tau >= st.get('cut', tau) else None
+        return self._top_in(k, tau, rows, tops[k], lines, cols, before)
 
 
 def _poured(n, tau, dur):
@@ -733,6 +748,23 @@ def _follow(top, line, rows, m):
         return max(0, line - m)
     if line > top + rows - 1 - m:
         return line - (rows - 1 - m)
+    return top
+
+
+def _fit(top, line, lines, rows, cols, m):
+    """`top`, moved down as little as it must (a line at a time) for every row
+    `line` wraps onto, and `m` rows below them, to be in a window of `rows`
+    `cols` wide; not so far that `line` is within `m` lines of the top (so
+    `_follow` keeps what this gives it) unless the line's rows would not
+    show otherwise."""
+    if not cols or not 0 <= line < len(lines):
+        return top
+
+    def wrapped(ln):
+        return max(1, -(-len(lines[ln][1].expandtabs(TAB)) // cols))
+    for margin, stop in ((m, line - m), (0, line)):
+        while top < stop and sum(wrapped(ln) for ln in range(top, line + 1)) + margin > rows:
+            top += 1
     return top
 
 

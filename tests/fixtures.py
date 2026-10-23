@@ -412,3 +412,22 @@ def make_rewrite_repo(tmp):
     write(repo, 'lib.py', REWRITE_LIB.replace('return 1', 'return helper(4)') + helper2)
     c = commit(repo, 'Sum in closed form\n\nhelper() now uses the closed form; main() calls it.')
     return repo, {'a': a, 'b': b, 'c': c}
+
+
+def make_wrap_repo(tmp):
+    """A repo whose HEAD edits a file where every third line is long enough to
+    wrap a few times: kills and long typed lines near the window's foot, and
+    a far hunk to jump to."""
+    repo = os.path.join(tmp, 'wrap')
+    init(repo)
+    rows = [f'w_{i} = {i}' + (', ' + ', '.join(f'item_{i}_{j}' for j in range(30)) if i % 3 == 0 else '') + '\n'
+            for i in range(300)]
+    write(repo, 'wrap.py', ''.join(rows))
+    commit(repo, 'Add wrap.py')
+    for at in (240, 60, 30):
+        del rows[at:at + 4]
+        rows[at:at] = [f'n_{at}_{j} = [' + ', '.join(f'"value {j} {k}"' for k in range(12)) + ']\n'
+                       for j in range(3)]
+    write(repo, 'wrap.py', ''.join(rows))
+    commit(repo, 'Rewrite some long lines')
+    return repo
