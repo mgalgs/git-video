@@ -315,6 +315,9 @@ class TestPlan(unittest.TestCase):
         self.assertIsNone(xref.resolve(C(3, 11, 'frobnicate', False), defs, 'pkg/main.py', text))
         text = 'def report(rows, frobnicate=None):\n    return frobnicate\n'
         self.assertIsNone(xref.resolve(C(2, 11, 'frobnicate', False), defs, 'pkg/main.py', text))
+        self.assertIsNone(xref.resolve(C(1, 17, 'frobnicate', False), defs, 'pkg/main.py', text))
+        text = 'def report(rows, key=frobnicate):\n    return key\n'   # a default is a use
+        self.assertEqual(xref.resolve(C(1, 21, 'frobnicate', False), defs, 'pkg/main.py', text).path, 'pkg/util.py')
         text = 'class Pane:\n    frobnicate: int\n\n    def show(self):\n        return frobnicate\n'
         self.assertIsNone(xref.resolve(C(2, 4, 'frobnicate', False), defs, 'pkg/main.py', text))
         text = 'def report(rows):\n    for frobnicate in rows:\n        print(frobnicate)\n'

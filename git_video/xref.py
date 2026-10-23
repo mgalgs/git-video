@@ -253,13 +253,15 @@ def _bound(lines, cand):
     binds = re.compile(rf'(?<![\w.$]){name}\s*(?::[^=\n]*)?=(?!=)|^\s*{name}\s*:'
                        rf'|\bfor\b[^:\n]*(?<![\w.$]){name}\b[^:\n]*\bin\b|\bas\s+{name}\b'
                        rf'|\b(?:const|let|var)\s+{name}\b')
-    word = re.compile(rf'(?<![\w.$]){name}\b')
+    param = re.compile(rf'[(,]\s*\**{name}\b')
     tab = [s.expandtabs(highlight.TAB) for s in lines]
     ln = min(cand.line, len(tab)) - 1
     if ln < 0:
         return False
     ind = _indent(tab[ln]) if tab[ln].strip() else 0
     blocks = []   # (header line, its indent) of each enclosing def/class, innermost first
+    if _SCOPE.match(tab[ln]):   # a parameter on the def line itself
+        blocks.append((ln, -1))
     for k in range(ln, -1, -1):
         s = tab[k]
         if s.strip() and _indent(s) < ind:
@@ -269,8 +271,10 @@ def _bound(lines, cand):
     for k, hind in blocks:
         head = ' '.join(tab[k:k + 10])
         params = head[head.find('('):head.find(')') + 1] if '(' in head else ''
-        if not re.match(r'\s*class\b', head) and word.search(params):   # a class's bases are uses
+        if not re.match(r'\s*class\b', head) and param.search(params):   # a class's bases are uses
             return True
+        if hind < 0:
+            continue
         end = k + 1
         while end < len(tab) and (not tab[end].strip() or _indent(tab[end]) > hind):
             end += 1
