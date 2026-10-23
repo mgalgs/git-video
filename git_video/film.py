@@ -807,19 +807,31 @@ def _patch_face(tour, cv, k):
     vbtext.draw(cv, [stats], meta, box.x, boxes[-1].y, style.fg, align='center', width=box.w)
 
 
+REACH = 0.895   # how far the strip's fill runs toward the next patch: short of ticking it (step_states)
+
+
 def series_progress(k, n, t):
     """The series strip's progress `t` s into the card before patch k of n:
-    the fill runs from patch k-1's marker to patch k's as the card comes in."""
+    the patches before k done, the fill running from patch k-1's marker up to
+    patch k's as the card comes in, never reaching it (that would tick it
+    off as done before it has played)."""
     e = vb.ease_in_out_quart(vb.clamp01((t - 0.2) / (P.INTER_REVEAL - 0.2)))
-    return ((k - 1) + e) / max(1, n - 1)
+    return ((k - 1) + e * REACH) / max(1, n - 1)
+
+
+def series_states(k, n):
+    """What the strip shows for each of n patches on the card before patch k:
+    `done` (filled, a tick), `current` (a larger ring, its number in it) or
+    `pending` (grey, its number)."""
+    return ['done' if j < k else 'current' if j == k else 'pending' for j in range(n)]
 
 
 def _patch_card(tour, cv, box, shot, t):
     """The card between two patches: the patch just played is the top card of a
     deck and is flung off, the next one's card coming to the top
     (stacked_card_reveal, held with the card on the deck), over a strip of the
-    series with the fill running on to the next patch
-    (progress_steps_connector_fill)."""
+    series (progress_steps_connector_fill) with the patches played ticked, the
+    fill running on to the next one, which is ringed as current."""
     k, n = shot['patch'], len(tour.patches)
     w, h = cv.width, cv.height
     portrait = h > w
@@ -836,9 +848,23 @@ def _patch_card(tour, cv, box, shot, t):
     deck_bottom = h / 2 + ch / 2 + DECK_DEPTH * DECK_GAP
     y = deck_bottom + (h - deck_bottom) * 0.42
     mono = vb.Font(tour.font, r * 0.95, weight=600)
-    draw_progress_steps(cv, x0, x1, y, series_progress(k, n, t), labels, r=r, track=6, done=THEME.cursor,
-                        todo='#3f444a', ink='#e6e9ef', muted='#9aa3b2', font=vb.Font(UI, r, weight=800),
-                        label_font=mono)
+    num_f = vb.Font(UI, r, weight=800)
+    xs = draw_progress_steps(cv, x0, x1, y, series_progress(k, n, t), labels, r=r, track=6, done=THEME.cursor,
+                             todo='#3f444a', ink='#e6e9ef', muted='#9aa3b2', font=num_f, label_font=mono)
+    # The patch about to play: a ring, larger than the other markers, its
+    # number inside (no tick: it has not played yet), its label lit.
+    cx, a = xs[k], vb.clamp01((t - 0.2) / (P.INTER_REVEAL - 0.2))
+    big = r * (1 + 0.3 * vb.ease_out_back(a))
+    cv.arc(cx, y, big * 1.25, 0, 2 * math.pi, THEME.cursor, width=2, alpha=0.35 * a)
+    cv.sector(cx, y, big, 0, 2 * math.pi, THEME.bg)
+    cv.arc(cx, y, big - r * 0.14, 0, 2 * math.pi, THEME.cursor, width=r * 0.28)
+    num = str(k + 1)
+    nw, nh = vbtext.block_size([num], num_f)
+    vbtext.draw(cv, [num], num_f, cx - nw / 2, y - nh / 2, '#e6e9ef')
+    if labels[k]:
+        lw, _ = vbtext.block_size([labels[k]], mono)
+        vbtext.draw(cv, [labels[k]], mono, cx - lw / 2, y + r * 1.9, '#e6e9ef')
+    cv.mark('card.series.current', cx - big, y - big, 2 * big, 2 * big)
     lh = vbtext.line_height(mono)
     cv.mark('card.series', x0 - r * 1.5, y - r * 1.5, x1 - x0 + 3 * r, r * 1.5 + r * 1.9 + lh)
 

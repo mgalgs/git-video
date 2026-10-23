@@ -681,9 +681,29 @@ class TestFilm(unittest.TestCase):
             self.assertEqual(tour.patch_info(1)['commit']['short'], patches[1].commits[0].short)
             self.assertIn('sidebar.commit', dict(cv.marks))
         self.assertEqual(film.series_progress(1, 2, 0), 0)
-        self.assertEqual(film.series_progress(1, 2, plan.INTER_DUR), 1)
-        self.assertEqual(film.series_progress(2, 3, plan.INTER_DUR), 1)
-        self.assertEqual(film.series_progress(1, 3, plan.INTER_DUR), 0.5)
+        self.assertEqual(film.series_states(2, 4), ['done', 'done', 'current', 'pending'])
+
+    def test_series_strip_never_marks_the_next_patch_done(self):
+        from videobuilder.capabilities.ui.progress_steps_connector_fill import step_states
+        for n in (2, 3, 7):
+            for k in range(1, n):
+                for t in (0, 0.3, plan.INTER_REVEAL, plan.INTER_DUR):
+                    _, nodes = step_states(n, film.series_progress(k, n, t))
+                    self.assertEqual(nodes[:k], [1.0] * k, (n, k, t))   # the patches played are ticked
+                    self.assertEqual(nodes[k:], [0.0] * (n - k), (n, k, t))   # the next one and on are not
+                self.assertGreater(film.series_progress(k, n, plan.INTER_DUR), (k - 1 + 0.8) / (n - 1))
+        # drawn: patch 2's marker (of 2) is a ring larger than a marker, at the strip's right end
+        repo, sha = fixtures.make_rewrite_repo(self.tmp.name + '/strip')
+        combined, patches = collect.series(repo, f'{sha["a"]}..{sha["c"]}')
+        tour = film.Tour(plan.build(combined, 0, 'tour', patches), combined, patches=patches, log=io.StringIO())
+        (n,) = [n for n, label in tour.film.keyframes if label == 'interstitial 1']
+        for fmt in ('16x9', '9x16', '1x1'):
+            cv = tour.film.frame(n, fmt)
+            marks = dict(cv.marks)
+            ring, strip = marks['card.series.current'], marks['card.series']
+            self.assertTrue(strip.contains(ring), fmt)
+            self.assertGreater(ring.cx, strip.cx)
+            self.assertGreater(ring.w, 2 * (22 if fmt != '9x16' else 26))
 
     @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'needs ffmpeg')
     def test_render_develop_smoke(self):
