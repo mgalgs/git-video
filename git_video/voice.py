@@ -381,14 +381,27 @@ def jargon(text):
             or bool(tests) and bool(names) or len(code) >= 2 or bool(_AS_IS.search(text)))
 
 
-def say_sentence(text):
-    """A commit sentence ready to be said: cleaned and shortened, or None (a
-    fragment, or test and implementation jargon, is better silent)."""
+def say_sentence(text, most=MAX_WORDS):
+    """A commit sentence ready to be said: cleaned and shortened to `most`
+    words, or None (a fragment, or test and implementation jargon, is better
+    silent)."""
     if fragment(text):
         return None
     s = clean(text)
-    s = shorten(s) if s else None
+    s = shorten(s, most) if s else None
     return None if s is None or jargon(s) else s
+
+
+def say_reason(text):
+    """A commit sentence ready to be said when it gives a reason, else None:
+    shortened to MAX_WORDS, or as far as narrator.MAX_WORDS when the reason
+    is in a clause the shorter cut would drop ("..., but keeping the list
+    keeps 1:1 consistent")."""
+    for most in (MAX_WORDS, narrator.MAX_WORDS):
+        s = say_sentence(text, most)
+        if s and reason(s):
+            return s
+    return None
 
 
 # ---- spoken forms ----
@@ -506,13 +519,19 @@ def _why(plan, patches, used):
     """What the change is for: the first sentence of the commit body's first
     paragraph, when no hunk's callout says it and the paragraph is prose
     rather than a list; one that tells how things were starts "Before,".
-    None for a range."""
+    Cut to MAX_WORDS, unless the reason it gives is further on. None for a
+    range."""
     if plan.is_range or len(patches) != 1:
         return None
-    return why_line(plan.commit.get('body') or '', used)
+    body = plan.commit.get('body') or ''
+    short = why_line(body, used)
+    if short and not reason(short):
+        long = why_line(body, used, narrator.MAX_WORDS)
+        return long if long and reason(long) else short
+    return short
 
 
-def why_line(body, used=()):
+def why_line(body, used=(), most=MAX_WORDS):
     """`_why` of a commit body."""
     para = re.split(r'\n\s*\n', body.strip())[0]
     units = callouts_mod.sentences(para)
@@ -523,7 +542,7 @@ def why_line(body, used=()):
         return None
     if _was(s) and not callouts_mod._looks_like_code(s.split()[0]):
         s = 'Before, ' + s[0].lower() + s[1:]
-    s = shorten(s)
+    s = shorten(s, most)
     return None if jargon(s) else s
 
 
@@ -565,13 +584,19 @@ def script(plan, patches):
     if plan.mode == 'develop':
         used |= {t for ch in patches for ts in planmod.develop_sentences(ch).values() for t in ts}
     why = _why(plan, patches, used)
-    if why:   # over the repo map, or the title card without one
-        out.append(Phrase(why, ('map',) if any(s['kind'] == 'map' for s in plan.shots) else ('title',)))
+    # over the repo map (or the title card without one): the body's lead,
+    # then the reasons it gives that no hunk's callout took
+    framing = [why] if why else []
+    if len(patches) == 1 and not plan.is_range:
+        units = callouts_mod.sentences(plan.commit.get('body') or '')
+        framing += [t for t in map(say_reason, (u for u in units[1:] if u not in used)) if t]
+    at = ('map',) if any(s['kind'] == 'map' for s in plan.shots) else ('title',)
+    out += [Phrase(t, at) for t in framing[:narrator.PER_SHOT - (at == ('title',))]]
     develop = {k: planmod.develop_sentences(ch) for k, ch in enumerate(patches)} if plan.mode == 'develop' else {}
 
     def reasons(texts):
-        lines = [(n, say_sentence(t)) for n, t in enumerate(texts)]
-        return [(n, t) for n, t in lines if t and reason(t)]
+        lines = [(n, say_reason(t)) for n, t in enumerate(texts)]
+        return [(n, t) for n, t in lines if t]
 
     for s in plan.shots:
         kind, k = s['kind'], s.get('patch', 0)

@@ -198,6 +198,21 @@ class TestScript(unittest.TestCase):
         self.assertIsNone(voice.why_line('- one thing\n- another'))
         self.assertIsNone(voice.why_line('Used here.', used={'Used here.'}))
 
+    def test_reasons_over_the_map(self):
+        # a body sentence giving a reason that no hunk's callout took is said over the map,
+        # kept long enough to keep its reason; one that only says what happens is not
+        repo, sha = fixtures.make_repo(os.path.join(self.tmp.name, 'reasons'))
+        ch = collect.collect(repo, sha['change'])
+        p = plan.build(ch)
+        p.commit['body'] = ('The app moves its arithmetic into one place. The card is longer now. '
+                            'The helper stays private for the moment, and the public surface of the library '
+                            'stays the same for every single caller, so nothing outside has to change.')
+        got = [(x.key, x.text) for x in voice.script(p, [ch]) if x.key == ('map',)]
+        self.assertEqual(got, [
+            (('map',), 'The app moves its arithmetic into one place.'),
+            (('map',), 'The helper stays private for the moment, and the public surface of the library stays the '
+                       'same for every single caller, so nothing outside has to change.')])
+
     def test_series(self):
         repo, sha = fixtures.make_range_repo(self.tmp.name)
         change, patches = collect.series(repo, f'{sha["a"]}..{sha["c"]}')

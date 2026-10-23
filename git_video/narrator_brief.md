@@ -56,7 +56,8 @@ narration stretches anything), what it shows, and the file and lines.
 
 ## Output
 
-Write `outbox/narration.json`:
+Write `outbox/narration.json`, in your artifact outbox (not in the
+repository):
 
 ```json
 {"phrases": [{"shot": "<shot id>", "text": "<what to say>"}]}
