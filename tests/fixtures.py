@@ -113,6 +113,20 @@ def make_range_repo(tmp):
     return repo, {'a': a, 'b': b, 'c': c}
 
 
+def make_callout_repo(tmp):
+    """lib.py defines frob() and other(); HEAD changes both, with a body of
+    three sentences: one naming frob(), one naming nothing, one naming other().
+    Returns (repo, {'root', 'head'})."""
+    repo = os.path.join(tmp, 'callout')
+    init(repo)
+    write(repo, 'lib.py', RANGE_LIB_A)
+    root = commit(repo, 'Add the library')
+    write(repo, 'lib.py', RANGE_LIB_A.replace('x + 1', 'x * 2').replace('x - 1', 'x * 3'))
+    head = commit(repo, 'Change both\n\nfrob() now doubles its input. Nothing else changed here.\n'
+                        'The helper other() returns three times its input.\n\nSigned-off-by: T <t@example.com>')
+    return repo, {'root': root, 'head': head}
+
+
 MORPH_LINES = 60
 
 

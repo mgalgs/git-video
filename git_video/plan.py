@@ -7,11 +7,12 @@ is the seam a later pass (an LLM, say) can rewrite before the film is built.
 """
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 
 from videobuilder.type.typewriter import schedule
 
-from . import highlight, repomap, worddiff, xref
+from . import callouts as callouts_mod, highlight, repomap, worddiff, xref
 
 VERSION = 1
 FPS = 30
@@ -52,6 +53,9 @@ MORPH_DUR = 1.4           # removed words dissolve, kept ones glide, added ones 
 MORPH_MAX_ROWS = PLAN_ROWS   # a hunk taller than a screenful is swept, not morphed
 FOCUS_IN = 0.35           # the rest of the buffer dims once the scroll lands ...
 FOCUS_OUT = 0.3           # ... and comes back up before the shot ends
+CALLOUT_IN = 0.8          # a commit sentence's card fades in and its line runs to the words
+CALLOUT_EACH = 2.6        # each callout stays at least this long (the hunk's read grows to fit)
+CALLOUT_MAX_PER_HUNK = 2
 
 XREF_TRAVEL = 0.7         # the pointer glides to the word
 XREF_CLICK = 0.7          # ... and clicks it
@@ -96,10 +100,15 @@ def open_timing(path):
     return OPEN_KEYS, letters, ret, max(1.6, round(ret + OPEN_HOLD, 3))
 
 
-def hunk_dwell(visible_added, *, morph=False):
+def hunk_read(visible_added, callouts=0):
+    """How long a hunk is read for, after its scroll and morph: longer for more
+    lines, and long enough for its callouts one after another."""
+    return max(min(HUNK_READ_MAX, HUNK_READ_BASE + HUNK_READ_PER_LINE * visible_added), callouts * CALLOUT_EACH)
+
+
+def hunk_dwell(visible_added, *, morph=False, callouts=0):
     """A hunk shot's length: the scroll, the morph when there is one, the read."""
-    read = min(HUNK_READ_MAX, HUNK_READ_BASE + HUNK_READ_PER_LINE * visible_added)
-    return HUNK_SCROLL + (MORPH_HOLD + MORPH_DUR if morph else 0) + read
+    return HUNK_SCROLL + (MORPH_HOLD + MORPH_DUR if morph else 0) + hunk_read(visible_added, callouts)
 
 
 def morph_segments(f, h):
@@ -199,6 +208,84 @@ def _hunk_candidates(change, f, top, visible):
     return out
 
 
+_WORDS = re.compile(r'[A-Za-z_][\w-]*\w|[A-Za-z_]\w*')
+
+
+def hunk_info(change, f, h):
+    """What a commit sentence can match in a hunk: `words` on its added and
+    removed lines, `defs`, the names of the definitions holding its changed
+    lines."""
+    lines = f.text.split('\n')
+    changed = [n for a, b in h.added for n in range(a, b + 1)]
+    words = set()
+    for t in [lines[n - 1] for n in changed if n <= len(lines)] + [x for s in h.segments for x in s[1]]:
+        for w in _WORDS.findall(t):
+            words.add(w)
+            words.update(p for p in re.split(r'-', w) if p)
+    fd = xref.file_defs(change.repo, change.target, f.path)
+    defs = set()
+    for n in changed + [s[0] for s in h.segments]:
+        e = xref.enclosing(lines, fd, n)
+        if e:
+            defs.add(e[0])
+    return {'path': f.path, 'words': words, 'defs': defs}
+
+
+def callout_target(f, word, top, prefer, fallback):
+    """(line, col, length) of `word` on screen in a window from `top`: its first
+    whole-word use on one of the `prefer` lines, else on any line in view
+    (within PLAN_COLS); else the `fallback` line's text, or with no `prefer`
+    lines (a pure deletion), the gap before the `fallback` line (length 0)."""
+    lines = f.text.split('\n')
+    rows = range(top + 1, min(len(lines), top + PLAN_ROWS) + 1)
+    for w in ((word, '--' + word) if word else ()):   # a --flag is matched by its name
+        pat = re.compile(rf'(?<![\w$-]){re.escape(w)}(?![\w$-])')
+        for pool in ([n for n in prefer if n in rows], rows):
+            for n in pool:
+                m = pat.search(lines[n - 1].expandtabs(highlight.TAB))
+                if m and m.end() <= PLAN_COLS:
+                    return n, m.start(), len(w)
+    n = min(max(1, fallback), max(1, len(lines)))
+    if not prefer:
+        return n, 0, 0
+    text = lines[n - 1].expandtabs(highlight.TAB) if lines else ''
+    col = len(text) - len(text.lstrip())
+    return n, min(col, PLAN_COLS - 1), max(1, min(len(text.rstrip()) - col, PLAN_COLS - col))
+
+
+def _place_callouts(change, shots, readings):
+    """Give each hunk shot the commit sentences that explain it (`callouts`),
+    each with its time on screen and the words its line points at, and stretch
+    the hunk's read to fit them. A range uses each hunk's own commit."""
+    infos = [hunk_info(change, f, h) for _, f, h, _, _ in readings]
+    names = {d for info in infos for d in info['defs']}
+    chosen = {}   # reading index -> [(unit index, score, word, text, commit)]
+    for c in change.commits:
+        units = callouts_mod.sentences(c.body) if c.body else []
+        mine = [k for k, (_, _, h, _, _) in enumerate(readings) if h.commit == c.sha]
+        if not units or not mine:
+            continue
+        for u, j, word, sc in callouts_mod.match(units, [infos[k] for k in mine], names):
+            chosen.setdefault(mine[j], []).append((u, sc, word, units[u], c))
+    for k, (si, f, h, top, visible) in enumerate(readings):
+        s = shots[si]
+        picks = sorted(chosen.get(k, []), key=lambda x: (-x[1], x[0]))[:CALLOUT_MAX_PER_HUNK]
+        picks.sort(key=lambda x: x[0])
+        morph = bool(s['morph'])
+        start = HUNK_SCROLL + (MORPH_HOLD + MORPH_DUR if morph else 0)
+        read = hunk_read(visible, len(picks))
+        slot = read / max(1, len(picks))
+        added = [n for a, b in h.added for n in range(a, b + 1)]
+        out = []
+        for n, (_, _, word, text, c) in enumerate(picks):
+            line, col, length = callout_target(f, word, top, added, s['focus'][0])
+            at = start + n * slot
+            out.append({'text': text, 'commit': c.short, 'line': line, 'col': col, 'len': length,
+                        'at': round(at, 3), 'until': round(at + slot - 0.2, 3)})
+        s['callouts'] = out
+        s['dur'] = round(hunk_dwell(visible, morph=morph, callouts=len(picks)), 3)
+
+
 def plan(change, verbose=0):
     """The tour of `change` as a Plan."""
     files = [{'path': f.path, 'old_path': f.old_path, 'status': f.status, 'added': f.added,
@@ -214,6 +301,7 @@ def plan(change, verbose=0):
         shots.append(shot('map', 'map', MAP_DUR, lit=lit))
     hunk_shots = 0
     hunks = []   # (index into shots of the hunk shot, file, candidates)
+    readings = []   # (index into shots, file, hunk, top, visible added lines)
     for f in change.files:
         if f.text is None:
             continue   # deleted or binary: listed in the side bar, not visited
@@ -243,9 +331,11 @@ def plan(change, verbose=0):
             shots.append(shot('editor', 'hunk', hunk_dwell(len(visible), morph=bool(morph)), path=f.path, index=i,
                               top=top, added=shown, removed_at=list(h.removed_at), focus_line=focus, focus=span,
                               morph=morph))
+            readings.append((len(shots) - 1, f, h, top, len(visible)))
             pickable = [n for n in visible if n <= top + XREF_ROWS]
             hunks.append((len(shots) - 1, f, top, _hunk_candidates(change, f, top, pickable)))
     shots.append(shot('card', 'end', END_DUR))
+    _place_callouts(change, shots, readings)
 
     # Xref visits, within the --verbose budget, inserted after their hunk.
     total, per_file, per_hunk = _budget(verbose)

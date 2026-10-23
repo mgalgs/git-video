@@ -137,6 +137,41 @@ class TestPlan(unittest.TestCase):
         self.assertLessEqual(h.new_start - 1 + max(h.old_count, h.new_count), top + plan.PLAN_ROWS)
         self.assertLessEqual(top, small['focus_line'] - 1)
 
+    def test_callouts_in_plan(self):
+        repo, sha = fixtures.make_callout_repo(self.tmp.name + '/c1')
+        p = plan.plan(collect.collect(repo, sha['head']))
+        one, two = kinds(p, 'hunk')
+        self.assertEqual([c['text'] for c in one['callouts']], ['frob() now doubles its input.'])
+        self.assertEqual([c['text'] for c in two['callouts']], ['The helper other() returns three times its input.'])
+        c = one['callouts'][0]
+        self.assertEqual((c['line'], c['col'], c['len']), (1, 4, 4))   # `frob` on `def frob(x):`, in view
+        self.assertEqual(c['commit'], p.commit['short'])
+        start = plan.HUNK_SCROLL + plan.MORPH_HOLD + plan.MORPH_DUR
+        self.assertAlmostEqual(c['at'], start)
+        self.assertLessEqual(c['until'], one['dur'])
+        self.assertGreaterEqual(c['until'] - c['at'], plan.CALLOUT_EACH - 0.2 - 1e-6)
+        self.assertEqual(one['dur'], round(plan.hunk_dwell(1, morph=True, callouts=1), 3))
+        self.assertNotIn('Signed-off-by', p.commit['body'])
+        root = plan.plan(collect.collect(repo, sha['root']))
+        (h,) = kinds(root, 'hunk')
+        self.assertEqual(h['callouts'], [])
+        self.assertEqual(h['dur'], round(plan.hunk_dwell(len(fixtures.RANGE_LIB_A.splitlines())), 3))
+
+    def test_range_callouts_use_each_commit(self):
+        repo, sha = fixtures.make_range_repo(self.tmp.name + '/c2')
+        p = plan.plan(collect.collect(repo, f'{sha["a"]}..{sha["c"]}'))
+        one, two = kinds(p, 'hunk')
+        self.assertEqual([c['text'] for c in one['callouts']], ['frob() now doubles its input.'])
+        self.assertEqual([c['text'] for c in two['callouts']], ['The helper other() now triples.'])
+        shorts = [c['short'] for c in p.commit['commits']]
+        self.assertEqual([one['callouts'][0]['commit'], two['callouts'][0]['commit']], shorts)
+
+    def test_hunk_info(self):
+        info = plan.hunk_info(self.change, self.change.files[2], self.change.files[2].hunks[0])
+        self.assertEqual(info['path'], 'src/lib.py')
+        self.assertEqual(info['defs'], {'frob'})
+        self.assertLessEqual({'return', 'x'}, info['words'])
+
     def test_large_hunk_dwell(self):
         repo = fixtures.make_big_repo(self.tmp.name + '/large')
         p = plan.plan(collect.collect(repo, 'HEAD'))
@@ -230,7 +265,7 @@ class TestPlan(unittest.TestCase):
     def test_total_duration(self):
         for p in self.plans.values():
             self.assertAlmostEqual(p.total, sum(s['dur'] for s in p.shots), places=6)
-        self.assertTrue(15 <= self.plans[0].total <= 60, self.plans[0].total)
+        self.assertTrue(15 <= self.plans[0].total <= 75, self.plans[0].total)
 
     def test_no_private_paths(self):
         for p in self.plans.values():

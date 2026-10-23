@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 
 import videobuilder as vb
 from videobuilder import text as vbtext
+from videobuilder.capabilities.broadcast.callout_line_with_label import callout_line
 from videobuilder.capabilities.broadcast.click_ripple_indicator import click_ripple
 from videobuilder.capabilities.broadcast.cursor_path_animation import cursor_path
 from videobuilder.capabilities.broadcast.end_card_with_subscribe_slot import end_card_slots, slot_reveal
@@ -143,6 +144,7 @@ class Tour:
                     editor.Segment(g['at'], highlight.highlight_lines('\n'.join(g['old']) + '\n', s['path']),
                                    g['new'], tuple(tuple(o) for o in g['ops']))
                     for g in s['morph']['segments'])
+        self.callout_text = {}   # (shot, callout, width) -> its wrapped lines, once per format
         self.minimaps = {}   # the minimap per buffer: bars and marks, computed once
         for path, buf in self.buffers.items():
             added, removed, ranges = self.marks.get(path, ((), (), ()))
@@ -237,6 +239,10 @@ class Tour:
                     hunks += 1
                     t = P.HUNK_SCROLL + P.HUNK_SWEEP * 0.6
                     out.append((f0 + round(t * self.fps), f'hunk {name}'))
+                cs = s.get('callouts') or ()
+                if cs and 'callout' not in seen:
+                    seen.add('callout')
+                    out.append((f0 + round((cs[0]['at'] + P.CALLOUT_IN + 0.3) * self.fps), f'callout {name}'))
                 m = s.get('morph')
                 if m and 'morph' not in seen and any(g['new'] for g in m['segments']):
                     seen.add('morph')
@@ -664,9 +670,104 @@ def _hunk(tour, cv, st, shot, t, i, before, after):
     sweeps = [(ln, vb.ease_in_out_quart(vb.clamp01(p * k - j)), settle(t - P.HUNK_SCROLL - P.HUNK_SWEEP))
               for j, ln in enumerate(shown)]
     f = shot.get('focus')
-    _pane(tour, cv, st, after, top=top, sweeps=sweeps, blink=max(0.0, t - P.HUNK_SCROLL), morphs=segs,
-          morph_p=morph_progress(shot, t), focus=(f[0] - 1, f[1] - 1) if f else None,
-          focus_amount=focus_amount(shot, t, P.HUNK_SCROLL))
+    where = _pane(tour, cv, st, after, top=top, sweeps=sweeps, blink=max(0.0, t - P.HUNK_SCROLL), morphs=segs,
+                  morph_p=morph_progress(shot, t), focus=(f[0] - 1, f[1] - 1) if f else None,
+                  focus_amount=focus_amount(shot, t, P.HUNK_SCROLL))
+    for k, c in enumerate(shot.get('callouts') or ()):
+        if c['at'] <= t < c['until']:
+            _callout(tour, cv, st, where, shot, i, k, c, t)
+
+
+# ---- commit-message callouts ----
+CALLOUT_W = 620          # the card's widest, px
+CALLOUT_LINES = 3        # its text's most lines; past that, an ellipsis at a word boundary
+CALLOUT_BG = '#1c1f24'
+
+
+def callout_fonts(st):
+    size = 21 if st.compact else 22
+    return (vb.Font(UI, size * 0.72, weight=700, tracking=0.16),
+            vb.Font(UI, size, line_height=1.32))
+
+
+def callout_lines(text, font, width):
+    """The card's text: wrapped to `width`, at most CALLOUT_LINES lines, a cut
+    ending with an ellipsis between two words."""
+    lines = list(vbtext.wrap(text, font, width))
+    if len(lines) > CALLOUT_LINES:
+        lines = lines[:CALLOUT_LINES - 1] + [sidebar.ellipsize_words(' '.join(lines[CALLOUT_LINES - 1:]), font, width)]
+    return lines
+
+
+def callout_box(area, band, target, w, h, gap):
+    """Where the card goes in `area` (the text area): in the larger room above
+    or below the lit `band` when it fits there, else on the side of the area
+    away from the `target` word; right-aligned, never over the target."""
+    above = band.y - area.y - gap
+    below = area.bottom - band.bottom - gap
+    x = area.right - w - gap
+    if max(above, below) >= h:
+        y = band.y - gap - h if above >= below else band.bottom + gap
+    elif target.cy > area.cy:
+        y = area.y + gap
+    else:
+        y = area.bottom - gap - h
+    box = vb.Box(x, y, w, h)
+    if box.intersects(target):   # the band fills the screen: move it clear of the word's row
+        y = target.y - gap - h if target.y - area.y >= area.bottom - target.bottom else target.bottom + gap
+        box = vb.Box(x, max(area.y, min(y, area.bottom - h)), w, h)
+    return box
+
+
+def _callout(tour, cv, st, where, shot, i, k, c, t):
+    """One commit sentence as a caption card beside the code, a line drawn from
+    it to the words it names (callout_line_with_label's leader, called as is,
+    with the label drawn as our card); fading in, then out before `until`."""
+    lay = where.layout
+    area = lay.text_box.pad(0, 0, max(0.0, lay.text_box.h - lay.rows * lay.line_h), 0)
+    kicker_f, font = callout_fonts(st)
+    pad = 16 if st.compact else 18
+    w = min(CALLOUT_W, area.w * 0.62)
+    key = (i, k, round(w))
+    if key not in tour.callout_text:
+        tour.callout_text[key] = callout_lines(c['text'], font, w - 2 * pad - 6)
+    lines = tour.callout_text[key]
+    h = 2 * pad + vbtext.line_height(kicker_f) + 6 + len(lines) * vbtext.line_height(font)
+    f0, f1 = shot['focus']
+    band = vb.Box(area.x, where.layout.line_y(f0 - 1, where.scroll_top), area.w,
+                  max(lay.line_h, (f1 - f0 + 1) * lay.line_h))
+    if c['len']:
+        target = where.word_box(c['line'] - 1, c['col'], c['len'])
+    else:   # a deletion: the gap the lines left, where its − rule is
+        gy = lay.line_y(c['line'] - 1, where.scroll_top)
+        target = vb.Box(lay.text_box.x, gy - 2, lay.cell_w * 6, 4)
+    card = callout_box(area, band, target, w, h, lay.line_h * 0.5)
+    e = vb.ease_out_quint(vb.clamp01((t - c['at']) / 0.3))
+    fade = vb.clamp01((c['until'] - t) / 0.25)
+    run = vb.clamp01((t - c['at'] - 0.15) / (P.CALLOUT_IN - 0.15))
+    with cv.layer(opacity=fade):
+        if run > 0.7 and c['len']:
+            a = vb.clamp01((run - 0.7) / 0.3)
+            cv.outline(target.x - 3, target.y + 1, target.w + 6, target.h - 2, THEME.cursor, width=2.5, radius=4,
+                       alpha=a)
+        below = card.y > target.cy
+        ax = min(max(target.cx, card.x + 24), card.right - 24)
+        anchor = (ax, card.y if below else card.bottom)
+        tip = (target.cx, target.bottom if below else target.y)
+        n0 = len(cv.marks)
+        callout_line(cv, tip, anchor, '', run, color=THEME.cursor, dot_color=THEME.cursor, width=2.5, dot=5,
+                     shelf=0, gap=0)
+        cv.marks[n0:] = [(f'callout.{name}', b) for name, b in cv.marks[n0:] if name != 'label']
+        with cv.layer(opacity=e, dy=10 * (1 - e)):
+            cv.rect(*card, CALLOUT_BG, radius=10, alpha=0.96)
+            cv.outline(card.x + 0.5, card.y + 0.5, card.w - 1, card.h - 1, '#3f444a', width=1, radius=10)
+            cv.rect(card.x, card.y + 10, 4, card.h - 20, THEME.cursor, radius=2)
+            x, y = card.x + pad + 6, card.y + pad
+            vbtext.draw(cv, [f'WHY  ·  {c["commit"]}'], kicker_f, x, y, THEME.cursor)
+            y += vbtext.line_height(kicker_f) + 6
+            vbtext.draw(cv, lines, font, x, y, '#e6e9ef')
+    cv.mark('callout.card', *card)
+    cv.mark('callout.target', *target)
 
 
 def settle(t):

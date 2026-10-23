@@ -150,3 +150,33 @@ def rank_key(cand, d, use_path):
     source rather than a test, a longer name."""
     return (d.path == use_path, not cand.is_call, d.kind not in FUNCTION_KINDS, collect.is_test(use_path),
             -len(cand.name))
+
+
+def _indent(s):
+    return len(s) - len(s.lstrip())
+
+
+def enclosing(lines, defs, line):
+    """The innermost of `defs` ([(name, Definition)] of one file) whose body
+    holds 1-based `line` of `lines` (the file's text, split), as (name,
+    Definition): the nearest definition at or above it with every non-blank
+    line in between, the line included, indented deeper than the
+    definition's own. None at top level or on a blank line."""
+    if not 0 < line <= len(lines) or not lines[line - 1].strip():
+        return None
+    for name, d in sorted((nd for nd in defs if nd[1].line <= line), key=lambda nd: -nd[1].line):
+        if not 0 < d.line <= len(lines):
+            continue
+        base = _indent(lines[d.line - 1].expandtabs(highlight.TAB))
+        if all(not s.strip() or _indent(s.expandtabs(highlight.TAB)) > base for s in lines[d.line:line]):
+            return name, d
+    return None
+
+
+def file_defs(repo, target, path):
+    """[(name, Definition)] defined in `path` at `target`, by line."""
+    lang = lang_of(path)
+    if lang is None:
+        return []
+    return sorted(((name, d) for name, ds in index(repo, target, lang).items() for d in ds if d.path == path),
+                  key=lambda nd: nd[1].line)

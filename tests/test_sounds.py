@@ -54,7 +54,8 @@ class TestSounds(unittest.TestCase):
         keys = sum(len(s['path']) + 3 for s in opens) + 2 * pushes + 2 * pops   # C-x, C-f, letters, RET
         self.assertEqual(by['pro_typing_key/tick'], keys)
         self.assertEqual(by['pro_click/mouse'], pushes)
-        self.assertEqual(by['pro_hover_tick/soft'], sum(s['kind'] == 'hunk' for s in shots))
+        self.assertEqual(by['pro_hover_tick/soft'], sum(s['kind'] == 'hunk' for s in shots) +
+                         sum(len(s.get('callouts') or ()) for s in shots))
         self.assertEqual(by['whoosh_fast/tight'], len(opens) + pushes + pops)
         moves = sum(s['kind'] in ('dive', 'travel') for s in shots)
         self.assertEqual(by['whoosh_fast/sleeve'], moves)
@@ -84,6 +85,13 @@ class TestSounds(unittest.TestCase):
         frames = [f for f, _ in cues]
         self.assertEqual(frames, sorted(frames))
         self.assertLess(frames[-1], plan.MAP_DUR * 30)
+
+    def test_new_cues(self):
+        h = plan.shot('editor', 'hunk', 6.0, path='a.py', callouts=[{'at': 2.0}, {'at': 4.0}])
+        cues = sounds.cues([h], [0], 30)
+        self.assertEqual(cues, [(sounds.frame_at(0, plan.HUNK_SCROLL, 30), 'tick'),
+                                (sounds.frame_at(0, 2.0 + 0.75 * plan.CALLOUT_IN, 30), 'tick'),
+                                (sounds.frame_at(0, 4.0 + 0.75 * plan.CALLOUT_IN, 30), 'tick')])
 
     def test_keystroke_frames_deterministic(self):
         a = sounds.cues(self.plan.shots, [0] * len(self.plan.shots), 30)

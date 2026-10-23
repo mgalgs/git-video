@@ -352,6 +352,46 @@ class TestFilm(unittest.TestCase):
             self.assertAlmostEqual(seg.h, 6 * lay.line_h, places=3, msg=fmt)
             self.assertLessEqual(seg.bottom, text.bottom + 1e-6, fmt)
 
+    def test_ellipsize_words(self):
+        font = vb.Font('sans-serif', 22)
+        s = 'The helper other() returns three times its input.'
+        self.assertEqual(sidebar.ellipsize_words(s, font, 5000), s)
+        w = vb.text.measure('The helper other() ret', font)
+        out = sidebar.ellipsize_words(s, font, w)
+        self.assertTrue(out.endswith('…'))
+        self.assertTrue(s.startswith(out[:-1]))
+        self.assertIn(s[len(out) - 1], ' ')   # cut between two words
+        self.assertLessEqual(vb.text.measure(out, font), w)
+        lines = film.callout_lines(' '.join(['word'] * 200), font, 300)
+        self.assertEqual(len(lines), film.CALLOUT_LINES)
+        self.assertTrue(lines[-1].endswith('…'))
+
+    def test_callout_frames_all_formats(self):
+        repo, sha = fixtures.make_callout_repo(self.tmp.name + '/cf')
+        ch = collect.collect(repo, sha['head'])
+        p = plan.plan(ch)
+        tour = film.Tour(p, ch, log=io.StringIO())
+        (n,) = [n for n, label in tour.film.keyframes if label.startswith('callout ')]
+        i, t = tour.at(n)
+        c = p.shots[i]['callouts'][0]
+        self.assertTrue(c['at'] < t < c['until'])
+        for fmt in ('16x9', '9x16', '1x1'):
+            cv = tour.film.frame(n, fmt)
+            st = film.stage(cv)
+            marks = dict(cv.marks)
+            self.assertEqual([m for m, _ in cv.marks].count('callout.card'), 1)
+            card, target = marks['callout.card'], marks['callout.target']
+            self.assertIn('callout.line', marks)
+            self.assertTrue(st.main.contains(card), fmt)
+            self.assertTrue(marks['editor.text'].contains(card), fmt)
+            self.assertFalse(card.intersects(target), fmt)
+            self.assertFalse(card.intersects(marks['editor.minimap']), fmt)
+            for name, b in cv.marks:
+                if name.startswith('sidebar.'):
+                    self.assertFalse(card.intersects(b), (fmt, name))
+            before = tour.film.frame(tour.shot_frames[i] + round((c['at'] - 0.1) * p.fps), fmt)
+            self.assertNotIn('callout.card', dict(before.marks))
+
     def test_definition_cursor_lands_on_the_name(self):
         ch = collect.collect(fixtures.make_edge_repo(self.tmp.name + '/go'), 'HEAD')
         p = plan.plan(ch, 3)

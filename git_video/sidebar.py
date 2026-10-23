@@ -48,6 +48,20 @@ def ellipsize(s, font, width):
     return s.rstrip() + '…'
 
 
+def ellipsize_words(s, font, width):
+    """`s` cut at a word boundary with an ellipsis so it fits `width`; never
+    inside a word (a single word too wide is cut as `ellipsize` would)."""
+    if vbtext.measure(s, font) <= width:
+        return s
+    words = s.split()
+    while len(words) > 1:
+        words.pop()
+        out = ' '.join(words).rstrip(',;:—-') + '…'
+        if vbtext.measure(out, font) <= width:
+            return out
+    return ellipsize(s, font, width)
+
+
 def _window(n, current, rows):
     """The first index of a `rows`-tall window over n items that shows `current`."""
     if n <= rows or current is None:
