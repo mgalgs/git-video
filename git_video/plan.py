@@ -5,6 +5,7 @@ or `editor` this round), a `kind` within it and a `dur` in seconds, plus the
 fields its kind needs. The planner here is deterministic heuristics; the JSON
 is the seam a later pass (an LLM, say) can rewrite before the film is built.
 """
+import bisect
 import json
 import os
 import re
@@ -507,6 +508,17 @@ def develop_budget(lines):
     return max(PERF_FLOOR, lines * SECONDS_PER_LINE)
 
 
+def _busiest(steps, length, lo, hi):
+    """Where a window `length` natural seconds long, inside [lo, hi], covers
+    the most typing (keys, and an elided run's characters): where a shortened
+    speed-up saves the most, leaving the rest to be read."""
+    keys = sorted(st['at'] + x for st in steps if st['kind'] == 'type' for x in st['times'])
+    keys += [x for st in steps if st['kind'] == 'fill' for x in [st['at']] * len(st['text'])]
+    keys.sort()
+    starts = [lo, hi - length] + [st['at'] for st in steps if lo <= st['at'] <= hi - length]
+    return max(starts, key=lambda a: (bisect.bisect_right(keys, a + length) - bisect.bisect_left(keys, a), -a))
+
+
 def _pace(scripts, budget, verbose):
     """(s0, peak, {file index: (natural start, natural end)}): the speed every
     script plays at and, when that is not enough for the budget, the speed-up
@@ -534,10 +546,13 @@ def _pace(scripts, budget, verbose):
         if peak >= FAST_PEAK_MIN:
             peak = min(FAST_PEAK_MAX, peak)
             spans = avail
-        else:   # the whole spans at the least peak would undershoot: run shorter ones
+        else:   # the whole spans at the least peak would undershoot: run shorter ones, where most is typed
             peak = FAST_PEAK_MIN
             want = (natural / s0 + F * r - F * r * s0 / peak - budget) / (1 / s0 - 1 / peak)
-            spans = {k: (a, a + (b - a) * want / R) for k, (a, b) in avail.items()}
+            spans = {}
+            for k, (a, b) in avail.items():
+                at = _busiest(scripts[k]['steps'], (b - a) * want / R, a, b)
+                spans[k] = (at, at + (b - a) * want / R)
         short = [k for k, (a, b) in spans.items() if not edits.ramp_fits(b - a, s0, peak, r)]
         if not short:
             return s0, peak, spans
