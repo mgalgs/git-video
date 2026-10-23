@@ -220,6 +220,18 @@ class TestFilm(unittest.TestCase):
         self.assertLess(marks['card.counters'].bottom, marks['lower-third'].y)
         self.assertLess(marks['lower-third'].y - marks['card.counters'].bottom, 0.12 * cv.height)
 
+    def test_portrait_title_card_spreads_a_short_subject(self):
+        import copy
+        for subject in ('Fix it', 'Ramp and streak long scrolls'):
+            p = copy.deepcopy(self.plan)
+            p.commit['subject'] = subject
+            cv = film.Tour(p, self.change, log=io.StringIO()).film.frame(round(plan.TITLE_STILL * p.fps), '9x16')
+            marks = dict(cv.marks)
+            above, below = marks['card.kicker'].y, cv.height - max(b.bottom for _, b in cv.marks)
+            self.assertLess(above, 0.16 * cv.height, subject)   # was about 25% empty above and below
+            self.assertLess(below, 0.2 * cv.height, subject)
+            self.assertGreaterEqual(marks['card.title'].h, 150, subject)   # the subject as large as it can be
+
     def washed(self, tour, n, fmt):
         """The lines' highlighter strokes drawn on frame n: [(y, alpha, progress)]."""
         strokes = []

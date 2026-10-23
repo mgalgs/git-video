@@ -713,31 +713,67 @@ def _title_card(tour, cv, box, shot, t):
     _counters(cv, boxes[-1], plan, t, meta_f, digits, cell_h)
 
 
+PORTRAIT_TITLE_SIZES = (200, 176, 156, 140, 124, 112, 100, 88, 76, 66, 58)
+PORTRAIT_SPREAD = (0.22, 0.38, 0.14, 0.26)   # the room left over: above the title, under it, over the bar, under all
+
+
 def _title_card_portrait(tour, cv, box, shot, t):
-    """The title card laid out for a tall frame: one column centred top to
-    bottom, the title as large as its length allows, the counters, then the
-    name bar across the column and the co-authors under it."""
+    """The title card laid out for a tall frame: one column top to bottom, the
+    title as large as its length and the column allow, the counters, then the
+    name bar across the column and the co-authors under it; what room is
+    left spreads between them, so a short subject leaves no empty bands, over
+    the repo map's silhouette."""
     plan, text = tour.plan, card_text(tour.plan)
+    _map_silhouette(tour, cv, vb.Box.of(cv), t)
     names = plan.commit.get('coauthors') or []
     kicker_f = vb.Font(UI, 34, weight=700, tracking=0.2)
     meta_f = vb.Font(UI, 40)
-    digits = vb.Font(tour.font, 72, weight=700)
-    title_f, lines = _title_lines(text['title'], box.w, (112, 100, 88, 76, 66, 58), 5)
-    bar_f, sub_f = vb.Font(UI, 46, weight=700), vb.Font(UI, 28)
+    digits = vb.Font(tour.font, 88, weight=700)
+    bar_f, sub_f = vb.Font(UI, 50, weight=700), vb.Font(UI, 30)
     cell_h = vbtext.line_height(digits) * 1.15
     r = 34
-    co_h = (vbtext.line_height(vb.Font(UI, 20)) + 14 + 2 * r) if names else 0
+    co_h = (56 + vbtext.line_height(vb.Font(UI, 20)) + 14 + 2 * r) if names else 0
+    rest = vbtext.line_height(kicker_f) + 24 + 64 + cell_h + 64 + _bar_height(bar_f, sub_f) + co_h
+    for size in PORTRAIT_TITLE_SIZES:   # the largest that wraps to five lines and leaves the rest its room
+        title_f, lines = _title_lines(text['title'], box.w, (size,), 5)
+        fits = len(vbtext.wrap(text['title'], title_f, box.w, balance=True)) <= 5
+        if fits and rest + len(lines) * vbtext.line_height(title_f) <= box.h * 0.82:
+            break
+    else:
+        title_f, lines = _title_lines(text['title'], box.w, PORTRAIT_TITLE_SIZES, 5)
     th = vbtext.line_height(title_f)
-    heights = [vbtext.line_height(kicker_f), 24, *[th] * len(lines), 64, cell_h, 110,
-               _bar_height(bar_f, sub_f), 56 if names else 0, co_h]
-    boxes, _ = box.stack(heights, gap=0, align='center')
-    kb, tbs = boxes[0], boxes[2:2 + len(lines)]
-    cb, bb, ab = boxes[3 + len(lines)], boxes[5 + len(lines)], boxes[-1]
+    free = max(0.0, box.h - rest - len(lines) * th)
+    a, b, c, _ = (free * f for f in PORTRAIT_SPREAD)
+    heights = [a, vbtext.line_height(kicker_f), 24, *[th] * len(lines), 64 + b, cell_h, 64 + c,
+               _bar_height(bar_f, sub_f), co_h]
+    boxes, _ = box.stack(heights, gap=0, align='top')
+    kb, tbs = boxes[1], boxes[3:3 + len(lines)]
+    cb, bb, ab = boxes[4 + len(lines)], boxes[6 + len(lines)], boxes[-1]
     _title_stack(cv, box, t, text, kicker_f, title_f, lines, kb, tbs)
     _counters(cv, cb, plan, t, meta_f, digits, cell_h)
     _name_bar(cv, text, t, shot, box.x, bb.bottom, box.w, bar_f, sub_f)
     if names:
-        _coauthors(cv, names, t, box.cx, ab.y, r)
+        _coauthors(cv, names, t, box.cx, ab.y + 56, r)
+
+
+def _map_silhouette(tour, cv, box, t):
+    """The repo map's tiles, faint, as a backdrop filling `box`: quiet tiles a
+    shade off the background, changed ones a touch brighter and outlined
+    (shape and brightness, not only colour)."""
+    lay = tour.map_layout(box)
+    a = vb.clamp01(t / 0.6)
+    if a <= 0 or not lay.tiles:
+        return
+    with cv.layer(opacity=a):
+        for g in lay.groups:
+            cv.rect(*g.box, '#2f343f', radius=8, alpha=0.3)
+        for tile in lay.tiles:
+            b = tile.box
+            if tile.heat is None:
+                cv.rect(*b, '#353b47', radius=4, alpha=0.3)
+            else:
+                cv.rect(*b, THEME.fringe_added, radius=4, alpha=0.025 + 0.035 * tile.heat)
+                cv.outline(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, THEME.fringe_added, width=1.5, radius=4, alpha=0.12)
 
 
 def _title_stack(cv, box, t, text, kicker_f, title_f, lines, kb, tbs):
