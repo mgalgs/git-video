@@ -19,6 +19,12 @@ Options:
            Spoken by Kokoro (default voice bf_isabella), with
            captions. Needs the voice extra,
            pip install 'git-video[voice]', and Kokoro's model files.
+--narrator auto, fork-sandbox, heuristic
+           With --voice, who writes the narration. fork-sandbox
+           runs an agent session in a sandboxed clone that reads the
+           change and explains its approach; heuristic works from
+           the commit message. auto (default) uses fork-sandbox when
+           it is on PATH, else heuristic.
 --format   16x9, 9x16, 1x1, all (default 16x9)
 -o, --out  Output MP4 (default git-video-<short-sha>.mp4, or
            git-video-<a>-<b>.mp4 for a range; with --format all,
@@ -207,6 +213,27 @@ sentence over the repo map, a body sentence that gives a reason over the
 hunk it names, what a dive calls when the body names it, each patch of a
 `--series`, and the close. A body sentence that only says what the code now
 does is not read out.
+
+The fork-sandbox narrator understands the change instead of quoting it.
+git-video writes a brief (`git_video/narrator_brief.md`, filled in with
+the commit messages, the limits and the plan's shots, each with an id) and
+runs [fork-sandbox](https://github.com/mgalgs/fork-sandbox) on it, blocking:
+an agent session in a sandboxed clone of the repository, checked out at the
+change, reads the diff and the code around it and writes the script, each
+phrase anchored to a shot id. It commits nothing, so the repository is left
+as it was; its run dir is left in place and named at the end, so its work
+can be read. `GIT_VIDEO_NARRATOR_MODEL` sets the model (default `opus`) and
+`GIT_VIDEO_NARRATOR_ARGS` adds fork-sandbox options (shell-split), say
+`--claude-credentials <file>`. The script is cached in
+`$XDG_CACHE_HOME/git-video/narration/`, keyed by the range, the mode,
+`--series`, `--verbose`, the model and the shots, so a second render runs no
+session. Under `--narrator=auto` a session that fails, or writes nothing
+usable, costs a one-line warning and the heuristic narrates instead.
+
+Either way the script is held to the same limits: about one phrase per 8 s
+of the unvoiced film plus the opening and closing, each at most 35 words,
+and speech at most 45% of the voiced film; a script over them loses phrases
+from its end (a fork-sandbox one that cannot be cut safely is rejected).
 
 Shots stretch to the voice: a card or a hunk is held until its phrases and
 a breath are done, and in develop mode a narrated hunk is typed no faster

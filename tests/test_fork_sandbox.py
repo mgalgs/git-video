@@ -10,8 +10,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-from git_video import collect, narrator, plan, voice
+from git_video import cli, collect, narrator, plan, voice
 from tests import fixtures
+from tests.test_cli import quiet
 
 FAKE = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -192,6 +193,96 @@ class TestForkSandbox(unittest.TestCase):
         warn = next(ln for ln in lines if 'warning' in ln)
         self.assertIn(os.path.join(self.fake.state, 'run-0'), warn)
         self.assertIn('heuristic', warn)
+
+
+class TestNarratorFlag(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.fake = FakeForkSandbox(self.tmp.name)
+        self.repo, self.sha = fixtures.make_callout_repo(self.tmp.name)
+        self.env = mock.patch.dict(os.environ, self.fake.env(XDG_CACHE_HOME=os.path.join(self.tmp.name, 'cache')))
+        self.env.start()
+        self.engine = mock.patch('git_video.voice.make_engine', return_value=fixtures.FakeEngine())
+        self.engine.start()
+
+    def tearDown(self):
+        self.engine.stop()
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def run_cli(self, *args):
+        return quiet(cli.main, ['-C', self.repo, '--plan-json', *args, self.sha['head']])
+
+    def narration(self):
+        ch = collect.collect(self.repo, self.sha['head'])
+        rows = narrator.shot_rows(plan.build(ch, 0, 'tour'), [ch])
+        return json.dumps({'phrases': [{'shot': 's0', 'text': 'Both helpers now scale their input.'},
+                                       {'shot': rows[-1].id, 'text': 'That keeps them in step.'}]})
+
+    def test_parse(self):
+        self.assertIsNone(cli.parse(['--voice']).narrator)
+        self.assertEqual(cli.parse(['--voice', '--narrator', 'heuristic']).narrator, 'heuristic')
+        self.assertEqual(cli.parse(['--voice', '--narrator=fork-sandbox']).narrator, 'fork-sandbox')
+        with self.assertRaises(SystemExit), mock.patch('sys.stderr'):
+            cli.parse(['--narrator', 'gpt'])
+
+    def test_needs_voice(self):
+        for choice in ('auto', 'heuristic', 'fork-sandbox'):
+            code, _, err = self.run_cli('--narrator', choice)
+            self.assertEqual(code, 2)
+            self.assertIn('--narrator needs --voice', err)
+        self.assertEqual(self.fake.calls(), [])
+
+    def test_auto_uses_fork_sandbox(self):
+        with mock.patch.dict(os.environ, {'FAKE_NARRATION': self.narration()}):
+            code, out, err = self.run_cli('--voice')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.fake.calls()), 1)
+        said = [q['text'] for q in json.loads(out)['voice']['phrases']]
+        self.assertEqual(said, ['Both helpers now scale their input.', 'That keeps them in step.'])
+        self.assertIn('narrating with fork-sandbox', err)
+        self.assertIn(os.path.join(self.fake.state, 'run-0'), err.splitlines()[-1])   # named at the end
+        # --plan-json --voice takes the same cached path: no second run
+        code, out2, _ = self.run_cli('--voice')
+        self.assertEqual((code, len(self.fake.calls())), (0, 1))
+        self.assertEqual(json.loads(out2)['voice']['phrases'], json.loads(out)['voice']['phrases'])
+
+    def test_auto_without_fork_sandbox(self):
+        path = os.pathsep.join(d for d in os.environ['PATH'].split(os.pathsep) if d != self.fake.bin)
+        with mock.patch.dict(os.environ, {'PATH': path}):   # no fork-sandbox anywhere on it
+            code, out, err = self.run_cli('--voice')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.fake.calls(), [])
+        self.assertNotIn('fork-sandbox', err)
+        self.assertTrue(json.loads(out)['voice']['phrases'])
+
+    def test_explicit_heuristic(self):
+        code, out, err = self.run_cli('--voice', '--narrator', 'heuristic')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.fake.calls(), [])
+
+    def test_auto_falls_back(self):
+        with mock.patch.dict(os.environ, {'FAKE_MODE': 'bad'}):
+            code, out, err = self.run_cli('--voice')
+        self.assertEqual(code, 0, err)
+        warn = [ln for ln in err.splitlines() if 'warning' in ln]
+        self.assertEqual(len(warn), 1)
+        self.assertIn('run-0', warn[0])
+        ch = collect.collect(self.repo, self.sha['head'])
+        self.assertEqual(json.loads(out)['voice']['phrases'][0]['text'],
+                         voice.script(plan.build(ch, 0, 'tour'), [ch])[0].text)
+
+    def test_explicit_fails(self):
+        out_mp4 = os.path.join(self.tmp.name, 'out.mp4')
+        for mode in ('bad', 'no-run-dir'):
+            with mock.patch.dict(os.environ, {'FAKE_MODE': mode}):
+                code, out, err = quiet(cli.main, ['-C', self.repo, '--voice', '--narrator=fork-sandbox',
+                                                  '-o', out_mp4, self.sha['head']])
+            self.assertEqual(code, 1, (mode, err))
+            self.assertIn('fork-sandbox narrator', err)
+            self.assertEqual(out, '')
+            self.assertFalse(os.path.exists(out_mp4))
+        self.assertIn('something went wrong before launch', err)
 
 
 if __name__ == '__main__':

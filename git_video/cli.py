@@ -74,6 +74,14 @@ def parser():
                         f'explaining the intent behind it, in a Kokoro voice '
                         f"(default {DEFAULT_VOICE}); needs the voice extra, pip install 'git-video[voice]', "
                         'and the Kokoro model files')
+    p.add_argument('--narrator', choices=('auto', 'fork-sandbox', 'heuristic'), metavar='NARRATOR',
+                   help='with --voice, who writes the narration: fork-sandbox (an agent session in a sandboxed '
+                        'clone reads the change and explains its approach and reasons; see '
+                        'github.com/mgalgs/fork-sandbox), heuristic (from the commit message), or auto (default: '
+                        'fork-sandbox when the fork-sandbox command is on PATH, falling back to heuristic with a '
+                        'warning if it fails). GIT_VIDEO_NARRATOR_MODEL picks the model (default opus) and '
+                        'GIT_VIDEO_NARRATOR_ARGS adds fork-sandbox options. A script is cached in '
+                        '$XDG_CACHE_HOME/git-video/narration')
     p.add_argument('--format', choices=(*FORMATS, 'all'), default='16x9', help='output shape (default 16x9)')
     p.add_argument('-o', '--out', metavar='FILE',
                    help='output MP4 (default git-video-<short-sha>.mp4, or git-video-<a>-<b>.mp4 for a range; with '
@@ -143,8 +151,10 @@ def _fail(msg, code):
 def main(argv=None):
     args = parse(sys.argv[1:] if argv is None else argv)
     from . import collect, plan
+    if args.narrator is not None and args.voice is None:
+        return _fail('--narrator needs --voice', 2)
     if args.voice is not None:   # before any git work: no model, no render
-        from . import voice
+        from . import narrator, voice
         try:
             engine = voice.make_engine()
             voice.check_voice(engine, args.voice)
@@ -166,26 +176,38 @@ def main(argv=None):
                 check_output(out)
         except OutputError as e:
             return _fail(str(e), 1)
+    writer = None
     if args.voice is not None:
+        name, fallback = narrator.resolve(args.narrator or 'auto')
+        writer = narrator.Narrator(name, change, patches, args.mode, args.series, args.verbose, fallback)
         try:
-            tour = voice.narrate(change, patches, args.verbose, args.mode, engine, args.voice)
+            tour = voice.narrate(change, patches, args.verbose, args.mode, engine, args.voice, writer)
         except voice.VoiceError as e:
             return _fail(str(e), 2)
+        except narrator.NarratorError as e:
+            return _fail(f'fork-sandbox narrator: {e}', 1)
     else:
         tour = plan.build(change, args.verbose, args.mode, patches)
     if args.plan_json:
         print(tour.to_json())
-        return 0
+        return _ran(writer)
     from . import film
     tour = film.Tour(tour, change, formats=formats, font=args.font, patches=patches)
     if args.stills:
         for path in write_stills(tour.film, formats, args.stills):
             print(path)
-        return 0
+        return _ran(writer)
     from videobuilder.render import render
     for fmt, out in outputs:
         render(tour.film, out, format=fmt, jobs=args.jobs)
         print(out)
+    return _ran(writer)
+
+
+def _ran(writer):
+    """Name fork-sandbox's run dir, when it ran, so its work can be read; exit 0."""
+    if writer is not None and writer.run_dir:
+        print(f'git video: the narrator\'s fork-sandbox run: {writer.run_dir}', file=sys.stderr)
     return 0
 
 

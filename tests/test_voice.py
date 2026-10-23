@@ -386,7 +386,8 @@ class TestSynth(unittest.TestCase):
 
     def test_plan_json_voice(self):
         with mock.patch('git_video.voice.make_engine', return_value=fixtures.FakeEngine()):
-            code, out, err = quiet(cli.main, ['-C', self.repo, '--voice', '--plan-json', self.sha['head']])
+            code, out, err = quiet(cli.main, ['-C', self.repo, '--voice', '--narrator=heuristic', '--plan-json',
+                                              self.sha['head']])
         self.assertEqual(code, 0, err)
         doc = json.loads(out)
         v = doc['voice']

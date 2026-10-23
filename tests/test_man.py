@@ -25,7 +25,7 @@ class TestManPage(unittest.TestCase):
         self.assertEqual(heads, ['NAME', 'SYNOPSIS', 'DESCRIPTION', 'OPTIONS', 'MODES', 'SEE ALSO'])
         self.assertIn('git\\-video \\- ', text)
         # every option the parser knows, and the README's modes and closing paragraph
-        for flag in ('mode', 'series', 'verbose', 'voice', 'format', 'out', 'jobs', 'plan\\-json',
+        for flag in ('mode', 'series', 'verbose', 'voice', 'narrator', 'format', 'out', 'jobs', 'plan\\-json',
                      'font', 'stills'):
             self.assertIn(f'\\fB\\-\\-{flag}', text)
         self.assertIn('\\fB\\-C\\fR', text)

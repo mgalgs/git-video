@@ -27,6 +27,9 @@ tour: side exploration (xref visits). Unset: one visit in the whole tour; 1: up 
 \fB\-\-voice[=<voice\-profile>]\fR
 narrate the change, with captions: not reading the code but explaining the intent behind it, in a Kokoro voice (default bf_isabella); needs the voice extra, pip install 'git\-video[voice]', and the Kokoro model files.
 .TP
+\fB\-\-narrator\fR\ \fI{auto,fork\-sandbox,heuristic}\fR
+with \-\-voice, who writes the narration: fork\-sandbox (an agent session in a sandboxed clone reads the change and explains its approach and reasons; see github.com/mgalgs/fork\-sandbox), heuristic (from the commit message), or auto (default: fork\-sandbox when the fork\-sandbox command is on PATH, falling back to heuristic with a warning if it fails). GIT_VIDEO_NARRATOR_MODEL picks the model (default opus) and GIT_VIDEO_NARRATOR_ARGS adds fork\-sandbox options. A script is cached in $XDG_CACHE_HOME/git\-video/narration.
+.TP
 \fB\-\-format\fR\ \fI{16x9,9x16,1x1,all}\fR
 output shape (default 16x9).
 .TP
