@@ -110,4 +110,36 @@ def main(argv=None):
     if args.plan_json:
         print(tour.to_json())
         return 0
-    return _fail('rendering is not wired yet', 2)
+    from . import film
+    formats = list(FORMATS) if args.format == 'all' else [args.format]
+    tour = film.Tour(tour, change, formats=formats, font=args.font)
+    if args.stills:
+        for path in write_stills(tour.film, formats, args.stills):
+            print(path)
+        return 0
+    from videobuilder.render import render
+    for fmt, out in output_paths(change.label, args.out, formats):
+        render(tour.film, out, format=fmt, jobs=args.jobs)
+        print(out)
+    return 0
+
+
+def _slug(s):
+    return ''.join(c if c.isalnum() or c in '-_.' else '-' for c in s).strip('-')[:60]
+
+
+def write_stills(film, formats, out_dir):
+    """A PNG per keyframe and a contact sheet per format, in `out_dir`; returns the paths."""
+    from videobuilder.cli import contact_sheet
+    os.makedirs(out_dir, exist_ok=True)
+    paths = []
+    for fmt in formats:
+        suffix = f'-{fmt}' if len(formats) > 1 else ''
+        for k, (n, label) in enumerate(film.keyframes):
+            path = os.path.join(out_dir, f'{k:02d}-{_slug(label)}{suffix}.png')
+            film.frame(n, fmt).save_png(path)
+            paths.append(path)
+        sheet = os.path.join(out_dir, f'sheet{suffix}.png')
+        contact_sheet(film, list(film.keyframes), fmt).save(sheet)
+        paths.append(sheet)
+    return paths

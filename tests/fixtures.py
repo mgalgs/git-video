@@ -91,3 +91,25 @@ def make_big_repo(tmp):
     write(repo, 'long.txt', ''.join(f'line {i}\n' for i in range(50)))
     commit(repo, 'Touch many lines')
     return repo
+
+
+def fake_pack(root, sounds):
+    """A sound-effects pack videobuilder can read: `sounds` is [(id, role)], each
+    a 0.1 s silent WAV. Returns the directory, for $VIDEOBUILDER_SFX_DIR."""
+    import json
+    import wave
+    os.makedirs(root, exist_ok=True)
+    entries = []
+    for i, (sid, role) in enumerate(sounds):
+        name = f's{i}.wav'
+        with wave.open(os.path.join(root, name), 'wb') as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(48000)
+            w.writeframes(b'\0\0' * 4800)
+        entries.append({'id': sid, 'category': role, 'role': role, 'family': 'test', 'about': '',
+                        'variants': [{'variant': None, 'file': name, 'dur_s': 0.1, 'onset_s': 0.0,
+                                      'peak_s': 0.02, 'end_s': 0.1, 'peak_db': -1.0}]})
+    with open(os.path.join(root, 'index.json'), 'w') as fh:
+        json.dump({'schema': 1, 'pack': 'test', 'sounds': entries}, fh)
+    return root
