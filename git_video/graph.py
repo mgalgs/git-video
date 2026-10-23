@@ -153,6 +153,64 @@ def build(change, shots):
     return {'nodes': kept, 'edges': out_edges}
 
 
+def build_develop(change, shots, written):
+    """{'nodes', 'edges'} for a develop plan. A node is a definition an edit
+    shot writes (its line or a line of its body; `touched`, `first` that
+    shot, `at` when its first line is finished, in seconds on screen), or one
+    a written line calls (not touched, popping in with the call). A `call`
+    edge runs from a written definition to the node its written line names,
+    at the later of the two. `written`: {edit shot index: {new line index
+    (0-based): time on screen}}. At most MAX_NODES nodes, by when they appear."""
+    changes = _changes(change)
+    nodes, found = {}, []
+
+    def node(path, name, d, touched, i, at):
+        nid = _node(nodes, path, name, d.line, d.kind, touched, i)
+        if nodes[nid]['first'] == i and 'at' not in nodes[nid]:
+            nodes[nid]['at'] = round(at, 3)
+        return nid
+
+    for i, s in enumerate(shots):
+        if s['kind'] != 'edit' or not written.get(i):
+            continue
+        ch = changes[s.get('patch', 0)]
+        text = ch.text(s['path'])
+        if not text:
+            continue
+        holders = xref.enclosures(text.split('\n'), xref.file_defs(ch.repo, ch.target, s['path']))
+        done = written[i]
+        for j, tm in sorted(done.items(), key=lambda jt: (jt[1], jt[0])):
+            e = holders[j] if j < len(holders) else None
+            if e:
+                node(s['path'], e[0], e[1], True, i, tm)
+        found.append((i, s, ch, text, holders, done))
+    edges, seen = [], set()
+    for i, s, ch, text, holders, done in found:
+        lang = xref.lang_of(s['path'])
+        if lang is None:
+            continue
+        index = xref.index(ch.repo, ch.target, lang)
+        for c in xref.candidates(text, s['path'], sorted(j + 1 for j in done)):
+            e = holders[c.line - 1] if 0 < c.line <= len(holders) else None
+            d = xref.resolve(c, index, s['path']) if c.is_call else None
+            if not e or d is None:
+                continue
+            a = f'{s["path"]}:{e[0]}'
+            tm = done[c.line - 1]
+            b = node(d.path, c.name, d, False, i, max(tm, nodes[a].get('at', 0.0)))
+            if a == b or (a, b) in seen:
+                continue
+            seen.add((a, b))
+            first = max(nodes[a]['first'], nodes[b]['first'])
+            ats = [nodes[x].get('at', 0.0) for x in (a, b) if nodes[x]['first'] == first]
+            at = max([tm] + ats) if first == i else max(ats or [0.0])
+            edges.append({'a': a, 'b': b, 'kind': 'call', 'first': first, 'at': round(at, 3)})
+    kept = sorted(nodes.values(), key=lambda n: (n['first'], n.get('at', 0.0)))[:MAX_NODES]
+    ids = {n['id'] for n in kept}
+    out_edges = sorted((e for e in edges if e['a'] in ids and e['b'] in ids), key=lambda e: (e['first'], e['at']))
+    return {'nodes': kept, 'edges': out_edges}
+
+
 # ---- the film's half ----
 @dataclass(frozen=True)
 class Layout:

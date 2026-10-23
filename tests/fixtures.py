@@ -302,3 +302,113 @@ def make_tree_repo(tmp):
             fh.write('\nchanged = True\n')
     commit(repo, 'Touch five files')
     return repo
+
+
+def _core(edited=False):
+    """core.py for make_develop_repo: 80 lines; `edited` gives 15 lines a word
+    edit, drops two lines and inserts 12."""
+    rows = []
+    for i in range(20):
+        rows += [f'def step_{i}(value):\n', f'    return value + {i}\n', '\n', '\n']
+    if edited:
+        for i in range(15):
+            rows[4 * i + 1] = f'    return value * {i}\n'
+        del rows[4 * 16 + 2:4 * 16 + 4]   # two blank lines after step_16
+        rows[4 * 18:4 * 18] = [f'GROWN_{k} = {k}  # inserted\n' for k in range(12)]
+    return ''.join(rows)
+
+
+def make_develop_repo(tmp):
+    """Every kind of file develop mode meets. Base: core.py (80 lines),
+    old.py, a.py, tabs.py (tab-indented). HEAD: core.py edited (15 word
+    edits, two lines dropped, 12 inserted); old.py deleted; a.py renamed to
+    b.py with one edit; tabs.py one edit; new50.py and new100.py added (50 and
+    100 lines); bin.dat added (binary)."""
+    repo = os.path.join(tmp, 'develop')
+    init(repo)
+    write(repo, 'core.py', _core())
+    write(repo, 'old.py', 'def gone():\n    return 0\n')
+    a = ''.join(f'line_{i} = {i}\n' for i in range(30))
+    write(repo, 'a.py', a)
+    write(repo, 'tabs.py', 'def tabbed():\n\tif True:\n\t\treturn 1\n\treturn 2\n')
+    commit(repo, 'Start')
+    write(repo, 'core.py', _core(edited=True))
+    os.remove(os.path.join(repo, 'old.py'))
+    os.remove(os.path.join(repo, 'a.py'))
+    write(repo, 'b.py', a.replace('line_7 = 7', 'line_7 = 70'))
+    write(repo, 'tabs.py', 'def tabbed():\n\tif False:\n\t\treturn 1\n\treturn 2\n')
+    write(repo, 'new50.py', ''.join(f'fifty_{i} = {i}\n' for i in range(50)))
+    write(repo, 'new100.py', ''.join(f'hundred_{i} = {i}\n' for i in range(100)))
+    write(repo, 'bin.dat', b'\x00\x01binary\x00')
+    commit(repo, 'Rework everything')
+    return repo
+
+
+def make_budget_repo(tmp):
+    """work.py with 25 functions; HEAD adds a 20-line function after each: 500
+    added lines in 25 hunks, no run of 30."""
+    repo = os.path.join(tmp, 'budget')
+    init(repo)
+    funcs = [f'def base_{i}(x):\n    return x + {i}\n\n\n' for i in range(25)]
+    write(repo, 'work.py', ''.join(funcs))
+    commit(repo, 'Start')
+    out = []
+    for i, f in enumerate(funcs):
+        body = [f'def grown_{i}(x):\n'] + [f'    x = x * {k} + {i}  # step {k}\n' for k in range(17)] + \
+               ['    return x\n', '\n']
+        out += [f, *body]
+    write(repo, 'work.py', ''.join(out))
+    commit(repo, 'Grow every function')
+    return repo
+
+
+def make_order_repo(tmp):
+    """HEAD adds util.py defining helper(), makes app.py call it and adds
+    tests/test_app.py: diff order app.py, tests/test_app.py, util.py."""
+    repo = os.path.join(tmp, 'order')
+    init(repo)
+    write(repo, 'app.py', 'def main():\n    return 1\n')
+    commit(repo, 'Start')
+    write(repo, 'util.py', 'def helper(x):\n    return x + 1\n')
+    write(repo, 'app.py', 'from util import helper\n\n\ndef main():\n    return helper(1)\n')
+    write(repo, 'tests/test_app.py', 'from app import main\n\n\ndef test_main():\n    assert main() == 2\n')
+    commit(repo, 'Add a helper')
+    return repo
+
+
+def make_cycle_repo(tmp):
+    """HEAD adds a.py and b.py, each defining a function the other calls."""
+    repo = os.path.join(tmp, 'cycle')
+    init(repo)
+    write(repo, 'README', 'cycle\n')
+    commit(repo, 'Start')
+    write(repo, 'b.py', 'from a import ping\n\n\ndef pong(n):\n    return ping(n - 1)\n')
+    write(repo, 'a.py', 'from b import pong\n\n\ndef ping(n):\n    return pong(n) if n else 0\n')
+    commit(repo, 'Ping and pong')
+    return repo
+
+
+REWRITE_LIB = '''def main():
+    return 1
+'''
+
+
+def make_rewrite_repo(tmp):
+    """A, B, C on one line; returns (repo, {'a', 'b', 'c'}).
+
+    A: lib.py defines main().
+    B: lib.py gains helper() (6 lines).
+    C: helper()'s body is rewritten (3 of B's lines) and main() calls it.
+    """
+    repo = os.path.join(tmp, 'rewrite')
+    init(repo)
+    write(repo, 'lib.py', REWRITE_LIB)
+    a = commit(repo, 'Start the library')
+    helper = ('\n\ndef helper(x):\n    total = 0\n    for k in range(x):\n        total += k\n'
+              '    return total\n')
+    write(repo, 'lib.py', REWRITE_LIB + helper)
+    b = commit(repo, 'Add helper\n\nhelper() sums the numbers below x.')
+    helper2 = ('\n\ndef helper(x):\n    total = x * (x - 1) // 2\n    return total\n')
+    write(repo, 'lib.py', REWRITE_LIB.replace('return 1', 'return helper(4)') + helper2)
+    c = commit(repo, 'Sum in closed form\n\nhelper() now uses the closed form; main() calls it.')
+    return repo, {'a': a, 'b': b, 'c': c}

@@ -326,5 +326,132 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(len(p.commit['commits']), 2)
 
 
+
+class TestDevelopPlan(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.repo, cls.sha = fixtures.make_repo(cls.tmp.name)
+        cls.change = collect.collect(cls.repo, cls.sha['change'])
+        cls.budget = collect.collect(fixtures.make_budget_repo(cls.tmp.name), 'HEAD')
+        cls.develop = collect.collect(fixtures.make_develop_repo(cls.tmp.name), 'HEAD')
+        cls.big = collect.collect(fixtures.make_big_repo(cls.tmp.name), 'HEAD')
+        cls.plans = {}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def plan_of(self, name, verbose=0):
+        if (name, verbose) not in self.plans:
+            self.plans[name, verbose] = plan.build(getattr(self, name), verbose, 'develop')
+        return self.plans[name, verbose]
+
+    def test_develop_file_order(self):
+        order = plan.order_files(collect.collect(fixtures.make_order_repo(self.tmp.name), 'HEAD'))
+        self.assertEqual([f.path for f in order], ['util.py', 'app.py', 'tests/test_app.py'])
+        cycle = collect.collect(fixtures.make_cycle_repo(self.tmp.name), 'HEAD')
+        self.assertEqual([f.path for f in plan.order_files(cycle)], [f.path for f in cycle.files])
+        # frob's body changes in src/lib.py and src/app.py's new lines call it
+        self.assertEqual([f.path for f in plan.order_files(self.change)],
+                         ['src/lib.py', 'src/app.py', 'tests/test_app.py'])
+        p = self.plan_of('change')
+        self.assertEqual([s['path'] for s in kinds(p, 'edit')], ['src/lib.py', 'src/app.py', 'tests/test_app.py'])
+
+    def test_develop_budget(self):
+        p = self.plan_of('budget')
+        (patch,) = p.patches
+        self.assertEqual(patch['lines'], 500)
+        self.assertAlmostEqual(patch['budget'], 60.0)
+        perf = plan.perf_time(p)
+        self.assertTrue(patch['budget'] - 1 <= perf <= patch['budget'] + 0.05, perf)
+        self.assertAlmostEqual(perf, patch['perf'], places=2)
+        small = plan.build(collect.collect(self.repo, self.sha['root']), 0, 'develop')
+        (patch,) = small.patches
+        self.assertEqual(patch['budget'], plan.PERF_FLOOR)
+        self.assertLess(patch['natural'], plan.PERF_FLOOR)
+        self.assertAlmostEqual(plan.perf_time(small), patch['natural'], delta=0.01)   # never slowed to fill it
+        self.assertEqual([s['fast'] for s in kinds(small, 'edit')], [[]])
+        # a change between the floor and NATURAL_MAX times it plays faster, without a speed-up
+        mid = self.plan_of('change')
+        (patch,) = mid.patches
+        if patch['natural'] > patch['budget']:
+            self.assertAlmostEqual(plan.perf_time(mid), patch['budget'], delta=0.05)
+
+    def test_develop_verbose_monotonic(self):
+        for name in ('budget', 'develop'):
+            perfs = [plan.perf_time(self.plan_of(name, v)) for v in (0, 1, 2, 3)]
+            for a, b in zip(perfs, perfs[1:]):   # shot lengths are rounded to the millisecond
+                self.assertLessEqual(a, b + 0.005, (name, perfs))
+            p3 = self.plan_of(name, 3)
+            self.assertAlmostEqual(perfs[3], p3.patches[0]['natural'], delta=0.05)
+            for s in kinds(p3, 'edit'):
+                self.assertEqual(s['fast'], [])
+                self.assertFalse([st for st in s['steps'] if st['kind'] == 'fill'])
+
+    def test_speedup_spans(self):
+        from git_video import edits
+        p = self.plan_of('big')
+        fast = [(s, f) for s in kinds(p, 'edit') for f in s['fast']]
+        self.assertTrue(fast)
+        for s, f in fast:
+            self.assertTrue(plan.FAST_PEAK_MIN <= f['peak'] <= plan.FAST_PEAK_MAX, f)
+            self.assertGreaterEqual(edits.source_time(f['at'], s['clock']), plan.FAST_LEAD - 1e-3)
+            keys = [edits.shot_time(st['at'] + x, s['clock']) for st in s['steps'] if st['kind'] == 'type'
+                    for x in st['times'][:1]]
+            self.assertEqual(keys, sorted(keys))
+            src = edits.source_time(f['until'], s['clock']) - edits.source_time(f['at'], s['clock'])
+            span = s['steps'][-1]['at'] + s['steps'][-1]['dur'] - plan.FAST_LEAD
+            self.assertLessEqual(src, span + 0.01)
+            self.assertEqual(edits.speed_ramp(f['until'], s['clock']['times'], s['clock']['speeds']),
+                             edits.source_time(f['until'], s['clock']))
+            self.assertAlmostEqual(edits.source_time(s['dur'], s['clock']), s['natural'], delta=0.01)
+        for s in kinds(plan.build(collect.collect(self.repo, self.sha['root']), 0, 'develop'), 'edit'):
+            self.assertEqual(s['fast'], [])
+
+    def test_elision_thresholds(self):
+        def filled(v):
+            p = self.plan_of('develop', v)
+            return {s['path']: [e['count'] for e in s['elisions']] for s in kinds(p, 'edit') if s['elisions']}
+        self.assertEqual(filled(0), {'new50.py': [50 - 4], 'new100.py': [100 - 4]})
+        self.assertEqual(filled(1), {'new100.py': [100 - 4]})
+        self.assertEqual(filled(2), {})
+        self.assertEqual(filled(3), {})
+
+    def test_develop_plan_json(self):
+        code, out, _ = quiet(cli.main, ['-C', self.repo, '--mode', 'develop', '--plan-json', self.sha['change']])
+        self.assertEqual(code, 0)
+        doc = json.loads(out)
+        self.assertEqual((doc['version'], doc['mode'], len(doc['patches'])), (plan.VERSION, 'develop', 1))
+        self.assertEqual(plan.VERSION, 2)
+        edits_ = [s for s in doc['shots'] if s['kind'] == 'edit']
+        self.assertTrue(edits_)
+        for s in edits_:
+            self.assertEqual(s['scene'], 'editor')
+            for key in ('steps', 'fast', 'elisions', 'callouts', 'done_before', 'clock'):
+                self.assertIn(key, s)
+        self.assertNotIn('bin.dat', [s['path'] for s in edits_])
+        p = plan.Plan.from_json(out)
+        self.assertEqual(json.loads(p.to_json()), doc)
+        self.assertEqual(sum(s['lines'] for s in edits_), doc['patches'][0]['lines'])
+        self.assertEqual([s['done_before'] for s in edits_],
+                         [sum(x['lines'] for x in edits_[:k]) for k in range(len(edits_))])
+
+    def test_develop_callouts(self):
+        from git_video import edits
+        repo, sha = fixtures.make_callout_repo(self.tmp.name)
+        p = plan.build(collect.collect(repo, sha['head']), 0, 'develop')
+        (s,) = kinds(p, 'edit')
+        texts = [c['text'] for c in s['callouts']]
+        self.assertEqual(texts, ['frob() now doubles its input.', 'The helper other() returns three times its input.'])
+        for c in s['callouts']:
+            first = next(st for st in s['steps'] if st['hunk'] == c['hunk'])
+            self.assertAlmostEqual(c['at'], edits.shot_time(first['at'], s['clock']), delta=0.01)
+            self.assertLessEqual(c['until'], s['dur'])
+            self.assertGreater(c['until'], c['at'])
+        a, b = s['callouts']
+        self.assertLessEqual(a['until'], b['at'])
+
+
 if __name__ == '__main__':
     unittest.main()

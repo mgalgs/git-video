@@ -45,6 +45,24 @@ class TestGraph(unittest.TestCase):
         for edge in g['edges']:
             self.assertGreaterEqual(edge['first'], max(nodes[edge['a']]['first'], nodes[edge['b']]['first']))
 
+    def test_develop_graph(self):
+        p = plan.build(self.change, 0, 'develop')
+        (i, s), = [(i, s) for i, s in enumerate(p.shots) if s['kind'] == 'edit']
+        nodes = {n['id']: n for n in p.graph['nodes']}
+        frob, main = nodes['lib.py:frob'], nodes['lib.py:main']
+        self.assertTrue(frob['touched'] and main['touched'])
+        self.assertEqual((frob['first'], main['first']), (i, i))
+        self.assertTrue(0 < frob['at'] < main['at'] <= s['dur'], (frob['at'], main['at']))
+        calls = {(e['a'], e['b']): e for e in p.graph['edges'] if e['kind'] == 'call'}
+        e = calls[('lib.py:main', 'lib.py:frob')]
+        self.assertEqual(e['first'], i)
+        self.assertGreaterEqual(e['at'], main['at'])
+        self.assertFalse(nodes['util.py:helper']['touched'])   # called from a written line
+        st = graph.state_at(p.graph, p.shots, i, frob['at'] - 0.01, None, ())
+        self.assertEqual(st.nodes['lib.py:frob'], 0)
+        st = graph.state_at(p.graph, p.shots, i, s['dur'], None, ())
+        self.assertEqual(st.nodes['lib.py:main'], 1)
+
     def test_dive_edge_survives_sorting(self):
         # a call edge found before the dive sorts ahead of the dive's own edge
         ch = collect.collect(fixtures.make_call_first_repo(self.tmp.name), 'HEAD')

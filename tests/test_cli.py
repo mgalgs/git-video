@@ -37,10 +37,17 @@ class TestCli(unittest.TestCase):
         self.assertIn('invalid choice', err)
 
     def test_not_implemented_modes(self):
-        for argv in (['--mode', 'develop'], ['--voice'], ['--voice=bf_isabella']):
+        for argv in (['--voice'], ['--voice=bf_isabella'], ['--mode', 'develop', '--voice']):
             code, _, err = quiet(cli.main, argv)
             self.assertNotEqual(code, 0, argv)
             self.assertIn('not implemented yet', err, argv)
+        import tempfile
+        from tests import fixtures
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, sha = fixtures.make_repo(tmp)
+            code, out, err = quiet(cli.main, ['-C', repo, '--mode', 'develop', '--plan-json', sha['change']])
+            self.assertEqual(code, 0, err)
+            self.assertIn('"mode": "develop"', out)
 
     def test_series_ignored_by_tour(self):
         a = cli.parse(['--series', 'A..B'])

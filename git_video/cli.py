@@ -106,8 +106,6 @@ def _fail(msg, code):
 
 def main(argv=None):
     args = parse(sys.argv[1:] if argv is None else argv)
-    if args.mode == 'develop':
-        return _fail('--mode develop is not implemented yet', 2)
     if args.voice is not None:
         return _fail('--voice is not implemented yet', 2)
     from . import collect, plan
@@ -123,6 +121,8 @@ def main(argv=None):
     if args.plan_json:
         print(tour.to_json())
         return 0
+    if args.mode == 'develop':
+        return _fail('--mode develop renders land with the film; use --plan-json for now', 2)
     from . import film
     formats = list(FORMATS) if args.format == 'all' else [args.format]
     tour = film.Tour(tour, change, formats=formats, font=args.font, patches=patches)

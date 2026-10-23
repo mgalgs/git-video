@@ -45,3 +45,18 @@ def ops(old_lines, new_lines):
         if tag in ('insert', 'replace'):
             out += [['insert', -1, -1, *b[j][:2], b[j][2]] for j in range(j1, j2)]
     return [o for o in out if o[5].strip()]
+
+
+def line_edits(old, new):
+    """How one line becomes another, word by word: [(col, delete, insert)] left
+    to right, `col` in the old line, `delete` the columns removed there and
+    `insert` the text put in their place. Whitespace counts here (unlike
+    `ops`), so applying the edits gives `new` exactly."""
+    a = [t for _, _, t in tokens([old])][:-1]
+    b = [t for _, _, t in tokens([new])][:-1]
+    cols = [0]
+    for t in a:
+        cols.append(cols[-1] + len(t))
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    return [(cols[i1], cols[i2] - cols[i1], ''.join(b[j1:j2]))
+            for tag, i1, i2, j1, j2 in sm.get_opcodes() if tag != 'equal']

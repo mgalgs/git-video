@@ -12,7 +12,8 @@ from dataclasses import asdict, dataclass, field
 
 from videobuilder.type.typewriter import schedule
 
-from . import callouts as callouts_mod, graph as graphmod, highlight, repomap, worddiff, xref
+from . import callouts as callouts_mod, edits, graph as graphmod, highlight, repomap, worddiff, xref
+from .collect import is_test
 
 VERSION = 2
 FPS = 30
@@ -59,6 +60,22 @@ CALLOUT_IN = 0.8          # a commit sentence's card fades in and its line runs 
 CALLOUT_EACH = 2.6        # each callout stays at least this long (the hunk's read grows to fit)
 CALLOUT_MAX_PER_HUNK = 2
 INTER_DUR = 2.6           # the card between two patches of a --series
+
+# Develop mode's pacing. The performance (its edit shots) aims at
+# SECONDS_PER_LINE per changed line, never under PERF_FLOOR; typing runs up to
+# NATURAL_MAX times its natural pace, and past that each file after its first
+# FAST_LEAD natural seconds is a speed-up sequence at a peak in
+# [FAST_PEAK_MIN, FAST_PEAK_MAX], ramped in and out over FAST_RAMP s.
+SECONDS_PER_LINE = 60 / 500
+PERF_FLOOR = 15.0
+NATURAL_MAX = 4.0
+FAST_LEAD = 2.0
+FAST_MIN = 2.0            # natural seconds a file must have left to be sped up
+FAST_PEAK_MIN = 8.0
+FAST_PEAK_MAX = 64.0
+FAST_RAMP = 0.4
+ELIDE_LINES = {0: 30, 1: 80}   # --verbose -> the typed run long enough to elide (2 and 3 never)
+DEVELOP_CALLOUT_MIN = 1.2      # a develop callout shorter than this is dropped
 
 XREF_TRAVEL = 0.7         # the pointer glides to the word
 XREF_CLICK = 0.7          # ... and clicks it
@@ -268,20 +285,28 @@ def callout_target(f, word, top, prefer, fallback):
     return n, min(col, PLAN_COLS - 1), max(1, min(len(text.rstrip()) - col, PLAN_COLS - col))
 
 
-def _place_callouts(change, shots, readings):
-    """Give each hunk shot the commit sentences that explain it (`callouts`),
-    each with its time on screen and the words its line points at, and stretch
-    the hunk's read to fit them. A range uses each hunk's own commit."""
-    infos = [hunk_info(change, f, h) for _, f, h, _, _ in readings]
+def _match_callouts(change, hunks):
+    """{index into `hunks` ((file, hunk) pairs): [(unit index, score, word, text,
+    commit)]}: the commit sentences that name something in each hunk, each
+    hunk matched against the commit that owns it."""
+    infos = [hunk_info(change, f, h) for f, h in hunks]
     names = {d for info in infos for d in info['defs']}
-    chosen = {}   # reading index -> [(unit index, score, word, text, commit)]
+    chosen = {}
     for c in change.commits:
         units = callouts_mod.sentences(c.body) if c.body else []
-        mine = [k for k, (_, _, h, _, _) in enumerate(readings) if h.commit == c.sha]
+        mine = [k for k, (_, h) in enumerate(hunks) if h.commit == c.sha]
         if not units or not mine:
             continue
         for u, j, word, sc in callouts_mod.match(units, [infos[k] for k in mine], names):
             chosen.setdefault(mine[j], []).append((u, sc, word, units[u], c))
+    return chosen
+
+
+def _place_callouts(change, shots, readings):
+    """Give each hunk shot the commit sentences that explain it (`callouts`),
+    each with its time on screen and the words its line points at, and stretch
+    the hunk's read to fit them. A range uses each hunk's own commit."""
+    chosen = _match_callouts(change, [(f, h) for _, f, h, _, _ in readings])
     for k, (si, f, h, top, visible) in enumerate(readings):
         s = shots[si]
         picks = sorted(chosen.get(k, []), key=lambda x: (-x[1], x[0]))[:CALLOUT_MAX_PER_HUNK]
@@ -426,6 +451,154 @@ def _resolve_enters(shots, tiled):
     return out
 
 
+def _performed(change, f):
+    """Whether develop mode types `f`: a text file with hunks, whose old text
+    is known (empty when it is new)."""
+    return (not f.binary and bool(f.hunks) and (f.text is not None or f.status == 'D')
+            and change.old_text(f.path) is not None)
+
+
+def order_files(change):
+    """The files develop mode performs, top to bottom: a file whose change
+    writes a definition (its line, or a line of its body) that another file's
+    added lines use goes before that file (Kahn's algorithm, diff order
+    breaking ties; a cycle leaves the rest in diff order), test files last in
+    diff order."""
+    files = [f for f in change.files if _performed(change, f)]
+    src = [f for f in files if not is_test(f.path)]
+    added = {f.path: {n for h in f.hunks for a, b in h.added for n in range(a, b + 1)} for f in src}
+    written = {}   # path -> definition lines its change writes
+    for f in src:
+        if f.text is None:
+            continue
+        holders = xref.enclosures(f.text.split('\n'), xref.file_defs(change.repo, change.target, f.path))
+        written[f.path] = {holders[n - 1][1].line for n in added[f.path] if 0 < n <= len(holders) and holders[n - 1]}
+    after = {f.path: set() for f in src}   # path -> paths that use what it defines
+    for g in src:
+        lang = xref.lang_of(g.path)
+        if g.text is None or lang is None or not added[g.path]:
+            continue
+        index = xref.index(change.repo, change.target, lang)
+        for c in xref.candidates(g.text, g.path, sorted(added[g.path])):
+            d = xref.resolve(c, index, g.path)
+            if d is not None and d.path != g.path and d.line in written.get(d.path, ()):
+                after[d.path].add(g.path)
+    need = {f.path: 0 for f in src}
+    for a, bs in after.items():
+        for b in bs:
+            need[b] += 1
+    out, left = [], list(src)
+    while left:
+        ready = [f for f in left if need[f.path] == 0]
+        f = ready[0] if ready else left[0]   # a cycle: diff order for what is left
+        if not ready:
+            out += left
+            break
+        out.append(f)
+        left.remove(f)
+        for b in after[f.path]:
+            need[b] -= 1
+    return out + [f for f in files if is_test(f.path)]
+
+
+def develop_budget(lines):
+    """Seconds the performance of `lines` changed lines aims at."""
+    return max(PERF_FLOOR, lines * SECONDS_PER_LINE)
+
+
+def _pace(scripts, budget, verbose):
+    """(s0, peak, {file index: (natural start, natural end)}): the speed every
+    script plays at and, when that is not enough for the budget, the speed-up
+    sequences and their peak, chosen so the performance meets the budget: the
+    peak rises from FAST_PEAK_MIN to FAST_PEAK_MAX over whole files' spans;
+    below FAST_PEAK_MIN the spans shorten instead (a ×5 badge would hardly
+    read as a fast-forward next to typing already at NATURAL_MAX)."""
+    natural = sum(sc['natural'] for sc in scripts)
+    if verbose >= 3 or natural <= 0:
+        return 1.0, None, {}
+    s0 = min(NATURAL_MAX, max(1.0, natural / budget))
+    if natural / s0 <= budget + 1e-6:
+        return s0, None, {}
+    r = FAST_RAMP
+    avail = {}
+    for k, sc in enumerate(scripts):
+        end = sc['steps'][-1]['at'] + sc['steps'][-1]['dur'] if sc['steps'] else 0.0
+        if end - FAST_LEAD >= FAST_MIN:
+            avail[k] = (FAST_LEAD, end)
+    while avail:
+        F = len(avail)
+        R = sum(b - a for a, b in avail.values())
+        room = budget - (natural - R) / s0 - F * r
+        peak = (R - F * r * s0) / room if room > 0 else FAST_PEAK_MAX
+        if peak >= FAST_PEAK_MIN:
+            peak = min(FAST_PEAK_MAX, peak)
+            spans = avail
+        else:   # the whole spans at the least peak would undershoot: run shorter ones
+            peak = FAST_PEAK_MIN
+            want = (natural / s0 + F * r - F * r * s0 / peak - budget) / (1 / s0 - 1 / peak)
+            spans = {k: (a, a + (b - a) * want / R) for k, (a, b) in avail.items()}
+        short = [k for k, (a, b) in spans.items() if not edits.ramp_fits(b - a, s0, peak, r)]
+        if not short:
+            return s0, peak, spans
+        avail = {k: v for k, v in avail.items() if k not in short}
+    return s0, None, {}
+
+
+def _develop_body(change, verbose, patch):
+    """Develop mode for one change: per file (in `order_files` order) an
+    `enter` and an `edit` shot playing its edit script, paced to the budget.
+    Returns (shots, patch fields, {id(edit shot): {new line: time on screen it
+    is written}})."""
+    files = order_files(change)
+    elide = ELIDE_LINES.get(verbose)
+    scripts = []
+    for f in files:
+        old = edits.split_lines(change.old_text(f.path) or '')
+        new = edits.split_lines(f.text or '')
+        scripts.append(edits.build(old, new, f.hunks, elide=elide, seed=f.path))
+    lines = sum(edits.weight(sc['steps']) for sc in scripts)
+    budget = develop_budget(lines)
+    s0, peak, spans = _pace(scripts, budget, verbose)
+    chosen = _match_callouts(change, [(f, h) for f in files if f.text is not None for h in f.hunks])
+    keys = [(fi, hi) for fi, f in enumerate(files) if f.text is not None for hi in range(len(f.hunks))]
+    shots, written, done = [], {}, 0
+    for fi, (f, sc) in enumerate(zip(files, scripts)):
+        fast = (*spans[fi], peak) if fi in spans else None
+        clk, dur, span = edits.clock(sc['natural'], s0, fast, FAST_RAMP)
+        on_screen = lambda x, clk=clk: round(edits.shot_time(x, clk), 4)
+        steps = sc['steps']
+        elisions = [{'line': st['line'] + 1, 'count': st['count'], 'at': on_screen(st['at']),
+                     'until': on_screen(st['at'] + st['dur'])} for st in steps if st['kind'] == 'fill']
+        callouts = []
+        for k, (kf, hi) in enumerate(keys):
+            span_h = sc['hunks'][hi] if kf == fi and hi < len(sc['hunks']) else None
+            if kf != fi or not span_h or k not in chosen:
+                continue
+            a, b = steps[span_h[0]], steps[span_h[1]]
+            t0, t1 = on_screen(a['at']), on_screen(b['at'] + b['dur'])
+            picks = sorted(chosen[k], key=lambda x: (-x[1], x[0]))[:CALLOUT_MAX_PER_HUNK]
+            picks.sort(key=lambda x: x[0])
+            slot = max(CALLOUT_EACH, (t1 - t0) / len(picks))
+            for n, (_, _, _, text, c) in enumerate(picks):
+                callouts.append({'text': text, 'commit': c.short, 'hunk': hi, 'at': round(t0 + n * slot, 3),
+                                 'until': round(t0 + (n + 1) * slot - 0.2, 3)})
+        callouts.sort(key=lambda c: c['at'])
+        for c, nxt in zip(callouts, callouts[1:] + [None]):
+            c['until'] = round(min(c['until'], dur - 0.2, nxt['at'] - 0.05 if nxt else dur), 3)
+        callouts = [c for c in callouts if c['until'] - c['at'] >= DEVELOP_CALLOUT_MIN]
+        weight = edits.weight(steps)
+        shots.append(shot('map', 'enter', 0, path=f.path, patch=patch))
+        e = shot('editor', 'edit', dur, path=f.path, status=f.status, patch=patch, steps=steps,
+                 natural=sc['natural'], clock=clk, fast=[span] if span else [], elisions=elisions,
+                 callouts=callouts, done_before=done, lines=weight, total_lines=lines)
+        shots.append(e)
+        written[id(e)] = {j: on_screen(x) for j, x in sc['written'].items()}
+        done += weight
+    perf = round(sum(s['dur'] for s in shots), 3)
+    return shots, {'lines': lines, 'budget': round(budget, 3), 'natural': round(sum(sc['natural'] for sc in scripts), 3),
+                   'perf': perf, 'speed': s0, 'peak': peak}, written
+
+
 def build(change, verbose=0, mode='tour', patches=None):
     """The Plan of `change` in `mode`: a tour, or with `patches` (the change's
     commits as changes of their own, oldest first) one tour per patch."""
@@ -438,16 +611,26 @@ def build(change, verbose=0, mode='tour', patches=None):
     lit = [f['path'] for f in files if f['path'] in tiled]   # the changed files' tiles light in tour order
     if lit:   # nothing changed on the map (only deletions): nothing to show there
         shots.append(shot('map', 'map', MAP_DUR, lit=lit, patch=0))
-    entries = []
+    entries, written = [], {}
     for k, ch in enumerate(patches):
         if k:
             shots.append(shot('card', 'patch', INTER_DUR, patch=k))
         entries.append(patch_entry(ch, len(shots)))
-        shots += _tour_body(ch, verbose, k)
+        if mode == 'develop':
+            body, fields, w = _develop_body(ch, verbose, k)
+            entries[-1].update(fields)
+            written.update(w)
+        else:
+            body = _tour_body(ch, verbose, k)
+        shots += body
     shots.append(shot('card', 'end', END_DUR, patch=len(patches) - 1))
     out = _resolve_enters(shots, tiled)   # one shot per shot: each patch's first_shot still holds
     nxt = {'short': change.next.short, 'subject': change.next.subject} if change.next else None
-    call_graph = graphmod.build(patches, out)
+    if mode == 'develop':
+        call_graph = graphmod.build_develop(patches, out, {i: written[id(s)] for i, s in enumerate(out)
+                                                          if id(s) in written})
+    else:
+        call_graph = graphmod.build(patches, out)
     return Plan(VERSION, FPS, change.base, change.target, change.label, change.is_range, _commit_info(change),
                 files, verbose, out, round(sum(s['dur'] for s in out), 3), repo=name, next=nxt,
                 map=tree_map, graph=call_graph, mode=mode, patches=entries)
@@ -456,3 +639,8 @@ def build(change, verbose=0, mode='tour', patches=None):
 def plan(change, verbose=0):
     """The tour of `change` as a Plan."""
     return build(change, verbose)
+
+
+def perf_time(p, k=0):
+    """Seconds the edit shots of patch k play for."""
+    return sum(s['dur'] for s in p.shots if s['kind'] == 'edit' and s.get('patch', 0) == k)
