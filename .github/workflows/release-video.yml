@@ -1,0 +1,61 @@
+name: Release video
+
+# Every release carries its own `git video` of the commits since the
+# previous release, rendered by the release itself.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to render and attach
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  video:
+    runs-on: ubuntu-latest
+    # videobuilder needs Pango 1.56 or newer: Debian 13, not the runner's Ubuntu.
+    container: debian:trixie
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Install system packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git gh ffmpeg \
+            python3 python3-venv python3-gi python3-gi-cairo python3-cairo python3-pil \
+            gir1.2-pango-1.0 fonts-dejavu-core fonts-noto-core
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Install git-video
+        run: |
+          python3 -m venv --system-site-packages /opt/venv
+          /opt/venv/bin/pip install .
+          echo /opt/venv/bin >> "$GITHUB_PATH"
+
+      - name: Fetch the sound pack
+        run: python -m videobuilder sfx fetch
+
+      - name: Render
+        run: |
+          prev=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          if [ -z "$prev" ]; then
+            prev=$(git rev-list --max-parents=0 "$TAG" | tail -n 1)
+          fi
+          echo "rendering $prev..$TAG"
+          python -m git_video "$prev..$TAG" --format all -o "git-video-$TAG.mp4" | tee rendered.txt
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: xargs gh release upload "$TAG" --clobber --repo "$GITHUB_REPOSITORY" < rendered.txt
