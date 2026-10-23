@@ -50,6 +50,8 @@ HUNK_READ_BASE, HUNK_READ_PER_LINE, HUNK_READ_MAX = 1.5, 0.08, 6.0
 MORPH_HOLD = 0.9          # the old text on screen, removed words struck through, before it morphs
 MORPH_DUR = 1.4           # removed words dissolve, kept ones glide, added ones decode in
 MORPH_MAX_ROWS = PLAN_ROWS   # a hunk taller than a screenful is swept, not morphed
+FOCUS_IN = 0.35           # the rest of the buffer dims once the scroll lands ...
+FOCUS_OUT = 0.3           # ... and comes back up before the shot ends
 
 XREF_TRAVEL = 0.7         # the pointer glides to the word
 XREF_CLICK = 0.7          # ... and clicks it

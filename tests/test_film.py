@@ -223,7 +223,7 @@ class TestFilm(unittest.TestCase):
             st = film.stage(cv)
             ed = [b for name, b in cv.marks if name.startswith('editor.')]
             sb = [b for name, b in cv.marks if name.startswith('sidebar.')]
-            self.assertEqual(len(ed), 5)   # text, mode line, echo, minimap, viewport
+            self.assertEqual(len(ed), 6)   # text, mode line, echo, minimap, viewport, focus
             self.assertEqual(len(sb), 3, fmt)
             for b in ed:
                 self.assertTrue(st.main.contains(b), (fmt, b))
@@ -259,6 +259,17 @@ class TestFilm(unittest.TestCase):
             for name, b in cv.marks:
                 if name.startswith('sidebar.'):
                     self.assertFalse(mm.intersects(b), (fmt, name))
+
+    def test_focus_eases_in_and_out(self):
+        i, _ = self.frame_of('hunk', 0)
+        s = self.plan.shots[i]
+        self.assertEqual(film.focus_amount(s, plan.HUNK_SCROLL, plan.HUNK_SCROLL), 0)
+        self.assertEqual(film.focus_amount(s, plan.HUNK_SCROLL + plan.FOCUS_IN, plan.HUNK_SCROLL), 1)
+        self.assertAlmostEqual(film.focus_amount(s, s["dur"], plan.HUNK_SCROLL), 0)
+        n = self.tour.shot_frames[i] + round(1.2 * self.plan.fps)
+        band = dict(self.tour.film.frame(n, '16x9').marks)['editor.focus']
+        text = dict(self.tour.film.frame(n, '16x9').marks)['editor.text']
+        self.assertLess(band.h, text.h)
 
     def test_fringe_marks_come_from_plan(self):
         _, n = self.frame_of('hunk', 1.0)

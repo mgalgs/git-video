@@ -641,6 +641,12 @@ def morph_progress(shot, t):
     return vb.clamp01((t - m['at']) / m['dur'])
 
 
+def focus_amount(shot, t, landed):
+    """How far the rest of the buffer is dimmed `t` s into a hunk shot whose
+    scroll lands at `landed`: easing in after it, out before the shot ends."""
+    return _ease(t - landed, 0, P.FOCUS_IN) * (1 - _ease(t - (shot['dur'] - P.FOCUS_OUT), 0, P.FOCUS_OUT))
+
+
 def _hunk(tour, cv, st, shot, t, i, before, after):
     """Scroll to the hunk; morph its replaced and removed lines from old to new;
     sweep a highlighter over the lines that are only added."""
@@ -657,8 +663,10 @@ def _hunk(tour, cv, st, shot, t, i, before, after):
     k = len(shown)
     sweeps = [(ln, vb.ease_in_out_quart(vb.clamp01(p * k - j)), settle(t - P.HUNK_SCROLL - P.HUNK_SWEEP))
               for j, ln in enumerate(shown)]
+    f = shot.get('focus')
     _pane(tour, cv, st, after, top=top, sweeps=sweeps, blink=max(0.0, t - P.HUNK_SCROLL), morphs=segs,
-          morph_p=morph_progress(shot, t))
+          morph_p=morph_progress(shot, t), focus=(f[0] - 1, f[1] - 1) if f else None,
+          focus_amount=focus_amount(shot, t, P.HUNK_SCROLL))
 
 
 def settle(t):

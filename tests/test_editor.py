@@ -160,6 +160,34 @@ class TestEditor(unittest.TestCase):
         self.assertNotEqual(frames[1], frames[2])
         self.assertNotEqual(frames[0], frames[2])
 
+    def test_focus_dims_outside_band(self):
+        theme = editor.Theme()
+        lay = editor.layout(vb.Box(0, 0, 1000, 700), FONT, minimap=True)
+        empty = editor.Buffer('e.txt', highlight.highlight_lines('\n' * 40, 'e.txt'))
+
+        def frame(amount):
+            cv = vb.Canvas(1000, 700, '#000')
+            editor.draw(cv, lay, empty, 0, focus=(5, 6), focus_amount=amount, theme=theme,
+                        minimap=editor.Minimap(editor.minimap_bars(empty.lines)))
+            return cv
+
+        bg = tuple(round(c * 255) for c in vb.rgba(theme.bg)[:3])
+        x = int(lay.text_box.x + 40)
+        out_y, in_y = int(lay.line_y(15, 0) + 5), int(lay.line_y(5, 0) + lay.line_h / 2)
+        strip = lay.minimap_box
+        mm = (int(strip.x + strip.w / 2), int(strip.bottom - 4))
+        lit, dim = frame(0), frame(1)
+        self.assertEqual(pixel(lit, x, out_y)[2::-1], bg)
+        b, g, r, _ = pixel(dim, x, out_y)
+        self.assertLess(r + g + b, sum(bg))
+        self.assertGreaterEqual(r + g + b, 0.3 * sum(bg))
+        self.assertEqual(pixel(dim, x, in_y)[2::-1], bg)
+        self.assertEqual(pixel(dim, *mm), pixel(lit, *mm))   # the minimap is never dimmed
+        band = dict(dim.marks)['editor.focus']
+        self.assertLessEqual(band.y, lay.line_y(5, 0))
+        self.assertGreaterEqual(band.bottom, lay.line_y(7, 0) - 0.5)
+        self.assertNotIn('editor.focus', dict(lit.marks))
+
     def test_layout_geometry(self):
         box = vb.Box(300, 200, 700, 500)
         lay = editor.layout(box, FONT)

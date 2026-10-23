@@ -19,6 +19,7 @@ from typing import Sequence
 
 import videobuilder as vb
 from videobuilder import text as vbtext
+from videobuilder.capabilities.broadcast.spotlight_dim import spotlight_dim
 from videobuilder.capabilities.typography.blinking_cursor import cursor_on
 from videobuilder.capabilities.typography.dither_reveal import dither_reveal
 from videobuilder.capabilities.typography.scramble_decode import draw_scramble
@@ -54,6 +55,8 @@ class Theme:
     strike: str = '#ff6c6b'
     underline: str = '#98be65'
     ghost_alpha: float = 0.75
+    dim: str = '#0f1115'
+    dim_strength: float = 0.55   # never 1: the context stays readable
     minimap_bg: str = '#21242b'
     minimap_bar: str = '#4b5263'
     minimap_bar_changed: str = '#98be65'
@@ -236,7 +239,7 @@ def _clipped(b, area):
 
 def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), marks_removed_at=(),
          tints=(), sweeps=(), boxes=(), modeline=None, echo='', echo_cursor=False, minimap=None,
-         morphs=(), morph_p=1.0, theme=Theme()):
+         morphs=(), morph_p=1.0, focus=None, focus_amount=0.0, theme=Theme()):
     """Draw the pane and return its Placement.
 
     `cursor`: (line, col) of point, a block; `blink`: seconds since point last
@@ -256,6 +259,10 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
     faint); between, removed words dissolve, the rows and kept words glide to
     the new layout and added words decode in; at 1 the buffer as it is, added
     words underlined. Lines below a segment move with its height.
+
+    `focus`: (first, last) lines to keep bright while the rest of the text
+    area dims by `focus_amount` (0 -> 1) of `theme.dim_strength`; the band
+    follows the morph (it covers any segment inside it).
     """
     box, tb, lh, cw = lay.box, lay.text_box, lay.line_h, lay.cell_w
     n = len(buf.lines)
@@ -380,6 +387,22 @@ def draw(cv, lay, buf, scroll_top, *, cursor=None, blink=None, marks_added=(), m
                     if ch.strip():
                         vbtext.draw(cv, [ch], font, cb.x, cb.y, theme.bg, alpha=a)
         area = vb.Box(tb.x, box.y, tb.w, lay.modeline_box.y - box.y)
+        if focus is not None and focus_amount > 0:
+            a, b = focus
+            y0, y1 = y_of(a), y_of(b) + lh
+            for k, seg in enumerate(active):
+                if a <= seg.line <= b + 1:
+                    y0 = min(y0, tops[k])
+                    y1 = max(y1, tops[k] + segment_rows(seg, p) * lh)
+            if y1 - y0 < lh:   # a closed-up deletion: keep a row lit around the gap
+                y0, y1 = (y0 + y1 - lh) / 2, (y0 + y1 + lh) / 2
+            band = vb.Box(box.x, y0, tb.right - box.x, y1 - y0)
+            with cv.clip(box.x, box.y, tb.right - box.x, lay.modeline_box.y - box.y):
+                spotlight_dim(cv, band, focus_amount, color=theme.dim, strength=theme.dim_strength, radius=6,
+                              pad=2, feather=lh * 0.6, steps=4)
+            m = _clipped(band, vb.Box(box.x, box.y, tb.right - box.x, lay.modeline_box.y - box.y))
+            if m is not None:
+                cv.mark('editor.focus', *m)
         for k, seg in enumerate(active):
             m = _clipped(vb.Box(tb.x, tops[k], tb.w, max(0.0, segment_rows(seg, p) * lh)), area)
             if m is not None:
