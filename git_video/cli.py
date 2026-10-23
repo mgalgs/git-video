@@ -158,6 +158,14 @@ def main(argv=None):
             patches = [change]
     except collect.GitError as e:
         return _fail(str(e), 1)
+    formats = list(FORMATS) if args.format == 'all' else [args.format]
+    outputs = output_paths(change.label, args.out, formats)
+    if not (args.stills or args.plan_json):   # before narration and any frame: a bad path should not cost a render
+        try:
+            for _, out in outputs:
+                check_output(out)
+        except OutputError as e:
+            return _fail(str(e), 1)
     if args.voice is not None:
         try:
             tour = voice.narrate(change, patches, args.verbose, args.mode, engine, args.voice)
@@ -168,14 +176,6 @@ def main(argv=None):
     if args.plan_json:
         print(tour.to_json())
         return 0
-    formats = list(FORMATS) if args.format == 'all' else [args.format]
-    outputs = output_paths(change.label, args.out, formats)
-    if not args.stills:   # before any frame: a bad path should not cost a render
-        try:
-            for _, out in outputs:
-                check_output(out)
-        except OutputError as e:
-            return _fail(str(e), 1)
     from . import film
     tour = film.Tour(tour, change, formats=formats, font=args.font, patches=patches)
     if args.stills:

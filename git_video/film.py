@@ -640,14 +640,13 @@ def counter_value(t, n):
     return n * (1 - (1 - p) ** 3)
 
 
-def _title_lines(text, box_w, sizes, most, line_height=1.18, fits=None):
-    """(font, lines) of a card's title, wrapped only at spaces: onto up to
-    `most` lines (and as many as `fits(font, n)` allows) in the largest of
+def _title_lines(text, box_w, sizes, fits, line_height=1.18):
+    """(font, lines) of a card's title, wrapped only at spaces: onto as many
+    lines as the card's room (`fits(font, n)`) allows in the largest of
     `sizes` that takes it whole, else in the smallest, ellipsized after a
     whole word (`sidebar.fit_words`)."""
     fonts = [vb.Font(UI, size, weight=700, line_height=line_height) for size in sizes]
-    return sidebar.fit_words(text, fonts, box_w, lambda f, n: n <= most and (fits is None or fits(f, n)),
-                             balance=True)
+    return sidebar.fit_words(text, fonts, box_w, fits, balance=True)
 
 
 def _name_bar(cv, text, t, shot, x, bottom, width, title_f, sub_f, pad=28):
@@ -707,7 +706,7 @@ def _title_card(tour, cv, box, shot, t):
 
     def fits(f, n):   # the stack, with its gaps, in the room above the bar
         return fixed + n * vbtext.line_height(f) + 12 * (n + 2) <= room.h
-    title_f, lines = _title_lines(text['title'], box.w * 0.8, (66, 58, 50, 44), 4, fits=fits)
+    title_f, lines = _title_lines(text['title'], box.w * 0.8, (66, 58, 50, 44), fits)
     heights = [vbtext.line_height(kicker_f), *[vbtext.line_height(title_f)] * len(lines), 10, cell_h]
     boxes, _ = room.stack(heights, gap=12, align='center')
     _title_stack(cv, box, t, text, kicker_f, title_f, lines, boxes[0], boxes[1:1 + len(lines)])
@@ -735,9 +734,9 @@ def _title_card_portrait(tour, cv, box, shot, t):
     r = 34
     co_h = (56 + vbtext.line_height(vb.Font(UI, 20)) + 14 + 2 * r) if names else 0
     rest = vbtext.line_height(kicker_f) + 24 + 64 + cell_h + 64 + _bar_height(bar_f, sub_f) + co_h
-    # the largest size that wraps to five lines and leaves the rest its room
-    title_f, lines = _title_lines(text['title'], box.w, PORTRAIT_TITLE_SIZES, 5,
-                                  fits=lambda f, n: rest + n * vbtext.line_height(f) <= box.h * 0.82)
+    # the largest size whose wrapped lines leave the rest its room
+    title_f, lines = _title_lines(text['title'], box.w, PORTRAIT_TITLE_SIZES,
+                                  lambda f, n: rest + n * vbtext.line_height(f) <= box.h * 0.82)
     th = vbtext.line_height(title_f)
     free = max(0.0, box.h - rest - len(lines) * th)
     a, b, c, _ = (free * f for f in PORTRAIT_SPREAD)
@@ -1040,8 +1039,8 @@ def _patch_face(tour, cv, k):
     files = len(info.get('files') or ())
     stats = f'{files} file{"s" if files != 1 else ""}  +{info.get("added", 0)} {sidebar.MINUS}{info.get("deleted", 0)}'
     fixed = vbtext.line_height(kicker) + 18 + 24 + 2 * vbtext.line_height(meta)
-    title, lines = _title_lines(c['subject'], box.w, range(92 if portrait else 84, 47, -4), 64, line_height=1.16,
-                                fits=lambda f, n: fixed + n * vbtext.line_height(f) <= box.h)
+    title, lines = _title_lines(c['subject'], box.w, range(92 if portrait else 84, 47, -4),
+                                lambda f, n: fixed + n * vbtext.line_height(f) <= box.h)
     heights = [vbtext.line_height(kicker), 18, *[vbtext.line_height(title)] * len(lines), 24,
                vbtext.line_height(meta), vbtext.line_height(meta)]
     boxes, _ = box.stack(heights, gap=0, align='center')

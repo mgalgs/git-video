@@ -251,6 +251,29 @@ class TestFilm(unittest.TestCase):
                     k = next((k for k in range(len(words)) if words[k:k + len(toks)] == toks), None)
                     self.assertIsNotNone(k, (fmt, label, ln))
 
+    def test_title_card_wraps_while_the_room_allows(self):
+        """A subject too long for four lines (five in 9:16) still shows whole
+        when the room above the name bar takes more: the room sets the line
+        count, not a fixed cap."""
+        subject = ('Show co-authors as initials on the title card, keep the end card readable, and '
+                   'wrap long subjects at word boundaries only so nothing is cut mid-word')
+        import copy
+        one = copy.deepcopy(self.plan)
+        one.commit['subject'] = subject
+        tour = film.Tour(one, self.change, log=io.StringIO())
+        n = next(n for n, label in tour.film.keyframes if label == 'title')
+        real = film.vbtext.draw
+        for fmt in ('16x9', '9x16', '1x1'):
+            drawn = []
+
+            def draw(cv, lines, *a, **kw):
+                drawn.extend([lines] if isinstance(lines, str) else lines)
+                return real(cv, lines, *a, **kw)
+            with mock.patch.object(film.vbtext, 'draw', draw):
+                tour.film.frame(n, fmt)
+            title = [ln for ln in drawn if ln and ln.split()[0] in subject.split()]
+            self.assertEqual(' '.join(title), subject, fmt)
+
     def test_end_card_wraps_before_it_cuts_with_long_lists(self):
         """A recap long enough to fill its panels still leaves the subject the
         lines it needs (the 1:1 card cut it to one line with room for three)."""
@@ -1152,9 +1175,6 @@ class TestVoiceFilm(unittest.TestCase):
                 self.assertNotIn('caption', dict(tour.film.frame(n, fmt).marks))
 
 
-if __name__ == '__main__':
-    unittest.main()
-
 
 class TestPanelCallout(unittest.TestCase):
     """9:16 and 1:1: with no free space in the pane, the callout goes to the panel under the code."""
@@ -1176,9 +1196,11 @@ class TestPanelCallout(unittest.TestCase):
         cls.env.stop()
         cls.tmp.cleanup()
 
-    def frames(self, mode, full=False):
-        """(fmt, frame, stage) mid-life of every callout, the pane made full of code unless `full` is False."""
-        with mock.patch.object(film, 'free_callout_box', return_value=None) if full else contextlib.nullcontext():
+    def frames(self, mode, full=False, side=True):
+        """(fmt, frame, stage) mid-life of every callout, the pane made full of code unless `full` is False,
+        and the side bar's free area taken away if `side` is False."""
+        with mock.patch.object(film, 'free_callout_box', return_value=None) if full else contextlib.nullcontext(), \
+                mock.patch.object(film, 'side_callout_box', return_value=None) if not side else contextlib.nullcontext():
             tour = film.Tour(self.plans[mode], self.change, log=io.StringIO())
             for i, s in enumerate(tour.shots):
                 for c in s.get('callouts') or ():
@@ -1188,11 +1210,17 @@ class TestPanelCallout(unittest.TestCase):
                         yield fmt, cv, film.stage(cv, voice=True)
 
     def test_card_in_the_lower_panel_when_the_pane_is_full(self):
+        self.check_lower_panel(side=True)
+
+    def test_card_over_the_commit_text_when_the_side_bar_is_full_too(self):
+        self.check_lower_panel(side=False)
+
+    def check_lower_panel(self, side):
         for mode in ('tour', 'develop'):
             seen = set()
-            for fmt, cv, st in self.frames(mode, full=True):
+            for fmt, cv, st in self.frames(mode, full=True, side=side):
                 marks = dict(cv.marks)
-                why = (mode, fmt)
+                why = (mode, fmt, side)
                 self.assertEqual([m for m, _ in cv.marks].count('callout.card'), 1, why)
                 card = marks['callout.card']
                 seen.add(fmt)
@@ -1220,3 +1248,7 @@ class TestPanelCallout(unittest.TestCase):
                 if card is None or not marks['editor.text'].contains(card):
                     continue
                 self.assertFalse(card.intersects(marks['callout.point']), (mode, fmt))
+
+
+if __name__ == '__main__':
+    unittest.main()

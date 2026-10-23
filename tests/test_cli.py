@@ -80,9 +80,6 @@ class TestCli(unittest.TestCase):
         self.assertEqual(cli.repo_path(None), os.getcwd())
 
 
-if __name__ == '__main__':
-    unittest.main()
-
 
 class TestOutputPath(unittest.TestCase):
     def setUp(self):
@@ -126,3 +123,20 @@ class TestOutputPath(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertIn(out, err)
                 self.assertEqual((rendered, built), ([], []))
+
+
+    def test_unwritable_path_fails_before_narration(self):
+        from unittest import mock
+        from git_video import voice
+        blocker = os.path.join(self.tmp, 'file')
+        open(blocker, 'w').close()
+        out = os.path.join(blocker, 'v.mp4')
+        with mock.patch.object(voice, 'make_engine'), mock.patch.object(voice, 'check_voice'), \
+                mock.patch.object(voice, 'narrate') as narrate:
+            code, _, err = quiet(cli.main, ['-C', self.repo, '--voice', '-o', out, self.sha['change']])
+        self.assertEqual(code, 1)
+        self.assertIn(out, err)
+        narrate.assert_not_called()
+
+if __name__ == '__main__':
+    unittest.main()
