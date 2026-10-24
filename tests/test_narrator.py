@@ -146,7 +146,7 @@ class TestCallouts(unittest.TestCase):
         self.assertEqual([c['text'] for c in a['callouts']], callouts[one.key])
         self.assertEqual(b['callouts'], [])
         c = a['callouts'][0]
-        self.assertEqual(c['commit'], p.commit['short'])
+        self.assertEqual(c['commit'], '')   # the narrator's own words cite no commit
         f = self.change.files[0]
         line = f.hunks[0].added[0][0]   # no word to point at: the first changed line's text
         text = f.text.split('\n')[line - 1]

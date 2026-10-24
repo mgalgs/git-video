@@ -1730,7 +1730,7 @@ def _callout_card(tour, cv, st, where, key, c, t, target, band, point, outline=T
             cv.outline(card.x + 0.5, card.y + 0.5, card.w - 1, card.h - 1, '#3f444a', width=1, radius=10)
             cv.rect(card.x, card.y + 10, 4, card.h - 20, THEME.cursor, radius=2)
             x, y = card.x + pad + 6, card.y + pad
-            vbtext.draw(cv, [f'WHY  ·  {c["commit"]}'], kicker_f, x, y, THEME.cursor)
+            vbtext.draw(cv, [f'WHY  ·  {c["commit"]}' if c['commit'] else 'WHY'], kicker_f, x, y, THEME.cursor)
             y += vbtext.line_height(kicker_f) + 6
             vbtext.draw(cv, lines, font, x, y, '#e6e9ef')
     cv.mark('callout.card', *card)

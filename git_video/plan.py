@@ -363,12 +363,10 @@ def _chosen(change, hunks, keys, given=None):
     sentence that matched none would be."""
     if given is None:
         return _match_callouts(change, hunks) if callouts_matched(change) else {}
-    by_sha = {c.sha: c for c in change.commits}
     out = {}
-    for k, ((_, h), key) in enumerate(zip(hunks, keys)):
-        c = by_sha.get(h.commit, change.commits[-1])
+    for k, key in enumerate(keys):
         for n, text in enumerate(given.get(key) or ()):
-            out.setdefault(k, []).append((n, 0, None, text, c))
+            out.setdefault(k, []).append((n, 0, None, text, None))   # the narrator's words: no commit to cite
     return out
 
 
@@ -408,7 +406,7 @@ def _place_callouts(change, shots, readings, voice=None, given=None):
         for n, (_, _, word, text, c) in enumerate(picks):
             line, col, length = callout_target(f, word, top, added, s['focus'][0])
             at = start + n * slot
-            out.append({'text': text, 'commit': c.short, 'line': line, 'col': col, 'len': length,
+            out.append({'text': text, 'commit': c.short if c else '', 'line': line, 'col': col, 'len': length,
                         'at': round(at, 3), 'until': round(at + slot - 0.2, 3)})
         s['callouts'] = out
         s['dur'] = round(hunk_dwell(visible, morph=morph, far=far, callouts=len(picks)), 3)
@@ -839,7 +837,7 @@ def _develop_body(change, verbose, patch, voice=None, keep=None, budget=None, du
                         end = max(t1, max(z for _, z in said.values()))
                     elif n + 1 in said:
                         end = said[n + 1][0] - 0.2
-                callouts.append({'text': text, 'commit': c.short, 'hunk': hi, 'at': round(at, 3),
+                callouts.append({'text': text, 'commit': c.short if c else '', 'hunk': hi, 'at': round(at, 3),
                                  'until': round(end if said else min(end, t1), 3)})
         callouts.sort(key=lambda c: c['at'])
         for c, nxt in zip(callouts, callouts[1:] + [None]):
