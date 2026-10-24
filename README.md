@@ -241,7 +241,12 @@ two per hunk, each its own line of at most 12 words about why the hunk is
 shaped the way it is. Its cards replace the commit sentences for the whole
 video, and an empty list means no cards; an answer without the field keeps
 the commit sentences, and a card on anything but a hunk is dropped with a
-warning. It commits nothing, so the repository is left
+warning. Each phrase should go on the shot that shows what it talks
+about (the shot list says which definitions and files each shows): one
+that names a definition or a file its own shot does not show, but
+another does, is moved to the nearest such shot, with a warning, when
+the order and the two-per-shot limit allow; the opening and the closing
+stay. It commits nothing, so the repository is left
 as it was; its run dir is left in place and named at the end, so its work
 can be read. `GIT_VIDEO_NARRATOR_MODEL` sets the model (default `opus`) and
 `GIT_VIDEO_NARRATOR_ARGS` adds fork-sandbox options (shell-split), say

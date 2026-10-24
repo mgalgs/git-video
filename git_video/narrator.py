@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from . import edits, plan as planmod
 
@@ -43,13 +43,17 @@ class NarratorError(RuntimeError):
 class Row:
     """One shot (or edit-shot hunk) a phrase may be said over: its `id`, the
     phrase key it stands for, when it starts and how long it lasts in the
-    unvoiced plan (seconds), what it shows, and the file and lines."""
+    unvoiced plan (seconds), what it shows, and the file and lines; the
+    names of the definitions it shows (`defs`) and the files (`files`),
+    for `align`."""
     id: str
     key: tuple
     start: float
     dur: float
     what: str
     where: str = ''
+    defs: tuple = ()
+    files: tuple = ()
 
 
 def _hunk(patches, k, path, index):
@@ -67,11 +71,40 @@ def _lines(h):
     return f'line {a}' if n <= 1 else f'lines {a}-{a + n - 1}'
 
 
-def _defs(ch, f, h):
+def _def_names(ch, f, h):
     if f is None or h is None or f.text is None:
-        return ''
-    names = [n for n, _, _ in planmod.hunk_defs(ch, f, h)]
+        return []
+    return [n for n, _, _ in planmod.hunk_defs(ch, f, h)]
+
+
+def _defs(ch, f, h):
+    names = _def_names(ch, f, h)
     return f', in {", ".join(names[:4])}' if names else ''
+
+
+def _shows(plan, patches, s, hi=None):
+    """(definition names, file paths) shot `s` (edit shot hunk `hi`) shows."""
+    kind = s['kind']
+    if kind in ('hunk', 'edit'):
+        ch, f, h = _hunk(patches, s.get('patch', 0), s['path'], s['index'] if kind == 'hunk' else hi)
+        return tuple(_def_names(ch, f, h)), (s['path'],)
+    if kind == 'xref-push':
+        return (s['name'],), tuple(dict.fromkeys((s['path'], s['definition']['path'])))
+    if kind in ('dive', 'travel', 'enter', 'open'):
+        return (), (s.get('to', s['path']),)
+    return (), ()
+
+
+def _uses(patches, row, names):
+    """The identifiers a hunk row's changed lines use that name a definition
+    another row shows (`names`), at most four: what else the hunk is about."""
+    if row.key[0] not in ('hunk', 'edit'):
+        return []
+    ch, f, h = _hunk(patches, row.key[1], row.key[2], row.key[3])
+    if f is None or h is None or f.text is None:
+        return []
+    words = planmod.hunk_info(ch, f, h)['words']
+    return sorted(n for n in names if n in words and n not in row.defs)[:4]
 
 
 def _clip(text, most=16):
@@ -123,6 +156,7 @@ def shot_rows(plan, patches):
     starts, _ = planmod.frame_starts(plan.shots, plan.fps)
     rows = []
     for i, s in enumerate(plan.shots):
+        shows = lambda hi=None, s=s: dict(zip(('defs', 'files'), _shows(plan, patches, s, hi)))
         t0, dur = starts[i] / plan.fps, s['dur']
         if s['kind'] == 'edit':
             at = {}
@@ -135,7 +169,8 @@ def shot_rows(plan, patches):
                 b = at[his[n + 1]] if n + 1 < len(his) else dur
                 _, _, h = _hunk(patches, s.get('patch', 0), s['path'], hi)
                 rows.append(Row(f's{i}h{hi}', ('edit', s.get('patch', 0), s['path'], hi), round(t0 + a, 1),
-                                round(b - a, 1), _what(plan, patches, s, hi), f'{s["path"]} {_lines(h)}'.strip()))
+                                round(b - a, 1), _what(plan, patches, s, hi), f'{s["path"]} {_lines(h)}'.strip(),
+                                **shows(hi)))
             continue
         key = planmod.shot_key(s)
         if key is None:
@@ -146,8 +181,12 @@ def shot_rows(plan, patches):
             where = f'{s["path"]} {_lines(h)}'.strip()
         elif s['kind'] == 'xref-push':
             where = f'{s["path"]} line {s["line"]}'
-        rows.append(Row(f's{i}', key, round(t0, 1), round(dur, 1), _what(plan, patches, s), where))
-    return rows
+        rows.append(Row(f's{i}', key, round(t0, 1), round(dur, 1), _what(plan, patches, s), where, **shows()))
+    # A hunk that uses what another shot shows says so, so a phrase about it
+    # can be put where it is seen.
+    names = {d for r in rows for d in r.defs}
+    return [replace(r, what=f'{r.what}; uses {", ".join(u)}') if (u := _uses(patches, r, names)) else r
+            for r in rows]
 
 
 def shot_table(rows):
@@ -322,7 +361,72 @@ def read(text, plan, patches, log=None):
         key = ids[it['shot']]
         slots[key] = slots.get(key, -1) + 1
         out.append(voice.Phrase(text, key, slots[key]))
-    return trim(out, plan), _callouts(doc.get('callouts'), rows, log)
+    return trim(align(out, plan, rows, log), plan), _callouts(doc.get('callouts'), rows, log)
+
+
+def _subjects(text, rows):
+    """(definition names, file names) phrase `text` names among what `rows`
+    show, matched as callouts match identifiers (callouts.identifiers,
+    touched definitions as plain words) or by its spoken form ("draw card"
+    for draw_card)."""
+    from . import callouts as callouts_mod, voice
+    names = {d for r in rows for d in r.defs}
+    files = {os.path.basename(f) for r in rows for f in r.files}
+    defs, paths = set(), set()
+    for ident in callouts_mod.identifiers(text, names):
+        n, p = callouts_mod._keys(ident)
+        defs |= n & names
+        paths |= p
+    low = ' '.join(re.findall(r'\w+', text.lower()))
+    for x in names | files:
+        said = ' '.join(re.findall(r'\w+', voice.spoken(x).lower()))
+        if ' ' in said and re.search(rf'(?<!\w){re.escape(said)}(?!\w)', low):
+            (defs if x in names else paths).add(x)
+    return defs, paths
+
+
+def _shown(row, defs, paths):
+    """Whether `row` shows one of `defs` or a file one of `paths` names."""
+    here = {x for f in row.files for b in [os.path.basename(f)] for x in (f, b, os.path.splitext(b)[0])}
+    return bool(defs & set(row.defs) or paths & here)
+
+
+def align(phrases, plan, rows, log=None):
+    """`phrases` with each that names a definition or a file (`_subjects`)
+    its own shot does not show moved to the nearest shot that does (the
+    earlier on a tie), when shot order and PER_SHOT still hold there; else
+    it stays. The opening and the closing never move. Each move is a
+    warning to `log`. Slots are renumbered."""
+    from . import voice
+    index = _positions(plan)
+    at = {r.key: n for n, r in enumerate(rows)}
+    ids = {r.key: r.id for r in rows}
+    frame = {('title',), ('end',)}
+    out = list(phrases)
+    for j, p in enumerate(out):
+        if p.key in frame or p.key not in at:
+            continue
+        defs, paths = _subjects(p.text, rows)
+        if not (defs or paths) or _shown(rows[at[p.key]], defs, paths):
+            continue
+        near = sorted((abs(n - at[p.key]), n) for n, r in enumerate(rows)
+                      if r.key not in frame and r.key in index and _shown(r, defs, paths))
+        for d, n in near:
+            if d != near[0][0]:
+                break
+            key = rows[n].key
+            lo = index[out[j - 1].key] if j and out[j - 1].key in index else (-1, -1)
+            hi = index[out[j + 1].key] if j + 1 < len(out) and out[j + 1].key in index else (len(plan.shots), 0)
+            if lo <= index[key] <= hi and sum(q.key == key for q in out) < PER_SHOT:
+                _warn(log, f'phrase {j + 1} moved from {ids[p.key]} to {ids[key]}, which shows what it names: '
+                           f'{p.text!r}')
+                out[j] = voice.Phrase(p.text, key)
+                break
+    slots = {}
+    for j, p in enumerate(out):
+        slots[p.key] = slots.get(p.key, -1) + 1
+        out[j] = voice.Phrase(p.text, p.key, slots[p.key])
+    return out
 
 
 def _callouts(items, rows, log):

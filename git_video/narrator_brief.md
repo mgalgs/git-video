@@ -35,7 +35,16 @@ can see that. Your words add the meaning the picture cannot show.
 
 Be sparse. Silence is good. Most shots should have no phrase at all.
 Speak when a shot shows something your explanation is about, so that
-words and picture line up. Aim for an opening of one or two sentences
+words and picture line up.
+
+A phrase goes on the shot that shows the thing it talks about. A phrase
+about how the side bar is drawn goes on the hunk that changes the
+drawing, not on the tests that check it. The opening and the closing
+frame the whole change and are exempt. A phrase that names a definition
+or a file shown by another shot, but not by its own, is moved to the
+nearest shot that shows it when that keeps the order.
+
+Aim for an opening of one or two sentences
 that frames the whole change, a few phrases at the moments that carry
 the approach, and a short closing. The limits are hard: at most
 {max_phrases} phrases, each at most {max_words} words, and about {max_speech_s}
@@ -51,6 +60,8 @@ read out hashes, paths with slashes, punctuation, or code.
 
 Each line is a shot id, its start time and length in seconds (before
 narration stretches anything), what it shows, and the file and lines.
+A hunk says the definitions it is in ("in draw, layout") and the ones
+another shot shows that it uses ("uses build").
 
 ```
 {shot_table}

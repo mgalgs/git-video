@@ -201,6 +201,75 @@ class TestCallouts(unittest.TestCase):
         self.assertIn('Doubling keeps the scale even.', json.loads(p.to_json())['shots'][said['shot']]['callouts'][0]['text'])
 
 
+class TestAlign(unittest.TestCase):
+    """A phrase goes on the shot that shows what it names."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        repo, sha = fixtures.make_callout_repo(cls.tmp.name)
+        cls.change = collect.collect(repo, sha['head'])
+        cls.tour = plan.build(cls.change, 0, 'tour')
+        cls.rows = narrator.shot_rows(cls.tour, [cls.change])
+        cls.frob, cls.other = [r for r in cls.rows if r.key[0] == 'hunk']   # frob's hunk, then other's
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def read(self, *phrases):
+        log = io.StringIO()
+        doc = {'phrases': [{'shot': shot, 'text': text} for shot, text in phrases]}
+        got = narrator.parse(json.dumps(doc), self.tour, [self.change], log)
+        return [(p.key, p.slot) for p in got], log.getvalue()
+
+    def test_rows_say_what_they_show(self):
+        self.assertEqual((self.frob.defs, self.frob.files), (('frob',), ('lib.py',)))
+        self.assertEqual((self.other.defs, self.other.files), (('other',), ('lib.py',)))
+        self.assertEqual(self.rows[0].defs + self.rows[0].files, ())
+        enter = next(r for r in self.rows if r.key[0] == 'enter')
+        self.assertEqual(enter.files, ('lib.py',))
+        repo, sha = fixtures.make_repo(self.tmp.name)
+        ch = collect.collect(repo, sha['change'])
+        (dive,) = [r for r in narrator.shot_rows(plan.build(ch, 0, 'tour'), [ch]) if r.key[0] == 'xref']
+        self.assertEqual((dive.defs, dive.files), (('frob',), ('src/app.py', 'src/lib.py')))
+
+    def test_moved_to_the_shot_that_shows_it(self):
+        got, log = self.read(('s0', 'Both helpers now scale.'), (self.frob.id, 'other() keeps callers in scale.'),
+                             (self.rows[-1].id, 'That is all.'))
+        self.assertEqual(got, [(('title',), 0), (self.other.key, 0), (('end',), 0)])
+        self.assertIn(f'git video: warning: narrator phrase 2 moved from {self.frob.id} to {self.other.id}', log)
+        # its own shot shows it: it stays, and so does a phrase naming nothing shown
+        got, log = self.read(('s0', 'Both.'), (self.frob.id, 'frob() and other() both scale.'),
+                             (self.frob.id, 'Nothing named here.'))
+        self.assertEqual(got, [(('title',), 0), (self.frob.key, 0), (self.frob.key, 1)])
+        self.assertEqual(log, '')
+
+    def test_spoken_forms_count(self):
+        rows = [narrator.Row('s1', ('hunk', 0, 'film.py', 0), 0, 1, '', defs=('draw_card',), files=('film.py',)),
+                narrator.Row('s2', ('hunk', 0, 'sidebar.py', 0), 1, 1, '', defs=('layout',), files=('sidebar.py',))]
+        self.assertEqual(narrator._subjects('The draw card helper now waits.', rows), ({'draw_card'}, set()))
+        self.assertEqual(narrator._subjects('The layout is computed once, in sidebar.py.', rows)[0], {'layout'})
+        self.assertIn('sidebar', narrator._subjects('The layout is computed once, in sidebar.py.', rows)[1])
+        self.assertEqual(narrator._subjects('Nothing about code.', rows), (set(), set()))
+
+    def test_kept_when_moving_breaks_order(self):
+        phrases = (('s0', 'Both.'), (self.frob.id, 'other() keeps callers in scale.'),
+                   (self.frob.id, 'Doubling is enough.'))
+        got, log = self.read(*phrases)
+        self.assertEqual(got, [(('title',), 0), (self.frob.key, 0), (self.frob.key, 1)])
+        self.assertEqual(log, '')
+        # nor onto a shot that already has its PER_SHOT phrases
+        got, _ = self.read(('s0', 'Both.'), (self.frob.id, 'other() keeps callers in scale.'),
+                           (self.other.id, 'One.'), (self.other.id, 'Two.'))
+        self.assertEqual(got[1], (self.frob.key, 0))
+
+    def test_opening_and_closing_never_move(self):
+        got, log = self.read(('s0', 'frob() now doubles its input.'), (self.rows[-1].id, 'other() triples it.'))
+        self.assertEqual(got, [(('title',), 0), (('end',), 0)])
+        self.assertEqual(log, '')
+
+
 class TestHeuristicCutOff(unittest.TestCase):
     """No commit-sentence callouts on a beat of more than three commits."""
 
