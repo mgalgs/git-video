@@ -19,6 +19,8 @@ jobs:
             gir1.2-pango-1.0 fonts-dejavu-core fonts-noto-core
 
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # history tests skip on a shallow clone
 
       - name: Install git-video
         run: |
