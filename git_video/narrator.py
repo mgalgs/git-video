@@ -734,7 +734,8 @@ def claude_command(model):
 def answer(stdout):
     """The narration JSON in `claude -p --output-format json`'s `stdout`: its
     result text, the last fenced block's when it has one, else from its
-    first brace to its last. NarratorError when there is no result."""
+    first brace to its last (the whole text when they bracket nothing, for
+    `read` to reject). NarratorError when there is no result."""
     try:
         doc = json.loads(stdout)
     except ValueError:
@@ -747,8 +748,9 @@ def answer(stdout):
     blocks = _FENCED.findall(text)
     if blocks:
         return blocks[-1].strip()
-    if not text.startswith('{') and '{' in text:
-        return text[text.index('{'):text.rindex('}') + 1]
+    first, last = text.find('{'), text.rfind('}')
+    if 0 < first < last:
+        return text[first:last + 1]
     return text
 
 
@@ -779,8 +781,6 @@ def run_claude(change, plan, patches, model, log, timeout=None):
         subprocess.run(['git', '-C', change.repo, 'worktree', 'remove', '--force', tree],
                        stdin=subprocess.DEVNULL, capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
-        subprocess.run(['git', '-C', change.repo, 'worktree', 'prune'], stdin=subprocess.DEVNULL,
-                       capture_output=True)
     out, err = r.stdout.decode('utf-8', 'replace'), r.stderr.decode('utf-8', 'replace')
     if r.returncode != 0:
         raise _error(f'claude exited {r.returncode}', output=(err + out)[-4000:])

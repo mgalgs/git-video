@@ -7,6 +7,7 @@ hang."""
 import io
 import json
 import os
+import shutil
 import stat
 import tempfile
 import unittest
@@ -38,7 +39,7 @@ if mode == 'hang':
     time.sleep(30)
 result = {'fenced': f'Here is the narration.\n\n```json\n{text}\n```\n', 'bad': '{"phrases": [',
           'unknown': json.dumps({'phrases': [{'shot': 's999', 'text': 'Hi.'}]}),
-          'error': 'Credit balance is too low'}.get(mode, text)
+          'unbalanced': 'I could not read shot {s3 so I stopped.', 'error': 'Credit balance is too low'}.get(mode, text)
 print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': mode == 'error', 'result': result}))
 '''
 
@@ -171,7 +172,7 @@ class TestClaude(unittest.TestCase):
     def test_failures(self):
         for mode, want in (('fail', 'claude exited 1'), ('garbage', "claude's output is not JSON"),
                            ('error', 'claude failed: Credit balance is too low'), ('bad', 'does not pass'),
-                           ('unknown', 'no shot')):
+                           ('unknown', 'no shot'), ('unbalanced', 'does not pass')):
             with self.subTest(mode), mock.patch.dict(os.environ, {'FAKE_MODE': mode}):
                 with self.assertRaises(narrator.NarratorError) as cm:
                     self.writer()(self.plan)
@@ -180,6 +181,13 @@ class TestClaude(unittest.TestCase):
         self.assertIn('Invalid API key', self._fail_output())   # claude's own stderr goes into the error
         self.assertFalse(os.path.exists(os.path.join(self.cache, 'git-video', 'narration')))   # no failure cached
         self.assertEqual(fixtures.git(self.repo, 'worktree', 'list').count('\n'), 0)
+
+    def test_other_worktrees_kept(self):
+        away = os.path.join(self.tmp.name, 'away')
+        fixtures.git(self.repo, 'worktree', 'add', '--detach', away)
+        shutil.rmtree(away)                      # say, on a drive that is not mounted now
+        self.writer()(self.plan)
+        self.assertIn(away, fixtures.git(self.repo, 'worktree', 'list'))
 
     def _fail_output(self):
         with mock.patch.dict(os.environ, {'FAKE_MODE': 'fail'}):
