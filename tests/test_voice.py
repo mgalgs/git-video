@@ -13,6 +13,7 @@ from videobuilder import speech
 from git_video import cli, collect, narrator, plan, voice
 from tests import fixtures
 from tests.test_cli import ROOT, quiet
+from tests.test_condense import SLOW
 
 
 def have_model():
@@ -66,7 +67,7 @@ class TestScript(unittest.TestCase):
         editor_state = re.compile(r"^(?:First|Next|Then|Finally), |^This is all in |^A change to |^Changes to |"
                                   r"^A new (?:test|function|method|class|setting)\b|new tests\b|^It now imports |"
                                   r"opening comment changes")
-        for rev in revs:
+        for rev in revs if SLOW else revs[::5]:   # all 25 with GIT_VIDEO_SLOW_TESTS=1
             ch = collect.collect(ROOT, rev)
             for mode in ('tour', 'develop'):
                 p = plan.build(ch, 0, mode)
