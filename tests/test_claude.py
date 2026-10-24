@@ -23,8 +23,9 @@ import json, os, subprocess, sys, time
 state = os.environ['FAKE_STATE']
 n = len([x for x in os.listdir(state) if x.startswith('argv-')])
 head = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
+changes = open('.git-video-changes.diff').read() if os.path.exists('.git-video-changes.diff') else None
 with open(os.path.join(state, f'argv-{n}.json'), 'w') as f:
-    json.dump({'argv': sys.argv[1:], 'cwd': os.getcwd(), 'head': head}, f)
+    json.dump({'argv': sys.argv[1:], 'cwd': os.getcwd(), 'head': head, 'changes': changes}, f)
 with open(os.path.join(state, f'brief-{n}.md'), 'w') as f:
     f.write(sys.stdin.read())
 mode = os.environ.get('FAKE_MODE', 'ok')
@@ -109,6 +110,9 @@ class TestClaude(unittest.TestCase):
         self.assertEqual((w.ran, w.run_dir), ('claude', None))
         call = self.fake.call()
         self.assertEqual(call['head'], self.sha['change'])                # a checkout of the change's tip ...
+        changes = call['changes']   # ... with the diffstat and diff beside it
+        self.assertRegex(changes, r'^ ?bin\.dat +\| Bin')
+        self.assertEqual(changes.count('diff --git '), len(self.change.files))
         self.assertNotEqual(os.path.realpath(call['cwd']), os.path.realpath(self.repo))
         self.assertFalse(os.path.exists(call['cwd']))                     # ... removed after
         self.assertEqual(fixtures.git(self.repo, 'worktree', 'list').count('\n'), 0)
@@ -123,18 +127,21 @@ class TestClaude(unittest.TestCase):
         self.assertIn('Your only output is one file:\n`outbox/narration.json`.', theirs)
         self.assertIn('Write `outbox/narration.json`, in your artifact outbox (not in the\nrepository):', theirs)
         self.assertIn('Write the file, check that it parses as JSON, and end your turn.', theirs)
-        self.assertNotRegex(mine + theirs, r'\{(output|output_how|output_end)\}')
+        self.assertNotRegex(mine + theirs, r'\{(inspect|output|output_how|output_end)\}')
+        self.assertIn(f'`{narrator.CHANGES}`', mine)
+        self.assertNotIn('git diff', mine)
+        self.assertIn(f'git diff {self.change.base}..{self.change.target}', theirs)
 
     def test_read_only_flags(self):
         self.writer()(self.plan)
         argv = self.fake.call()['argv']
         self.assertEqual(argv[:6], ['-p', '--output-format', 'json', '--model', 'opus', '--restricted'])
         self.assertEqual(argv[argv.index('--permission-mode') + 1], 'dontAsk')
-        self.assertEqual(argv[argv.index('--tools') + 1], 'Read,Grep,Glob,Bash')
+        self.assertEqual(argv[argv.index('--tools') + 1], 'Read,Grep,Glob')   # no shell: git can write and read env
         allowed = argv[argv.index('--allowedTools') + 1:argv.index('--disallowedTools')]
-        self.assertEqual(allowed, ['Read', 'Grep', 'Glob', 'Bash(git log:*)', 'Bash(git show:*)', 'Bash(git diff:*)'])
+        self.assertEqual(allowed, ['Read', 'Grep', 'Glob'])
         denied = argv[argv.index('--disallowedTools') + 1:]
-        self.assertTrue({'Write', 'Edit', 'WebFetch', 'WebSearch'} <= set(denied), denied)
+        self.assertTrue({'Bash', 'Write', 'Edit', 'WebFetch', 'WebSearch'} <= set(denied), denied)
         self.assertIn('--strict-mcp-config', argv)
         self.assertNotIn('--dangerously-skip-permissions', argv)
 

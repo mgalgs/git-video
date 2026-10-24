@@ -269,12 +269,12 @@ usable, costs a one-line warning and the heuristic narrates instead.
 The claude narrator gives the same brief to [Claude Code](https://claude.com/claude-code)
 where fork-sandbox is not there, as on a CI runner: `claude -p`, run in a
 temporary `git worktree` of the change's tip (removed after), reads the
-diff and the code and answers with the script as its final message (a
-fenced `json` block is fine), which is held to the same limits and cached
-the same way, apart from fork-sandbox's scripts. It is read-only: it may
-use Read, Grep and Glob, and Bash only for `git log`, `git show` and
-`git diff`; it runs with `--restricted`, so no settings files, and no MCP
-servers. It signs in however the `claude` command already does (in CI,
+diff (written into the worktree as `.git-video-changes.diff`) and the code
+and answers with the script as its final message (a fenced `json` block
+is fine), which is held to the same limits and cached the same way, apart
+from fork-sandbox's scripts. It is read-only and has no shell: it may use
+Read, Grep and Glob, nothing else; it runs with `--restricted`, so no
+settings files, and no MCP servers. It signs in however the `claude` command already does (in CI,
 `CLAUDE_CODE_OAUTH_TOKEN`); git-video never reads the credential.
 `GIT_VIDEO_NARRATOR_MODEL` sets its model too; `GIT_VIDEO_NARRATOR_ARGS`
 is fork-sandbox's alone. A session that fails, times out (15 minutes) or

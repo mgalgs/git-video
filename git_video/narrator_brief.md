@@ -14,9 +14,8 @@ Commit messages, in order:
 
 {commits}
 
-Inspect it yourself: `git diff {base}..{tip}` (or `git show` per commit),
-and read the surrounding code, the callers, and anything else that helps
-you understand *why* the change is shaped the way it is.
+{inspect} Read the surrounding code, the callers, and anything else that
+helps you understand *why* the change is shaped the way it is.
 
 ## What to say
 

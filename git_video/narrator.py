@@ -488,7 +488,14 @@ def timed_script(plan):
 # ---- the brief ----
 BRIEF = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'narrator_brief.md')
 _SLOT = re.compile(r'\{(range|commits|base|tip|max_phrases|max_speech_s|max_words|length|shot_table|'
-                   r'max_callouts|callout_words|output|output_how|output_end)\}')
+                   r'max_callouts|callout_words|inspect|output|output_how|output_end)\}')
+CHANGES = '.git-video-changes.diff'   # the claude narrator's copy of the diff, in its worktree
+# How each agent sees the diff: fork-sandbox runs git itself, claude has no shell.
+INSPECT = {
+    'fork-sandbox': 'Inspect it yourself: `git diff {base}..{tip}` (or `git show` per commit).',
+    'claude': f'The whole diff, with a diffstat first, is in `{CHANGES}` in your working\n'
+              'directory: read it in pieces.',
+}
 # How each agent hands its script back: (the intro's line, the Output
 # section's opening, its last sentence).
 OUTPUT = {
@@ -496,8 +503,8 @@ OUTPUT = {
                      'Write `outbox/narration.json`, in your artifact outbox (not in the\nrepository):',
                      'Write the file, check that it parses as JSON, and end your turn.'),
     'claude': ('Your only output is your final\nmessage: the narration as JSON.',
-               'You can read the repository and run `git log`, `git show` and\n`git diff`, nothing else: '
-               'you cannot write files. Your final message is\nthe narration, one JSON object and nothing else '
+               'You can read and search the files in your working directory, nothing\nelse: '
+               'you cannot run commands or write files. Your final message is\nthe narration, one JSON object and nothing else '
                '(a fenced `json` block\nis fine):',
                'Check that it parses as JSON, then end your turn with it as your final\nmessage.'),
 }
@@ -526,6 +533,7 @@ def brief(change, plan, patches, narrator='fork-sandbox'):
              'length': f'{round(plan.duration or plan.total)} seconds',
              'shot_table': shot_table(shot_rows(plan, patches)),
              'max_callouts': str(planmod.CALLOUT_MAX_PER_HUNK), 'callout_words': str(CALLOUT_WORDS),
+             'inspect': INSPECT[narrator].format(base=change.base, tip=change.target),
              **dict(zip(('output', 'output_how', 'output_end'), OUTPUT[narrator]))}
     with open(BRIEF, encoding='utf-8') as f:
         template = f.read()
@@ -713,19 +721,20 @@ def run_fork_sandbox(change, plan, patches, model, key, log):
 
 # ---- the claude narrator ----
 CLAUDE_TIMEOUT = 15 * 60   # seconds: a session that reads the code takes minutes, rarely this many
-# Read-only: the file-reading tools, and Bash only for git's history and
-# diffs. `--tools` is what the session has at all, `--allowedTools` what it
-# may run unasked (dontAsk refuses the rest), `--disallowedTools` a backstop.
-CLAUDE_TOOLS = ('Read', 'Grep', 'Glob', 'Bash')
-CLAUDE_ALLOWED = ('Read', 'Grep', 'Glob', 'Bash(git log:*)', 'Bash(git show:*)', 'Bash(git diff:*)')
-CLAUDE_DENIED = ('Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'WebFetch', 'WebSearch')
+# Read-only, and no shell at all: even "git diff" can write (--output) and
+# read the session's environment (--no-index /proc/self/environ), which holds
+# the Claude credential. The diff is handed over as a file (CHANGES) instead.
+# `--tools` is what the session has at all, `--allowedTools` what it may run
+# unasked (dontAsk refuses the rest), `--disallowedTools` a backstop.
+CLAUDE_TOOLS = ('Read', 'Grep', 'Glob')
+CLAUDE_ALLOWED = CLAUDE_TOOLS
+CLAUDE_DENIED = ('Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'WebFetch', 'WebSearch')
 _FENCED = re.compile(r'^```[\w-]*[ \t]*\n(.*?)^```[ \t]*$', re.S | re.M)
 
 
 def claude_command(model):
     """The `claude` argv: headless (the brief on stdin), JSON out, read-only,
-    no settings files, MCP servers or saved session. A rule is one argument
-    each: "Bash(git log:*)" has a space in it."""
+    no settings files, MCP servers or saved session."""
     return ['claude', '-p', '--output-format', 'json', '--model', model, '--restricted',
             '--permission-mode', 'dontAsk', '--strict-mcp-config', '--no-session-persistence',
             '--tools', ','.join(CLAUDE_TOOLS), '--allowedTools', *CLAUDE_ALLOWED, '--disallowedTools', *CLAUDE_DENIED]
@@ -769,6 +778,11 @@ def run_claude(change, plan, patches, model, log, timeout=None):
                              stdin=subprocess.DEVNULL, capture_output=True, text=True)
         if add.returncode != 0:
             raise _error(f'cannot check out {change.target[:12]}', output=add.stderr)
+        with open(os.path.join(tree, CHANGES), 'wb') as f:
+            diff = subprocess.run(['git', '-C', change.repo, 'diff', '--stat', '--patch', change.base, change.target],
+                                  stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE)
+        if diff.returncode != 0:
+            raise _error(f'cannot diff {change.base[:12]}..{change.target[:12]}', output=diff.stderr.decode())
         print('git video: narrating with claude, a few minutes…', file=log, flush=True)
         try:
             r = subprocess.run(claude_command(model), input=prompt.encode(), cwd=tree, capture_output=True,
