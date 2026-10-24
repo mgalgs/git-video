@@ -26,6 +26,9 @@ jobs:
           /opt/venv/bin/pip install .
 
       - name: Run the tests
+        env:
+          # the full tolerance matrix takes minutes: run it on tags only
+          GIT_VIDEO_SLOW_TESTS: ${{ startsWith(github.ref, 'refs/tags/') && '1' || '' }}
         run: |
           git config --global user.name ci
           git config --global user.email ci@example.invalid
