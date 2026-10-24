@@ -26,10 +26,10 @@ from dataclasses import dataclass, replace
 
 from . import edits, plan as planmod
 
-SECONDS_PER_PHRASE = 8.0   # at most one phrase per this much unvoiced film ...
+SECONDS_PER_PHRASE = 6.0   # at most one phrase per this much unvoiced film ...
 MAX_WORDS = 35             # ... each at most this many words (a --duration target's third, at least MIN_WORDS) ...
 MIN_WORDS = 12
-SPEECH_SHARE = 0.45        # ... and all of them at most this share of the voiced film
+SPEECH_SHARE = 0.65        # ... and all of them at most this share of the voiced film
 WORDS_PER_SECOND = 2.5     # speech, for the brief's budget in seconds
 PER_SHOT = 2               # phrases said over one shot (or edit-shot hunk), at most
 CALLOUT_WORDS = 12         # a narrator's callout card, at most this many words
@@ -630,7 +630,7 @@ class Narrator:
 
 # ---- the fork-sandbox narrator ----
 DEFAULT_MODEL = 'opus'
-VERSION = 4   # of the brief and how its answer is read: part of the cache key
+VERSION = 5   # of the brief and how its answer is read: part of the cache key
 TEMPLATE_ID = 'git-video-narrate-v1'
 _RUN_DIR = re.compile(r'^\s*run dir:\s+(\S.*?)\s*$', re.M)
 # fork-sandbox refuses a handoff that does not resolve under here, or that

@@ -77,9 +77,18 @@ frame the whole change and are exempt. A phrase that names a definition
 or a file shown by another shot, but not by its own, is moved to the
 nearest shot that shows it when that keeps the order.
 
-Aim for an opening of one or two sentences that sets the system and the
-problem, phrases at the moments that carry the story, and a closing
-that says what is now possible. The limits are hard: at most
+Shape it like this:
+
+- **The opening** places the change in the system. Say what the user
+  runs or does, the path from there to the code that changed, and what
+  was missing on that path.
+- **Over each hunk that carries the story**, say what role that piece
+  plays on the path: what reaches it from above, what it hands on or
+  rests on below, and why the change belongs in this layer and not
+  another.
+- **The closing** says what the system can do now.
+
+The limits are hard: at most
 {max_phrases} phrases, each at most {max_words} words, and about {max_speech_s}
 seconds of speech in total (about 2.5 words per second). The finished
 video is about {length} long, narration included, and the shot table

@@ -338,7 +338,7 @@ class TestLimits(unittest.TestCase):
         short = plan.build(self.change, 0, 'tour', duration=30)
         self.assertTrue(any('more than 12' in x for x in narrator.check(fifteen, short)))
         self.assertNotIn(fifteen[1], narrator.trim(fifteen, short))
-        self.assertEqual(narrator.limits(plan.build(self.change, 0, 'tour', duration=60)), (60 // 8 + 2, 27))
+        self.assertEqual(narrator.limits(plan.build(self.change, 0, 'tour', duration=60)), (int(60 // narrator.SECONDS_PER_PHRASE) + 2, round(narrator.SPEECH_SHARE * 60)))
 
     def test_drop_to_fit(self):
         s = self.script(3)
@@ -350,8 +350,8 @@ class TestLimits(unittest.TestCase):
 
     def test_limits(self):
         most, speech = narrator.limits(self.plan)
-        self.assertEqual(most, int(self.plan.total // 8) + 2)
-        self.assertEqual(speech, round(0.45 * self.plan.total))
+        self.assertEqual(most, int(self.plan.total // narrator.SECONDS_PER_PHRASE) + 2)
+        self.assertEqual(speech, round(narrator.SPEECH_SHARE * self.plan.total))
 
     def script(self, n_middle, words=6):
         mid = [P(' '.join(['word'] * words) + '.', k) for k in self.hunks[:n_middle]]
@@ -381,14 +381,14 @@ class TestLimits(unittest.TestCase):
     def test_speech_share(self):
         s = self.script(2)
         total = 20.0
-        seconds = [2.0, 4.0, 4.0, 1.0]   # 11 s of 20: over 45 %
+        seconds = [2.0, 6.0, 6.0, 1.0]   # 15 s of 20: over SPEECH_SHARE
         self.assertTrue(narrator.check(s, self.plan, seconds, total))
         got = narrator.trim(s, self.plan, seconds, total)
-        self.assertEqual(got, [s[0], s[1], s[3]])             # 7 s
-        self.assertEqual(narrator.check(got, self.plan, [2.0, 4.0, 1.0], total), [])
+        self.assertEqual(got, [s[0], s[1], s[3]])             # 9 s
+        self.assertEqual(narrator.check(got, self.plan, [2.0, 6.0, 1.0], total), [])
         with self.assertRaises(narrator.NarratorError):       # the opening alone is too much
-            narrator.trim(s, self.plan, [10.0, 1, 1, 1], total)
-        self.assertEqual(narrator.trim(s, self.plan, [10.0, 1, 1, 1], total, strict=False), [s[0]])
+            narrator.trim(s, self.plan, [14.0, 1, 1, 1], total)
+        self.assertEqual(narrator.trim(s, self.plan, [14.0, 1, 1, 1], total, strict=False), [s[0]])
 
     def test_heuristic_within_limits(self):
         # the heuristic is held to the same limits: narrate cuts it to them
@@ -412,7 +412,7 @@ class TestBrief(unittest.TestCase):
                 self.assertIn('about 30 seconds long', text, mode)
                 self.assertIn(f'each at most {narrator.max_words(30)} words', text, mode)
                 most, _ = narrator.limits(p)
-                self.assertEqual(most, 30 // 8 + 2)
+                self.assertEqual(most, int(30 // narrator.SECONDS_PER_PHRASE) + 2)
                 self.assertIn(f'at most\n{most} phrases', text)
                 kept = {(path, h['index']) for e in p.patches for path, hs in e['kept'].items() for h in hs}
                 rows = [r for r in narrator.shot_rows(p, [big]) if r.key[0] in ('hunk', 'edit')]
