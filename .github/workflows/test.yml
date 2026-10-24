@@ -34,4 +34,7 @@ jobs:
         run: |
           git config --global user.name ci
           git config --global user.email ci@example.invalid
+          # checkout's own safe.directory entry is gone by now, and the
+          # container's root does not own the workspace
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           /opt/venv/bin/python -m unittest
