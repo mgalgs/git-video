@@ -115,12 +115,17 @@ def _clock(m):
 
 
 def _unit(m):
-    if m.group(2) == 's' and m.group(0)[-2] != ' ' and (
-            re.fullmatch(r'(?:1\d|20)\d0', m.group(1)) or m.string[m.end():m.end() + 3] == ' of'
-            or m.string[m.start() - 1:m.start()] in ("'", '’')):
+    article, num, u = m.group(1), m.group(2), m.group(3)
+    if u == 's' and m.group(0)[-2] != ' ' and (
+            re.fullmatch(r'(?:1\d|20)\d0', num) or m.string[m.end():m.end() + 3] == ' of'
+            or m.string[m.start(2) - 1:m.start(2)] in ("'", '’')):
         return None   # the 1990s, '80s, 100s of shots: a decade or a plural, not seconds
-    n, unit = number_said(m.group(1)), UNITS[m.group(2)]
-    return n and f'{n} {unit[m.group(1) != "1"]}'
+    n, unit = number_said(num), UNITS[u]
+    if not n:
+        return None
+    if article:   # "a 0.4 s fade": the measure is an adjective, so singular
+        return f'{article} {n} {unit[0]}'
+    return f'{n} {unit[num != "1"]}'
 
 
 def _ratio(m):
@@ -142,7 +147,7 @@ NUMBER_FORMS = (
     (r'(?<![\w.:])(?=(?:' + '|'.join(ASPECTS) + r')(?![\w:]))(\d+):(\d+)', _ratio),
     (r'(?<![\w.:])([01]?\d|2[0-3]):([0-5]\d)(?![\w:])', _clock),                          # 10:30, a time
     (r'(?<![\w.:])(\d+):(\d+)(?![\w:])', _ratio),                                         # 16:9, a ratio
-    (_NUM + r' ?(' + '|'.join(re.escape(u) for u in sorted(UNITS, key=len, reverse=True)) + r')(?!\w)', _unit),
+    (r'(?:(?<![\w.])([Aa]n?) )?' + _NUM + r' ?(' + '|'.join(re.escape(u) for u in sorted(UNITS, key=len, reverse=True)) + r')(?!\w)', _unit),
     (_NUM.replace(r'(?:\.\d+)?', r'\.\d+') + r'(?!\w|\.\d)', lambda m: number_said(m.group(1))),   # 0.4
 )
 _NUMBER_FORMS = re.compile('|'.join(f'(?P<f{k}>{pat})' for k, (pat, _) in enumerate(NUMBER_FORMS)))

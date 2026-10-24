@@ -297,7 +297,8 @@ class TestScript(unittest.TestCase):
         for text, want in (
                 ('0.4', {'0.4': 'zero point four'}),
                 ('It took 12.05.', {'12.05': 'twelve point zero five'}),
-                ('a 0.4 s fade', {'0.4 s': 'zero point four seconds'}),
+                ('a 0.4 s fade', {'a 0.4 s': 'a zero point four second'}),
+                ('an 8 s pause, after 8 s', {'an 8 s': 'an eight second', '8 s': 'eight seconds'}),
                 ('1 s', {'1 s': 'one second'}),
                 ('in 3.14s', {'3.14s': 'three point one four seconds'}),
                 ('200 ms', {'200 ms': 'two hundred milliseconds'}),
@@ -319,12 +320,12 @@ class TestScript(unittest.TestCase):
                 ('10000000.5', {}),
                 ('the 1990s, 100s of shots, 10 s', {'10 s': 'ten seconds'}),   # a decade, a plural
                 ("the '80s, 2000s", {}),
-                ('a 60s video, cut to 30s, 120s', {'60s': 'sixty seconds', '30s': 'thirty seconds',
+                ('a 60s video, cut to 30s, 120s', {'a 60s': 'a sixty second', '30s': 'thirty seconds',
                                                   '120s': 'one hundred twenty seconds'}),
                 ('1,000 px and 12,000.5', {})):
             self.assertEqual(voice.number_forms(text), want, text)
         lex = voice.lexicon_for([voice.Phrase('With --duration 60, a 0.4 s fade at 1:1.', ('t',))])
-        self.assertEqual(lex, {'--duration': 'duration', '0.4 s': 'zero point four seconds', '1:1': 'one by one'})
+        self.assertEqual(lex, {'--duration': 'duration', 'a 0.4 s': 'a zero point four second', '1:1': 'one by one'})
 
     def test_sentences(self):
         for subject, want in (('Count wrapped rows', 'This change counts wrapped rows.'),
@@ -385,14 +386,14 @@ class TestSynth(unittest.TestCase):
         lex = voice.lexicon_for(phrases)
         d = voice.script_dir(phrases, lex, 'bf_isabella')
         voice.synth(phrases, lex, 'bf_isabella', Engine(), d)
-        self.assertIn('zero point four seconds', ''.join(heard))
+        self.assertIn('zero point four second ', ''.join(heard))
         self.assertIn('sixteen by nine', ''.join(heard))
         self.assertIn('version zero point one point zero', ''.join(heard))
         self.assertEqual(vb.speech.load(os.path.join(d, '000.wav')).track.text, phrases[0].text)
         # how it is said is part of the clip's key: said otherwise, a new clip
         with mock.patch.dict(voice.UNITS, {'s': ('sec', 'secs')}):
             lex2 = voice.lexicon_for(phrases)
-        self.assertEqual(lex2['0.4 s'], 'zero point four secs')
+        self.assertEqual(lex2['A 0.4 s'], 'A zero point four sec')
         self.assertNotEqual(voice.script_dir(phrases, lex2, 'bf_isabella'), d)
 
     def test_cache(self):
