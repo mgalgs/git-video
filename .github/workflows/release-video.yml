@@ -1,7 +1,10 @@
 name: Release video
 
-# Every release carries its own `git video` of the commits since the
-# previous release, rendered by the release itself.
+# Every release carries its own narrated `git video` of the commits since
+# the previous release, rendered by the release itself. With the
+# CLAUDE_CODE_OAUTH_TOKEN secret, Claude Code writes the narration
+# (--narrator auto finds claude and the token); without it (a fork, say)
+# the heuristic narrator writes it from the commit messages.
 on:
   release:
     types: [published]
@@ -21,6 +24,9 @@ jobs:
     container: debian:trixie
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      CLAUDE_CODE_VERSION: 2.1.280
+      # Whether the secret is set, as 'true' or 'false': never the token itself.
+      HAVE_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
     steps:
       - name: Install system packages
         run: |
@@ -33,27 +39,62 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # No push-capable token in .git/config while the narrator reads the repository.
+          persist-credentials: false
 
+      # The narrator reads a worktree of the tag outside the workspace.
       - name: Trust the checkout
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        run: git config --global --add safe.directory '*'
 
       - name: Install git-video
         run: |
           python3 -m venv --system-site-packages /opt/venv
-          /opt/venv/bin/pip install .
+          /opt/venv/bin/pip install '.[speech]'
           echo /opt/venv/bin >> "$GITHUB_PATH"
+
+      - name: Install Claude Code
+        if: env.HAVE_CLAUDE == 'true'
+        run: |
+          apt-get install -y --no-install-recommends nodejs npm
+          npm install -g "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+          claude --version
 
       - name: Fetch the sound pack
         run: python -m videobuilder sfx fetch
 
+      - name: Cache the Kokoro model
+        id: kokoro
+        uses: actions/cache@v4
+        with:
+          path: /opt/kokoro
+          key: kokoro-v1.0.int8.onnx-voices-v1.0.bin
+
+      # /opt/kokoro is one of the directories videobuilder looks in.
+      - name: Fetch the Kokoro model
+        if: steps.kokoro.outputs.cache-hit != 'true'
+        run: |
+          python - <<'PY'
+          import os, urllib.request
+          from videobuilder.speech import MODEL_URL
+          os.makedirs('/opt/kokoro', exist_ok=True)
+          for name in ('kokoro-v1.0.int8.onnx', 'voices-v1.0.bin'):
+              print(f'fetching {MODEL_URL}{name}', flush=True)
+              urllib.request.urlretrieve(MODEL_URL + name, f'/opt/kokoro/{name}.part')
+              os.replace(f'/opt/kokoro/{name}.part', f'/opt/kokoro/{name}')
+          PY
+
+      # git-video narrates once for all three formats, and logs which
+      # narrator wrote the script and the timed script on stderr.
       - name: Render
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           prev=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
           if [ -z "$prev" ]; then
             prev=$(git rev-list --max-parents=0 "$TAG" | tail -n 1)
           fi
           echo "rendering $prev..$TAG"
-          python -m git_video "$prev..$TAG" --format all --duration 60 --quality small -o "git-video-$TAG.mp4" | tee rendered.txt
+          python -m git_video "$prev..$TAG" --voice --narrator auto --format all --duration 60 --quality small -o "git-video-$TAG.mp4" | tee rendered.txt
 
       - name: Attach to the release
         env:

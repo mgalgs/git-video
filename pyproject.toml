@@ -15,6 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 voice = ["videobuilder[speech]"]
+speech = ["videobuilder[speech]"]
 
 [project.scripts]
 git-video = "git_video.cli:main"

@@ -135,6 +135,9 @@ by `python man/mkman.py`; a test fails when it is out of date.
 pip install 'git-video[voice] @ git+https://github.com/mgalgs/git-video'
 ```
 
+(`speech` is the same extra under videobuilder's name; the release
+workflow installs that one and caches Kokoro's files in `/opt/kokoro`.)
+
 Without them `--voice` stops before rendering and says what to install and
 where videobuilder looks for the model files (`$VIDEOBUILDER_KOKORO_DIR` or
 `~/.cache/kokoro`).

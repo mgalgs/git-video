@@ -114,8 +114,28 @@ class TestCli(unittest.TestCase):
         with open(os.path.join(ROOT, '.github', 'workflows', 'release-video.yml')) as f:
             text = f.read()
         (line,) = [x for x in text.splitlines() if 'python -m git_video' in x]
-        self.assertIn('--format all --duration 60 --quality small', line)
+        self.assertIn('--voice --narrator auto --format all --duration 60 --quality small', line)
         self.assertIn('container: debian:trixie', text)
+
+    def test_release_workflow_credentials(self):
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest('PyYAML not installed')
+        with open(os.path.join(ROOT, '.github', 'workflows', 'release-video.yml')) as f:
+            text = f.read()
+        steps = yaml.safe_load(text)['jobs']['video']['steps']
+        checkout = next(s for s in steps if s.get('uses', '').startswith('actions/checkout'))
+        self.assertIs(checkout['with']['persist-credentials'], False)
+        env = {s['name']: s.get('env', {}) for s in steps if 'name' in s}
+        self.assertEqual([n for n, e in env.items() if 'GH_TOKEN' in e], ['Attach to the release'])
+        self.assertEqual([n for n, e in env.items() if 'CLAUDE_CODE_OAUTH_TOKEN' in e], ['Render'])
+        self.assertEqual(text.count('secrets.CLAUDE_CODE_OAUTH_TOKEN }}'), 1)   # the Render step's, and only it
+        self.assertNotRegex(text, r'(echo|printf|cat)[^\n]*CLAUDE_CODE_OAUTH_TOKEN')
+        install = next(s for s in steps if s.get('name') == 'Install Claude Code')
+        self.assertEqual(install['if'], "env.HAVE_CLAUDE == 'true'")      # only with the secret
+        self.assertRegex(yaml.safe_load(text)['jobs']['video']['env']['CLAUDE_CODE_VERSION'], r'^\d+\.\d+\.\d+$')
+        self.assertIn("pip install '.[speech]'", text)
 
     def test_module_entry(self):
         r = subprocess.run([sys.executable, '-m', 'git_video', '--help'], cwd=ROOT, capture_output=True, text=True)
