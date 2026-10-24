@@ -12,6 +12,12 @@ from tests.test_cli import quiet
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TARGETS = (15, 30, 60, 120)
+# TestTolerance's full matrix (mode x series x voice x target) takes minutes, so by default it runs only these
+# (mode, series, voice, target) combinations: each mode with a short and a long target, series and voice each on and off
+SLOW = os.environ.get('GIT_VIDEO_SLOW_TESTS') == '1'
+FULL = [(m, s, v, t) for m in ('tour', 'develop') for s in (False, True) for v in (False, True) for t in TARGETS]
+SAMPLE = [('tour', False, False, 15), ('tour', True, True, 120), ('develop', False, False, 120),
+          ('develop', True, True, 15)]
 
 
 def plan_json(repo, rev, *extra):
@@ -252,25 +258,29 @@ class TestTolerance(unittest.TestCase):
                              (mode, series, voice, target, p['total']))
         return p
 
-    def matrix(self, cases, voices, serieses):
-        for mode in ('tour', 'develop'):
-            for series in serieses:
-                for voice in voices:
-                    for target in TARGETS:
-                        repo, rev = cases(series, target)
-                        with self.subTest(mode=mode, series=series, voice=voice, target=target):
-                            self.check(repo, rev, mode, series, voice, target)
+    def matrix(self, cases, combos):
+        for mode, series, voice, target in combos:
+            repo, rev = cases(series, target)
+            with self.subTest(mode=mode, series=series, voice=voice, target=target):
+                self.check(repo, rev, mode, series, voice, target)
 
-    def test_fixture_matrix(self):
+    def fixture_cases(self):
         whole = f'{self.shas[0]}..{self.shas[-1]}'
 
         def cases(series, target):
             if not series and target <= 30:
                 return self.repo, self.sha['change']
             return self.series, whole
-        self.matrix(cases, (False, True), (False, True))
+        return cases
 
-    def test_this_repos_history(self):
+    def test_fixture_sample(self):
+        self.matrix(self.fixture_cases(), SAMPLE)
+
+    @unittest.skipUnless(SLOW, 'full matrix: set GIT_VIDEO_SLOW_TESTS=1')
+    def test_fixture_matrix(self):
+        self.matrix(self.fixture_cases(), FULL)
+
+    def history(self, combos):
         # straight through plan.build, one collected change for every target (the scores are computed once)
         revs = subprocess.run(['git', '-C', ROOT, 'rev-list', '--max-parents=0', 'HEAD'], capture_output=True,
                               text=True).stdout.split()
@@ -280,14 +290,18 @@ class TestTolerance(unittest.TestCase):
             self.skipTest('not a git checkout with history')
         whole = collect.collect(ROOT, f'{revs[-1]}..HEAD')
         combined, patches = collect.series(ROOT, 'HEAD~12..HEAD')
-        for mode in ('tour', 'develop'):
-            for series in (False, True):
-                for voice in (False, True):
-                    ch, ps = (combined, patches) if series else (whole, [whole])
-                    for target in TARGETS:
-                        with self.subTest(mode=mode, series=series, voice=voice, target=target):
-                            p = self.build(ch, ps, mode, voice, target)
-                            self.assertLessEqual(abs(p.total - target), condense.tolerance(target), p.total)
+        for mode, series, voice, target in combos:
+            ch, ps = (combined, patches) if series else (whole, [whole])
+            with self.subTest(mode=mode, series=series, voice=voice, target=target):
+                p = self.build(ch, ps, mode, voice, target)
+                self.assertLessEqual(abs(p.total - target), condense.tolerance(target), p.total)
+
+    def test_this_repos_history_sample(self):
+        self.history(SAMPLE)
+
+    @unittest.skipUnless(SLOW, 'full matrix: set GIT_VIDEO_SLOW_TESTS=1')
+    def test_this_repos_history(self):
+        self.history(FULL)
 
     def build(self, change, patches, mode, voice, target):
         from git_video import voice as voicemod
