@@ -170,7 +170,10 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
   free space three rows from point, in either mode, sits over the commit
   text in that panel instead, its line still running to the words). For a
   range, each hunk uses the message of the commit that last touched it
-  (`git blame` within the range).
+  (`git blame` within the range). A beat of more than three commits (a
+  range, or a `--series` beat of merged small commits) gets none: no one
+  message speaks for its squashed diff. With `--voice`, the fork-sandbox
+  narrator chooses the callouts instead (see below).
 - A call graph in the side bar (16:9 and 9:16): the definitions the change
   touches and the ones the tour dives into, linked by the dives and by calls
   on changed lines, growing as the tour finds them; edges run in lanes
@@ -233,7 +236,12 @@ the commit messages, the limits and the plan's shots, each with an id) and
 runs [fork-sandbox](https://github.com/mgalgs/fork-sandbox) on it, blocking:
 an agent session in a sandboxed clone of the repository, checked out at the
 change, reads the diff and the code around it and writes the script, each
-phrase anchored to a shot id. It commits nothing, so the repository is left
+phrase anchored to a shot id. It also chooses the callout cards: at most
+two per hunk, each its own line of at most 12 words about why the hunk is
+shaped the way it is. Its cards replace the commit sentences for the whole
+video, and an empty list means no cards; an answer without the field keeps
+the commit sentences, and a card on anything but a hunk is dropped with a
+warning. It commits nothing, so the repository is left
 as it was; its run dir is left in place and named at the end, so its work
 can be read. `GIT_VIDEO_NARRATOR_MODEL` sets the model (default `opus`) and
 `GIT_VIDEO_NARRATOR_ARGS` adds fork-sandbox options (shell-split), say
@@ -369,8 +377,8 @@ target on the current branch (or null), and the call `graph` (`nodes` and
 A `hunk` shot carries `focus` (its changed line span), `scroll` (`near` or
 `far`), `morph` (null, or when it starts, how long it takes and its
 `segments`: the old lines, how many new lines replace them and word-level
-`ops`), `callouts` (the commit sentences shown, with their times and the
-words they point at) and `node` (its call-graph node). An `xref-push` shot
+`ops`), `callouts` (the commit sentences shown, or the narrator's cards,
+with their times and the words they point at) and `node` (its call-graph node). An `xref-push` shot
 carries its `node` and `edge`.
 
 The plan also says its `mode` and lists its `patches` (one without

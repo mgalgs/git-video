@@ -820,20 +820,23 @@ def place(plan, phrases, seconds, voice, out_dir, lexicon):
 def narrate(change, patches, verbose, mode, engine, name, narrate_with=None, duration=None):
     """The plan of `change` narrated in voice `name`: the script (written by
     `narrate_with(plan)`, a narrator.Narrator, else the heuristic `script`)
-    cut to the narrator limits, said (or found in the cache), and placed on
+    cut to the narrator limits, the callout cards the narrator chose (its
+    `callouts`) in place of the commit sentences, said (or found in the cache), and placed on
     its shots. With a `duration`, the narrated plan keeps to the target:
     narrated shots take their time from the rest, and if that is not enough
     middle phrases are dropped (the opening and the closing never)."""
     first = planmod.build(change, verbose, mode, patches, duration=duration)
     phrases = narrate_with(first) if narrate_with else script(first, patches)
     phrases = narrator.trim(phrases, first, strict=False)
+    callouts = getattr(narrate_with, 'callouts', None)   # the narrator's cards, else the commit sentences
     while True:
         lexicon = lexicon_for(phrases)
         out_dir = script_dir(phrases, lexicon, name)
         seconds = synth(phrases, lexicon, name, engine, out_dir)
         # Again, each shot as long as its phrases need: the same shots, so the
         # same keys (they do not depend on how long shots are).
-        final = planmod.build(change, verbose, mode, patches, voice=Timed(phrases, seconds), duration=duration)
+        final = planmod.build(change, verbose, mode, patches, voice=Timed(phrases, seconds), duration=duration,
+                              callouts=callouts)
         kept = narrator.trim(phrases, first, seconds, final.total, strict=False)   # too much speech: say less
         if kept == phrases and duration is not None and len(phrases) > 1:
             from .condense import tolerance

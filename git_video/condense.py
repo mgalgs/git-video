@@ -291,10 +291,11 @@ def _enters_min(n_files):
     return 0.0 if not n_files else LIMITS['dive'][0] + (n_files - 1) * LIMITS['travel'][0]
 
 
-def body(change, verbose, mode, k, voice, budget, xrefs):
+def body(change, verbose, mode, k, voice, budget, xrefs, callouts=None):
     """Patch k's body condensed to `budget` seconds: (shots, patch entry
     fields, develop's written times, xref dives used). `xrefs` is how many
-    dives it may make (None: the --verbose budget)."""
+    dives it may make (None: the --verbose budget); the narrator's
+    `callouts` ({phrase key: [text]}), when given, go on what is kept."""
     scores = score_hunks(change)
     items = _tour_items(change, verbose, k, scores) if mode == 'tour' else _develop_items(change, verbose, scores)
     ids = select(items, budget)
@@ -306,14 +307,16 @@ def body(change, verbose, mode, k, voice, budget, xrefs):
         xrefs = fit if xrefs is None else min(xrefs, fit)
         if verbose == 0 and xrefs is not None:
             xrefs = min(xrefs, 1)
-    def run(keep, voice):
+    def run(keep, voice, callouts=None):
         if mode == 'tour':
-            return P._tour_body(change, verbose, k, voice, keep=keep, xref_cap=xrefs), {}, {}
+            return P._tour_body(change, verbose, k, voice, keep=keep, xref_cap=xrefs, callouts=callouts), {}, {}
         enters = P.DIVE_DUR + (len(keep) - 1) * P.TRAVEL_DUR if keep else 0.0
-        return P._develop_body(change, verbose, k, voice, keep=keep, budget=max(1.0, budget - enters), duration=True)
+        return P._develop_body(change, verbose, k, voice, keep=keep, budget=max(1.0, budget - enters), duration=True,
+                               callouts=callouts)
 
-    # What is kept does not depend on the voice, so a narrated plan has the
-    # same shots as the plan its script was written for.
+    # What is kept depends on neither the voice nor the narrator's callouts,
+    # so a narrated plan has the same shots as the plan its script was
+    # written for.
     for _ in range(FIT_TRIES):
         keep = _keep_of(items, ids)
         shots, fields, written = run(keep, None)
@@ -326,8 +329,8 @@ def body(change, verbose, mode, k, voice, budget, xrefs):
             continue
         worst = min((it for it in items if it['id'] in ids), key=lambda x: (x['score'], -x['order']))
         ids.discard(worst['id'])
-    if voice is not None:
-        shots, fields, written = run(keep, voice)
+    if voice is not None or callouts is not None:
+        shots, fields, written = run(keep, voice, callouts)
     used = sum(1 for s in shots if s['kind'] == 'xref-push')
     visited = set(files)
     kept = {}

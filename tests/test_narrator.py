@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import re
@@ -90,6 +91,154 @@ class TestFormat(unittest.TestCase):
         for name, text in bad.items():
             with self.assertRaises(narrator.NarratorError, msg=name):
                 narrator.parse(text, self.tour, [self.change])
+
+
+class TestCallouts(unittest.TestCase):
+    """The narrator's callout cards: `read` takes them from the answer, and
+    the plan shows them in place of the commit sentences."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        repo, cls.sha = fixtures.make_callout_repo(cls.tmp.name)
+        cls.change = collect.collect(repo, cls.sha['head'])
+        cls.tour = plan.build(cls.change, 0, 'tour')
+        cls.rows = narrator.shot_rows(cls.tour, [cls.change])
+        cls.hunks = [r for r in cls.rows if r.key[0] == 'hunk']
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def answer(self, callouts=None):
+        doc = {'phrases': [{'shot': 's0', 'text': 'Both helpers now scale.'}]}
+        if callouts is not None:
+            doc['callouts'] = callouts
+        return json.dumps(doc)
+
+    def test_absent_keeps_the_commit_sentences(self):
+        phrases, callouts = narrator.read(self.answer(), self.tour, [self.change])
+        self.assertIsNone(callouts)
+        self.assertEqual(narrator.parse(self.answer(), self.tour, [self.change]), phrases)
+        p = plan.build(self.change, 0, 'tour', callouts=callouts)
+        self.assertEqual([[c['text'] for c in s['callouts']] for s in p.shots if s['kind'] == 'hunk'],
+                         [['frob() now doubles its input.'],
+                          ['The helper other() returns three times its input, so callers keep their scale.']])
+
+    def test_empty_shows_none(self):
+        _, callouts = narrator.read(self.answer([]), self.tour, [self.change])
+        self.assertEqual(callouts, {})
+        p = plan.build(self.change, 0, 'tour', callouts=callouts)
+        hunks = [s for s in p.shots if s['kind'] == 'hunk']
+        self.assertEqual([s['callouts'] for s in hunks], [[], []])
+        self.assertEqual(hunks[0]['dur'], round(plan.hunk_dwell(1, morph=True), 3))
+
+    def test_used_in_place_of_the_commit_sentences(self):
+        one, two = self.hunks
+        log = io.StringIO()
+        _, callouts = narrator.read(self.answer([{'shot': one.id, 'text': '  Doubling keeps the scale\n even.'},
+                                                 {'shot': one.id, 'text': 'A second card.'}]),
+                                    self.tour, [self.change], log)
+        self.assertEqual(callouts, {one.key: ['Doubling keeps the scale even.', 'A second card.']})
+        self.assertEqual(log.getvalue(), '')
+        p = plan.build(self.change, 0, 'tour', callouts=callouts)
+        a, b = [s for s in p.shots if s['kind'] == 'hunk']
+        self.assertEqual([c['text'] for c in a['callouts']], callouts[one.key])
+        self.assertEqual(b['callouts'], [])
+        c = a['callouts'][0]
+        self.assertEqual(c['commit'], p.commit['short'])
+        f = self.change.files[0]
+        line = f.hunks[0].added[0][0]   # no word to point at: the first changed line's text
+        text = f.text.split('\n')[line - 1]
+        self.assertEqual((c['line'], c['col'], c['len']), (line, 4, len(text.strip())))
+        self.assertEqual(a['dur'], round(plan.hunk_dwell(1, morph=True, callouts=2), 3))
+        again = narrator.dump(narrator.parse(self.answer(), self.tour, [self.change]), self.tour, [self.change],
+                              callouts)
+        self.assertEqual(narrator.read(again, self.tour, [self.change])[1], callouts)
+
+    def test_bad_cards_are_dropped(self):
+        one, _ = self.hunks
+        log = io.StringIO()
+        _, callouts = narrator.read(self.answer([
+            {'shot': 's0', 'text': 'On the title card.'},
+            {'shot': 's999', 'text': 'No such shot.'},
+            {'shot': one.id, 'text': ' '},
+            {'shot': one.id, 'text': ' '.join(['word'] * (narrator.CALLOUT_WORDS + 1))},
+            {'shot': one.id, 'text': 'Kept.'}, {'shot': one.id, 'text': 'Kept too.'},
+            {'shot': one.id, 'text': 'One too many.'}, 'not a card']), self.tour, [self.change], log)
+        self.assertEqual(callouts, {one.key: ['Kept.', 'Kept too.']})
+        warnings = log.getvalue().splitlines()
+        self.assertEqual(len(warnings), 6)
+        self.assertTrue(all(w.startswith('git video: warning: narrator callout') for w in warnings))
+        self.assertIn("'s0' is not a hunk shot", warnings[0])
+        self.assertIn("'s999' is not a hunk shot", warnings[1])
+
+    def test_develop(self):
+        dev = plan.build(self.change, 0, 'develop')
+        rows = [r for r in narrator.shot_rows(dev, [self.change]) if r.key[0] == 'edit']
+        _, callouts = narrator.read(self.answer([{'shot': rows[1].id, 'text': 'Tripling keeps callers in scale.'}]),
+                                    dev, [self.change])
+        p = plan.build(self.change, 0, 'develop', callouts=callouts)
+        (s,) = [s for s in p.shots if s['kind'] == 'edit']
+        self.assertEqual([(c['text'], c['hunk']) for c in s['callouts']],
+                         [('Tripling keeps callers in scale.', rows[1].key[3])])
+
+    def test_voiced_plan_shows_them(self):
+        one, _ = self.hunks
+
+        class Writer:
+            callouts = {one.key: ['Doubling keeps the scale even.']}
+
+            def __call__(self, p):
+                return [P('Both helpers now scale.', ('title',)), P('Doubling, that is.', one.key)]
+
+        with mock.patch.dict(os.environ, {'XDG_CACHE_HOME': os.path.join(self.tmp.name, 'cache')}):
+            p = voice.narrate(self.change, [self.change], 0, 'tour', fixtures.FakeEngine(), 'bf_isabella', Writer())
+        hunks = [s for s in p.shots if s['kind'] == 'hunk']
+        self.assertEqual([[c['text'] for c in s['callouts']] for s in hunks], [['Doubling keeps the scale even.'], []])
+        said = next(q for q in p.voice['phrases'] if q['text'] == 'Doubling, that is.')
+        self.assertEqual(p.shots[said['shot']], hunks[0])
+        self.assertIn('Doubling keeps the scale even.', json.loads(p.to_json())['shots'][said['shot']]['callouts'][0]['text'])
+
+
+class TestHeuristicCutOff(unittest.TestCase):
+    """No commit-sentence callouts on a beat of more than three commits."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.repo, cls.shas = fixtures.make_series_repo(cls.tmp.name, n=5)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def cards(self, p):
+        return [c['text'] for s in p.shots for c in s.get('callouts') or ()]
+
+    def test_range(self):
+        for mode in ('tour', 'develop'):
+            three = collect.collect(self.repo, f'{self.shas[1]}..{self.shas[4]}')
+            four = collect.collect(self.repo, f'{self.shas[1]}..{self.shas[5]}')
+            self.assertEqual(len(three.commits), 3)
+            self.assertTrue(self.cards(plan.build(three, 0, mode)), mode)
+            self.assertEqual(self.cards(plan.build(four, 0, mode)), [], mode)
+            self.assertEqual(self.cards(plan.build(four, 0, mode, duration=30)), [], mode)
+            self.assertEqual(plan.develop_sentences(four), {})
+
+    def test_series(self):
+        from git_video import condense
+        change, patches = collect.series(self.repo, f'{self.shas[0]}..{self.shas[5]}')
+        p = plan.build(change, 0, 'tour', patches)
+        per = [[c['text'] for s in p.shots if s.get('patch') == k for c in s.get('callouts') or ()]
+               for k in range(len(patches))]
+        self.assertTrue(all(per), per)   # a single-commit beat keeps its callouts
+        merged = condense.merge_series(patches, 1)
+        self.assertEqual(merged[0].merged, 5)
+        self.assertFalse(plan.callouts_matched(merged[0]))
+        merged = condense.merge_series(patches[:3], 1)
+        self.assertEqual(merged[0].merged, 3)
+        self.assertTrue(plan.callouts_matched(merged[0]))
 
 
 class TestLimits(unittest.TestCase):
@@ -209,10 +358,15 @@ class TestBrief(unittest.TestCase):
         self.assertIn(f'at most\n{most} phrases', text)
         self.assertIn(f'about {speech}\nseconds', text)
         self.assertIn(narrator.shot_table(narrator.shot_rows(p, [ch])), text)
-        self.assertNotRegex(text, r'\{(range|commits|base|tip|max_phrases|max_speech_s|max_words|length|shot_table)\}')
+        self.assertNotRegex(text, r'\{(range|commits|base|tip|max_phrases|max_speech_s|max_words|length|shot_table|'
+                                  r'max_callouts|callout_words)\}')
         self.assertIn(f'about {round(p.total)} seconds long', text)
         self.assertIn('each at most 35 words', text)
-        self.assertIn('{"phrases": [{"shot": "<shot id>", "text": "<what to say>"}]}', text)
+        self.assertIn('{"phrases": [{"shot": "<shot id>", "text": "<what to say>"}],\n'
+                      ' "callouts": [{"shot": "<hunk shot id>", "text": "<card text>"}]}', text)
+        self.assertIn(f'at most {plan.CALLOUT_MAX_PER_HUNK} cards', text)
+        self.assertIn(f'at most\n{narrator.CALLOUT_WORDS} words', text)
+        self.assertIn('"callouts": []', text)
         self.assertIn('Do not change or\ncommit anything', text)
 
     def test_range(self):

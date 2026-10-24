@@ -64,6 +64,7 @@ FOCUS_OUT = 0.3           # ... and comes back up before the shot ends
 CALLOUT_IN = 0.8          # a commit sentence's card fades in and its line runs to the words
 CALLOUT_EACH = 2.6        # each callout stays at least this long (the hunk's read grows to fit)
 CALLOUT_MAX_PER_HUNK = 2
+CALLOUT_MAX_COMMITS = 3   # a beat of more commits than this gets no commit-sentence callouts
 INTER_DUR = 2.6           # the card between two patches of a --series ...
 INTER_REVEAL = 1.2        # ... the next patch's card comes to the top of the deck over this long
 
@@ -347,6 +348,30 @@ def _match_callouts(change, hunks):
     return chosen
 
 
+def callouts_matched(change):
+    """Whether the commit sentences of `change` are matched to its hunks as
+    callouts: not on a beat of more than CALLOUT_MAX_COMMITS commits (a long
+    range, or a merged --series beat), whose squashed diff no one message
+    speaks for."""
+    return max(len(change.commits), change.merged) <= CALLOUT_MAX_COMMITS
+
+
+def _chosen(change, hunks, keys, given=None):
+    """`_match_callouts` of `hunks` ((file, hunk) pairs), or with `given`
+    ({phrase key: [card text]}, the narrator's callouts) those instead, each
+    hunk's by its key in `keys`: a card names no word, so it is placed as a
+    sentence that matched none would be."""
+    if given is None:
+        return _match_callouts(change, hunks) if callouts_matched(change) else {}
+    by_sha = {c.sha: c for c in change.commits}
+    out = {}
+    for k, ((_, h), key) in enumerate(zip(hunks, keys)):
+        c = by_sha.get(h.commit, change.commits[-1])
+        for n, text in enumerate(given.get(key) or ()):
+            out.setdefault(k, []).append((n, 0, None, text, c))
+    return out
+
+
 def _picks(matched):
     """The best CALLOUT_MAX_PER_HUNK of a hunk's matched sentences, in the
     order the message gives them."""
@@ -358,17 +383,19 @@ def develop_sentences(change):
     say over each hunk of `change` (before any is dropped for being too
     short on screen)."""
     pairs = [(f, hi) for f in order_files(change) if f.text is not None for hi in range(len(f.hunks))]
-    chosen = _match_callouts(change, [(f, f.hunks[hi]) for f, hi in pairs])
+    chosen = _match_callouts(change, [(f, f.hunks[hi]) for f, hi in pairs]) if callouts_matched(change) else {}
     return {(pairs[k][0].path, pairs[k][1]): [x[3] for x in _picks(v)] for k, v in chosen.items()}
 
 
-def _place_callouts(change, shots, readings, voice=None):
+def _place_callouts(change, shots, readings, voice=None, given=None):
     """Give each hunk shot the commit sentences that explain it (`callouts`),
-    each with its time on screen and the words its line points at, and stretch
+    or the narrator's cards for it when `given` ({phrase key: [text]}), each
+    with its time on screen and the words its line points at, and stretch
     the hunk's read to fit them. A range uses each hunk's own commit. With a
     `voice` (voice.Timed), the shot lasts at least as long as what is said
     over it, and each callout comes up as its sentence is said."""
-    chosen = _match_callouts(change, [(f, h) for _, f, h, _, _ in readings])
+    chosen = _chosen(change, [(f, h) for _, f, h, _, _ in readings],
+                     [shot_key(shots[si]) for si, _, _, _, _ in readings], given)
     for k, (si, f, h, top, visible) in enumerate(readings):
         s = shots[si]
         picks = _picks(chosen.get(k, []))
@@ -428,12 +455,13 @@ def patch_entry(change, first_shot):
             'first_shot': first_shot, 'target': None, 'hunks': None, 'kept': None, 'left_out': []}
 
 
-def _tour_body(change, verbose, patch, voice=None, keep=None, xref_cap=None):
+def _tour_body(change, verbose, patch, voice=None, keep=None, xref_cap=None, callouts=None):
     """The tour of one change: per file an `enter` (resolved later) and its hunk
-    shots, the commit sentences placed, the xref visits inserted after their
-    hunks. Shot indices in the body are its own, from 0. With `keep`
-    ({path: hunk indices}, --duration) only those hunks are shown and only
-    their files visited; `xref_cap` holds the visits to that many."""
+    shots, the commit sentences (or the narrator's `callouts`) placed, the
+    xref visits inserted after their hunks. Shot indices in the body are its
+    own, from 0. With `keep` ({path: hunk indices}, --duration) only those
+    hunks are shown and only their files visited; `xref_cap` holds the
+    visits to that many."""
     shots = []
     hunk_shots = 0
     hunks = []   # (index into shots of the hunk shot, file, candidates)
@@ -478,7 +506,7 @@ def _tour_body(change, verbose, patch, voice=None, keep=None, xref_cap=None):
             readings.append((len(shots) - 1, f, h, top, len(visible)))
             pickable = [n for n in visible if n <= top + XREF_ROWS]
             hunks.append((len(shots) - 1, f, top, _hunk_candidates(change, f, top, pickable)))
-    _place_callouts(change, shots, readings, voice)
+    _place_callouts(change, shots, readings, voice, callouts)
 
     # Xref visits, within the --verbose budget, inserted after their hunk.
     total, per_file, per_hunk = _budget(verbose)
@@ -738,14 +766,16 @@ def _voice_holds(sc, clock, voice, key):
     return clk, dur, span, added
 
 
-def _develop_body(change, verbose, patch, voice=None, keep=None, budget=None, duration=False):
+def _develop_body(change, verbose, patch, voice=None, keep=None, budget=None, duration=False, callouts=None):
     """Develop mode for one change: per file (in `order_files` order) an
     `enter` and an `edit` shot playing its edit script, paced to the budget.
     Returns (shots, patch fields, {id(edit shot): {new line: time on screen it
     is written}}). With --duration (`duration` true): only the files in `keep`
     ({path: hunk indices}) are performed, their other hunks applied in a step
     each run of them; `budget` is what the performance aims at, typing at
-    most at --verbose 2's pace, and the voice's holds come out of it."""
+    most at --verbose 2's pace, and the voice's holds come out of it. The
+    narrator's `callouts` ({phrase key: [text]}) replace the commit
+    sentences when given."""
     files = order_files(change)
     if keep is not None:
         files = [f for f in files if f.path in keep]
@@ -774,8 +804,9 @@ def _develop_body(change, verbose, patch, voice=None, keep=None, budget=None, du
         target = budget - held
     if hold is not None:
         clocks = [hold(sc, c, f) for f, sc, c in zip(files, scripts, clocks)]
-    chosen = _match_callouts(change, [(f, h) for f in files if f.text is not None for h in f.hunks])
     keys = [(fi, hi) for fi, f in enumerate(files) if f.text is not None for hi in range(len(f.hunks))]
+    chosen = _chosen(change, [(files[fi], files[fi].hunks[hi]) for fi, hi in keys],
+                     [('edit', patch, files[fi].path, hi) for fi, hi in keys], callouts)
     shots, written, done = [], {}, 0
     for fi, (f, sc) in enumerate(zip(files, scripts)):
         clk, dur, span, _ = clocks[fi]
@@ -827,12 +858,14 @@ def _develop_body(change, verbose, patch, voice=None, keep=None, budget=None, du
                    'perf': perf, 'speed': s0, 'peak': peak}, written
 
 
-def build(change, verbose=0, mode='tour', patches=None, voice=None, duration=None):
+def build(change, verbose=0, mode='tour', patches=None, voice=None, duration=None, callouts=None):
     """The Plan of `change` in `mode`: a tour, or with `patches` (the change's
     commits as changes of their own, oldest first) one tour per patch. With a
     `voice` (voice.Timed: the narration's phrases and their lengths), every
     shot lasts at least as long as what is said over it. With a `duration`
-    (seconds), the plan is condensed to about that long (condense)."""
+    (seconds), the plan is condensed to about that long (condense). With
+    `callouts` ({phrase key: [card text]}, the narrator's), those are the
+    hunks' callouts rather than the commit sentences matched to them."""
     patches = patches or [change]
     files = file_entries(change)
     name = repo_name(change.repo)
@@ -852,16 +885,16 @@ def build(change, verbose=0, mode='tour', patches=None, voice=None, duration=Non
         if k:
             shots.append(_stretch(shot('card', 'patch', INTER_DUR, patch=k), voice, VOICE_PATCH_AT))
         if duration is not None:
-            body, fields, w, used = condense.body(ch, verbose, mode, k, voice, budgets[k], xrefs)
+            body, fields, w, used = condense.body(ch, verbose, mode, k, voice, budgets[k], xrefs, callouts)
             entries[-1].update(fields)
             written.update(w)
             xrefs = None if xrefs is None else xrefs - used
         elif mode == 'develop':
-            body, fields, w = _develop_body(ch, verbose, k, voice)
+            body, fields, w = _develop_body(ch, verbose, k, voice, callouts=callouts)
             entries[-1].update(fields)
             written.update(w)
         else:
-            body = _tour_body(ch, verbose, k, voice)
+            body = _tour_body(ch, verbose, k, voice, callouts=callouts)
         shots += body
     shots.append(_stretch(shot('card', 'end', END_DUR, patch=len(patches) - 1), voice, VOICE_END_AT))
     out = _resolve_enters(shots, tiled, voice)   # one shot per shot: each patch's first_shot still holds

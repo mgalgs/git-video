@@ -29,6 +29,7 @@ MIN_WORDS = 12
 SPEECH_SHARE = 0.45        # ... and all of them at most this share of the voiced film
 WORDS_PER_SECOND = 2.5     # speech, for the brief's budget in seconds
 PER_SHOT = 2               # phrases said over one shot (or edit-shot hunk), at most
+CALLOUT_WORDS = 12         # a narrator's callout card, at most this many words
 
 
 class NarratorError(RuntimeError):
@@ -277,11 +278,26 @@ def trim(phrases, plan, seconds=None, total=None, strict=True):
 
 
 # ---- a script as JSON ----
-def parse(text, plan, patches):
-    """[voice.Phrase] from a narrator's `{"phrases": [{"shot", "text"}]}`, its
-    shot ids those of `shot_rows`; a phrase's slot is its place among its
-    shot's. NarratorError for anything else (not JSON, an unknown shot id,
-    an empty text), or a script `trim` cannot save."""
+def _warn(log, what):
+    print(f'git video: warning: narrator {what}', file=log if log is not None else sys.stderr)
+
+
+def parse(text, plan, patches, log=None):
+    """[voice.Phrase] from a narrator's `{"phrases": [{"shot", "text"}]}`
+    (`read`, without its callouts)."""
+    return read(text, plan, patches, log)[0]
+
+
+def read(text, plan, patches, log=None):
+    """([voice.Phrase], callouts) from a narrator's `{"phrases": [{"shot",
+    "text"}], "callouts": [{"shot", "text"}]}`, its shot ids those of
+    `shot_rows`; a phrase's slot is its place among its shot's. The callouts
+    ({phrase key: [card text]}) are None when the answer has no "callouts"
+    (the commit sentences stay), else they replace them: an empty list
+    means no cards at all. A card not on a hunk shot, empty, over
+    CALLOUT_WORDS words or past CALLOUT_MAX_PER_HUNK on its hunk is dropped
+    with a warning to `log`. NarratorError for a bad phrase (not JSON, an
+    unknown shot id, an empty text), or a script `trim` cannot save."""
     from . import voice
     try:
         doc = json.loads(text)
@@ -290,7 +306,8 @@ def parse(text, plan, patches):
     items = doc.get('phrases') if isinstance(doc, dict) else None
     if not isinstance(items, list) or not items:
         raise NarratorError('no "phrases" list')
-    ids = {r.id: r.key for r in shot_rows(plan, patches)}
+    rows = shot_rows(plan, patches)
+    ids = {r.id: r.key for r in rows}
     out, slots = [], {}
     for n, it in enumerate(items):
         if not isinstance(it, dict) or not isinstance(it.get('shot'), str) or not isinstance(it.get('text'), str):
@@ -305,14 +322,42 @@ def parse(text, plan, patches):
         key = ids[it['shot']]
         slots[key] = slots.get(key, -1) + 1
         out.append(voice.Phrase(text, key, slots[key]))
-    return trim(out, plan)
+    return trim(out, plan), _callouts(doc.get('callouts'), rows, log)
 
 
-def dump(phrases, plan, patches):
-    """`phrases` as `parse` reads them."""
+def _callouts(items, rows, log):
+    """{phrase key: [card text]} of a narrator's "callouts" (None without
+    any), each on a hunk shot (or an edit shot's hunk) of `rows`."""
+    if items is None:
+        return None
+    if not isinstance(items, list):
+        _warn(log, 'callouts dropped: "callouts" is not a list')
+        return {}
+    hunks = {r.id: r.key for r in rows if r.key[0] in ('hunk', 'edit')}
+    out = {}
+    for n, it in enumerate(items):
+        shot = it.get('shot') if isinstance(it, dict) else None
+        text = ' '.join(it['text'].split()) if isinstance(it, dict) and isinstance(it.get('text'), str) else ''
+        if shot not in hunks:
+            _warn(log, f'callout {n + 1} dropped: {shot!r} is not a hunk shot')
+        elif not re.search(r'[A-Za-z]', text):
+            _warn(log, f'callout {n + 1} dropped: nothing to show')
+        elif words(text) > CALLOUT_WORDS:
+            _warn(log, f'callout {n + 1} dropped: {words(text)} words, more than {CALLOUT_WORDS}')
+        elif len(out.get(hunks[shot], ())) >= planmod.CALLOUT_MAX_PER_HUNK:
+            _warn(log, f'callout {n + 1} dropped: more than {planmod.CALLOUT_MAX_PER_HUNK} on {shot}')
+        else:
+            out.setdefault(hunks[shot], []).append(text)
+    return out
+
+
+def dump(phrases, plan, patches, callouts=None):
+    """`phrases` (and the narrator's `callouts`, when there are) as `read` reads them."""
     ids = {r.key: r.id for r in shot_rows(plan, patches)}
-    return json.dumps({'phrases': [{'shot': ids[p.key], 'text': p.text} for p in phrases]}, indent=1,
-                      ensure_ascii=False)
+    doc = {'phrases': [{'shot': ids[p.key], 'text': p.text} for p in phrases]}
+    if callouts is not None:
+        doc['callouts'] = [{'shot': ids[key], 'text': t} for key, ts in callouts.items() if key in ids for t in ts]
+    return json.dumps(doc, indent=1, ensure_ascii=False)
 
 
 def timed_script(plan):
@@ -327,7 +372,8 @@ def timed_script(plan):
 
 # ---- the brief ----
 BRIEF = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'narrator_brief.md')
-_SLOT = re.compile(r'\{(range|commits|base|tip|max_phrases|max_speech_s|max_words|length|shot_table)\}')
+_SLOT = re.compile(r'\{(range|commits|base|tip|max_phrases|max_speech_s|max_words|length|shot_table|'
+                   r'max_callouts|callout_words)\}')
 
 
 def _indent(text, by='    '):
@@ -350,7 +396,8 @@ def brief(change, plan, patches):
     slots = {'range': what, 'commits': msgs, 'base': change.base, 'tip': change.target,
              'max_phrases': str(most), 'max_speech_s': str(speech), 'max_words': str(max_words(plan.duration)),
              'length': f'{round(plan.duration or plan.total)} seconds',
-             'shot_table': shot_table(shot_rows(plan, patches))}
+             'shot_table': shot_table(shot_rows(plan, patches)),
+             'max_callouts': str(planmod.CALLOUT_MAX_PER_HUNK), 'callout_words': str(CALLOUT_WORDS)}
     with open(BRIEF, encoding='utf-8') as f:
         template = f.read()
     return _SLOT.sub(lambda m: slots[m.group(1)], template)
@@ -371,9 +418,11 @@ def resolve(choice, which=shutil.which):
 
 class Narrator:
     """The script writer for one render: `narrator(plan)` is the script of
-    the unvoiced `plan` of `change` as [voice.Phrase]. fork-sandbox's run
-    dir, when it ran, is `run_dir`; on failure under `fallback`, a one-line
-    warning goes to `log` and the heuristic writes the script."""
+    the unvoiced `plan` of `change` as [voice.Phrase], and `callouts` the
+    cards it chose ({phrase key: [text]}; None, the heuristic's: the commit
+    sentences). fork-sandbox's run dir, when it ran, is `run_dir`; on failure
+    under `fallback`, a one-line warning goes to `log` and the heuristic
+    writes the script."""
 
     def __init__(self, name, change, patches, mode='tour', series=False, verbose=0, fallback=False, log=None,
                  duration=None):
@@ -381,9 +430,11 @@ class Narrator:
         self.mode, self.series, self.verbose, self.duration = mode, series, verbose, duration
         self.fallback, self.log = fallback, log if log is not None else sys.stderr
         self.run_dir = None
+        self.callouts = None
 
     def __call__(self, plan):
         from . import voice
+        self.callouts = None
         if self.name == 'heuristic':
             return voice.script(plan, self.patches)
         try:
@@ -405,21 +456,23 @@ class Narrator:
         if os.path.isfile(path):
             try:
                 with open(path, encoding='utf-8') as f:
-                    return parse(f.read(), plan, self.patches)
+                    phrases, self.callouts = read(f.read(), plan, self.patches, self.log)
+                return phrases
             except (OSError, NarratorError):
                 pass   # a stale or broken entry: narrate again
-        phrases, self.run_dir = run_fork_sandbox(self.change, plan, self.patches, model, key, self.log)
+        (phrases, callouts), self.run_dir = run_fork_sandbox(self.change, plan, self.patches, model, key, self.log)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = f'{path}.{os.getpid()}.tmp'
         with open(tmp, 'w', encoding='utf-8') as f:
-            f.write(dump(phrases, plan, self.patches))
+            f.write(dump(phrases, plan, self.patches, callouts))
         os.replace(tmp, path)
+        self.callouts = callouts
         return phrases
 
 
 # ---- the fork-sandbox narrator ----
 DEFAULT_MODEL = 'opus'
-VERSION = 2   # of the brief and how its answer is read: part of the cache key
+VERSION = 3   # of the brief and how its answer is read: part of the cache key
 TEMPLATE_ID = 'git-video-narrate-v1'
 _RUN_DIR = re.compile(r'^\s*run dir:\s+(\S.*?)\s*$', re.M)
 # fork-sandbox refuses a handoff that does not resolve under here, or that
@@ -470,7 +523,8 @@ def command(change, model, key, handoff):
 
 def run_fork_sandbox(change, plan, patches, model, key, log):
     """Run fork-sandbox on the brief, blocking, and read the script the
-    session leaves in its outbox: ([voice.Phrase], run dir). NarratorError
+    session leaves in its outbox: (([voice.Phrase], callouts), run dir) (see
+    `read`). NarratorError
     (with `reason` and `run_dir`) when it fails, prints no run dir, leaves
     no narration.json, or one that does not pass."""
     os.makedirs(SCRATCH_ROOT, mode=0o700, exist_ok=True)
@@ -501,6 +555,6 @@ def run_fork_sandbox(change, plan, patches, model, key, log):
     except OSError:
         raise _error('the session wrote no outbox/narration.json', run_dir) from None
     try:
-        return parse(text, plan, patches), run_dir
+        return read(text, plan, patches, log), run_dir
     except NarratorError as e:
         raise _error(f'its narration.json does not pass: {e}', run_dir) from None

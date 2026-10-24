@@ -56,13 +56,26 @@ narration stretches anything), what it shows, and the file and lines.
 {shot_table}
 ```
 
+## Callouts
+
+A hunk shot (or an edit shot's hunk, an id like `s4h1`) can show
+callout cards: a short line on screen beside the code. You choose them.
+Give a hunk at most {max_callouts} cards, each your own line of at most
+{callout_words} words about why that hunk is shaped the way it is. A card
+may quote the commit message. It never describes the editor or what the
+code visibly does. The shot table shows the cards the commit-message
+matcher would pick, as a hint only. Most hunks need no card, and none is
+better than noise: `"callouts": []` shows no cards at all. Leaving the
+`callouts` key out keeps the matcher's cards.
+
 ## Output
 
 Write `outbox/narration.json`, in your artifact outbox (not in the
 repository):
 
 ```json
-{"phrases": [{"shot": "<shot id>", "text": "<what to say>"}]}
+{"phrases": [{"shot": "<shot id>", "text": "<what to say>"}],
+ "callouts": [{"shot": "<hunk shot id>", "text": "<card text>"}]}
 ```
 
 Phrases must be in shot order, with at most two per shot. The first

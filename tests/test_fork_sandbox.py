@@ -292,6 +292,23 @@ class TestNarratorFlag(unittest.TestCase):
         self.assertEqual((code, len(self.fake.calls())), (0, 1))
         self.assertEqual(json.loads(out2)['voice']['phrases'], json.loads(out)['voice']['phrases'])
 
+    def test_narrator_callouts_in_the_plan(self):
+        ch = collect.collect(self.repo, self.sha['head'])
+        rows = narrator.shot_rows(plan.build(ch, 0, 'tour'), [ch])
+        hunk = next(r for r in rows if r.key[0] == 'hunk')
+        doc = json.loads(self.narration())
+        doc['callouts'] = [{'shot': hunk.id, 'text': 'Doubling keeps the scale.'},
+                           {'shot': 's0', 'text': 'Not on a hunk.'}]
+        with mock.patch.dict(os.environ, {'FAKE_NARRATION': json.dumps(doc)}):
+            code, out, err = self.run_cli('--voice')
+        self.assertEqual(code, 0, err)
+        cards = [[c['text'] for c in s['callouts']] for s in json.loads(out)['shots'] if s['kind'] == 'hunk']
+        self.assertEqual(cards, [['Doubling keeps the scale.'], []])
+        self.assertIn("narrator callout 2 dropped: 's0' is not a hunk shot", err)
+        code, again, _ = self.run_cli('--voice')   # from the cache, the same cards
+        self.assertEqual((code, len(self.fake.calls())), (0, 1))
+        self.assertEqual(json.loads(again)['shots'], json.loads(out)['shots'])
+
     def test_auto_without_fork_sandbox(self):
         path = os.pathsep.join(d for d in os.environ['PATH'].split(os.pathsep) if d != self.fake.bin)
         with mock.patch.dict(os.environ, {'PATH': path}):   # no fork-sandbox anywhere on it
