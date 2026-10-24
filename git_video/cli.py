@@ -81,8 +81,9 @@ def parser():
                         'github.com/mgalgs/fork-sandbox), claude (the same brief for Claude Code, run headless '
                         'and read-only in a worktree of the change, with the login the claude command already '
                         'has), heuristic (from the commit message), or auto (default: fork-sandbox when the '
-                        'fork-sandbox command is on PATH, falling back to heuristic with a warning if it fails, '
-                        'else heuristic). GIT_VIDEO_NARRATOR_MODEL picks the '
+                        'fork-sandbox command is on PATH, else claude when the claude command is on PATH and '
+                        'CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY is set, else heuristic; an agent that '
+                        'fails falls back to heuristic with a warning). GIT_VIDEO_NARRATOR_MODEL picks the '
                         "agent's model (default opus) and GIT_VIDEO_NARRATOR_ARGS adds fork-sandbox options. A "
                         'script is cached in $XDG_CACHE_HOME/git-video/narration')
     p.add_argument('--duration', type=_duration, metavar='TIME',

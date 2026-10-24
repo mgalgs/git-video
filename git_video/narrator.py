@@ -535,15 +535,24 @@ def brief(change, plan, patches, narrator='fork-sandbox'):
 # ---- choosing a narrator ----
 NARRATORS = ('auto', 'fork-sandbox', 'claude', 'heuristic')
 AGENTS = ('fork-sandbox', 'claude')
+# Having `claude` on PATH is not consent to spend: auto runs it only when
+# one of these is set, the way CI opts in.
+CLAUDE_CREDENTIALS = ('CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY')
 
 
-def resolve(choice, which=shutil.which):
+def resolve(choice, which=shutil.which, environ=None):
     """(narrator, fall back to the heuristic on failure) for --narrator
-    `choice`: auto is fork-sandbox when the command is on PATH (falling
-    back), else the heuristic."""
-    if choice == 'auto':
-        return ('fork-sandbox', True) if which('fork-sandbox') else ('heuristic', False)
-    return choice, False
+    `choice`: auto is fork-sandbox when the command is on PATH, else claude
+    when the command is on PATH and a CLAUDE_CREDENTIALS variable is set in
+    `environ` (os.environ), both falling back; else the heuristic."""
+    if choice != 'auto':
+        return choice, False
+    environ = os.environ if environ is None else environ
+    if which('fork-sandbox'):
+        return 'fork-sandbox', True
+    if which('claude') and any(environ.get(v) for v in CLAUDE_CREDENTIALS):
+        return 'claude', True
+    return 'heuristic', False
 
 
 class Narrator:

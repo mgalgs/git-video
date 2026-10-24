@@ -25,7 +25,9 @@ Options:
            change and explains its approach; claude runs Claude Code
            on the same brief, read-only, in a worktree of the change;
            heuristic works from the commit message. auto (default)
-           uses fork-sandbox when it is on PATH, else heuristic.
+           uses fork-sandbox when it is on PATH, else claude when it
+           is on PATH and CLAUDE_CODE_OAUTH_TOKEN or
+           ANTHROPIC_API_KEY is set, else heuristic.
 --duration <time>
            Target length of the whole video, cards included:
            60, 60s, 1m30s. The planner keeps the hunks that matter
@@ -273,7 +275,10 @@ servers. It signs in however the `claude` command already does (in CI,
 `CLAUDE_CODE_OAUTH_TOKEN`); git-video never reads the credential.
 `GIT_VIDEO_NARRATOR_MODEL` sets its model too; `GIT_VIDEO_NARRATOR_ARGS`
 is fork-sandbox's alone. A session that fails, times out (15 minutes) or
-answers with no usable script is fatal. Every voiced render names the narrator
+answers with no usable script is fatal under `--narrator=claude` and a
+warning under `--narrator=auto`, which picks claude only when
+`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is set: a `claude` on
+PATH alone is not consent to spend. Every voiced render names the narrator
 that wrote its script and prints the timed script on stderr.
 
 Whoever writes it, the script is held to the same limits: about one phrase per 8 s

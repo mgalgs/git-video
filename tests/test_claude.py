@@ -213,6 +213,34 @@ class TestClaude(unittest.TestCase):
                                 'Invalid API key); using the heuristic narrator'])
 
 
+class TestResolve(unittest.TestCase):
+    def which(self, *found):
+        return lambda name: f'/bin/{name}' if name in found else None
+
+    def test_auto(self):
+        token = {'CLAUDE_CODE_OAUTH_TOKEN': 'x'}
+        self.assertEqual(narrator.resolve('auto', self.which('fork-sandbox', 'claude'), token), ('fork-sandbox', True))
+        self.assertEqual(narrator.resolve('auto', self.which('claude'), token), ('claude', True))
+        self.assertEqual(narrator.resolve('auto', self.which('claude'), {'ANTHROPIC_API_KEY': 'x'}), ('claude', True))
+        # claude on PATH is not consent to spend: no credential variable, no claude
+        self.assertEqual(narrator.resolve('auto', self.which('claude'), {}), ('heuristic', False))
+        self.assertEqual(narrator.resolve('auto', self.which('claude'), {'CLAUDE_CODE_OAUTH_TOKEN': ''}),
+                         ('heuristic', False))
+        self.assertEqual(narrator.resolve('auto', self.which(), token), ('heuristic', False))
+        # explicit choices never fall back
+        self.assertEqual(narrator.resolve('claude', self.which(), {}), ('claude', False))
+
+    def test_auto_reads_the_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = FakeClaude(tmp)
+            with mock.patch.dict(os.environ, fake.env()):
+                os.environ.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
+                os.environ.pop('ANTHROPIC_API_KEY', None)
+                self.assertEqual(narrator.resolve('auto'), ('heuristic', False))
+                with mock.patch.dict(os.environ, {'CLAUDE_CODE_OAUTH_TOKEN': 'x'}):
+                    self.assertEqual(narrator.resolve('auto'), ('claude', True))
+
+
 class TestClaudeFlag(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -238,6 +266,31 @@ class TestClaudeFlag(unittest.TestCase):
         self.assertEqual(cli.parse(['--voice', '--narrator', 'claude']).narrator, 'claude')
         self.assertIn('claude', cli.parser().format_help())
 
+    def test_auto_uses_claude(self):
+        code, out, err = quiet(cli.main, ['-C', self.repo, '--plan-json', '--voice', self.sha['head']])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.fake.calls()), 1)
+        said = [q['text'] for q in json.loads(out)['voice']['phrases']]
+        self.assertEqual(said, ['Both helpers now scale their input.', 'That keeps them in step.'])
+        self.assertIn('narrating with claude', err)
+        self.assertIn('git video: narrated by claude:', err)
+        self.assertRegex(err, r'(?m)^ +0\.\d\d- +\d+\.\d\d  \[title\]  Both helpers now scale their input\.$')
+        self.assertNotIn('secret', out + err)
+
+    def test_auto_without_credentials(self):
+        os.environ.pop('CLAUDE_CODE_OAUTH_TOKEN')
+        code, out, err = quiet(cli.main, ['-C', self.repo, '--plan-json', '--voice', self.sha['head']])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.fake.calls(), [])
+        self.assertIn('git video: narrated by heuristic:', err)
+
+    def test_auto_falls_back(self):
+        with mock.patch.dict(os.environ, {'FAKE_MODE': 'fail'}):
+            code, out, err = quiet(cli.main, ['-C', self.repo, '--plan-json', '--voice', self.sha['head']])
+        self.assertEqual(code, 0, err)
+        self.assertIn('warning: claude narrator failed', err)
+        self.assertIn('git video: narrated by heuristic:', err)
+
     def test_explicit_fails(self):
         out_mp4 = os.path.join(self.tmp.name, 'out.mp4')
         with mock.patch.dict(os.environ, {'FAKE_MODE': 'fail'}):
@@ -249,8 +302,7 @@ class TestClaudeFlag(unittest.TestCase):
 
     def test_format_all_narrates_once(self):
         with mock.patch('git_video.film.Tour'), mock.patch('videobuilder.render.render') as render:
-            code, out, err = quiet(cli.main, ['-C', self.repo, '--voice', '--narrator=claude', '--format', 'all',
-                                              '--duration', '60',
+            code, out, err = quiet(cli.main, ['-C', self.repo, '--voice', '--format', 'all', '--duration', '60',
                                               '-o', os.path.join(self.tmp.name, 'v.mp4'), self.sha['head']])
         self.assertEqual(code, 0, err)
         self.assertEqual(render.call_count, 3)
