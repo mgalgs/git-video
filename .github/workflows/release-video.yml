@@ -22,6 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     # videobuilder needs Pango 1.56 or newer: Debian 13, not the runner's Ubuntu.
     container: debian:trixie
+    # CLAUDE_CODE_OAUTH_TOKEN is an environment secret: only v* tags and
+    # main may deploy to `release`, so no other branch's workflow sees it.
+    environment: release
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       CLAUDE_CODE_VERSION: 2.1.280
