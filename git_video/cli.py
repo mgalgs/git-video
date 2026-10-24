@@ -75,14 +75,16 @@ def parser():
                         f'explaining the intent behind it, in a Kokoro voice '
                         f"(default {DEFAULT_VOICE}); needs the voice extra, pip install 'git-video[voice]', "
                         'and the Kokoro model files')
-    p.add_argument('--narrator', choices=('auto', 'fork-sandbox', 'heuristic'), metavar='NARRATOR',
+    p.add_argument('--narrator', choices=('auto', 'fork-sandbox', 'claude', 'heuristic'), metavar='NARRATOR',
                    help='with --voice, who writes the narration: fork-sandbox (an agent session in a sandboxed '
                         'clone reads the change and explains its approach and reasons; see '
-                        'github.com/mgalgs/fork-sandbox), heuristic (from the commit message), or auto (default: '
-                        'fork-sandbox when the fork-sandbox command is on PATH, falling back to heuristic with a '
-                        'warning if it fails). GIT_VIDEO_NARRATOR_MODEL picks the model (default opus) and '
-                        'GIT_VIDEO_NARRATOR_ARGS adds fork-sandbox options. A script is cached in '
-                        '$XDG_CACHE_HOME/git-video/narration')
+                        'github.com/mgalgs/fork-sandbox), claude (the same brief for Claude Code, run headless '
+                        'and read-only in a worktree of the change, with the login the claude command already '
+                        'has), heuristic (from the commit message), or auto (default: fork-sandbox when the '
+                        'fork-sandbox command is on PATH, falling back to heuristic with a warning if it fails, '
+                        'else heuristic). GIT_VIDEO_NARRATOR_MODEL picks the '
+                        "agent's model (default opus) and GIT_VIDEO_NARRATOR_ARGS adds fork-sandbox options. A "
+                        'script is cached in $XDG_CACHE_HOME/git-video/narration')
     p.add_argument('--duration', type=_duration, metavar='TIME',
                    help='target length of the whole video, cards included (60, 60s, 1m30s): the planner keeps '
                         'the most important hunks that fit, in story order, and lists the files it leaves out on '
@@ -212,7 +214,8 @@ def main(argv=None):
         except voice.VoiceError as e:
             return _fail(str(e), 2)
         except narrator.NarratorError as e:
-            return _fail(f'fork-sandbox narrator: {e}', 1)
+            return _fail(f'{name} narrator: {e}', 1)
+        print(f'git video: narrated by {writer.ran}:\n{narrator.timed_script(tour)}', file=sys.stderr)
     else:
         tour = plan.build(change, args.verbose, args.mode, patches, duration=args.duration)
     if args.plan_json:

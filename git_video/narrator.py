@@ -1,14 +1,17 @@
 """Narrators: who writes the voice-over's script.
 
 A script is a list of phrases, each anchored to a shot of the plan (by the
-shot id `shot_rows` gives it) with the text to say. Two narrators write one:
-`heuristic` (voice.script, from the commit message) and `fork-sandbox` (an
-agent session that reads the change; see `fork_sandbox`). Whichever wrote
-it, the script is held to the same sparse limits (`check`, `trim`): about one
-phrase per SECONDS_PER_PHRASE of the unvoiced film plus the opening and the
-closing, each at most MAX_WORDS words (fewer for a short --duration,
-`max_words`), and speech at most SPEECH_SHARE of the voiced film. How a phrase is said (spoken forms, captions) and how the shots
-stretch to it is voice's job, the same for both.
+shot id `shot_rows` gives it) with the text to say. Three narrators write
+one: `heuristic` (voice.script, from the commit message), and two agents
+that read the change from the same brief: `fork-sandbox` (a session in a
+sandboxed clone; see `run_fork_sandbox`) and `claude` (Claude Code run
+headless and read-only in a worktree of the change; see `run_claude`).
+Whichever wrote it, the script is held to the same sparse limits (`check`,
+`trim`): about one phrase per SECONDS_PER_PHRASE of the unvoiced film plus
+the opening and the closing, each at most MAX_WORDS words (fewer for a
+short --duration, `max_words`), and speech at most SPEECH_SHARE of the
+voiced film. How a phrase is said (spoken forms, captions) and how the
+shots stretch to it is voice's job, the same for all three.
 """
 import hashlib
 import json
@@ -485,18 +488,31 @@ def timed_script(plan):
 # ---- the brief ----
 BRIEF = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'narrator_brief.md')
 _SLOT = re.compile(r'\{(range|commits|base|tip|max_phrases|max_speech_s|max_words|length|shot_table|'
-                   r'max_callouts|callout_words)\}')
+                   r'max_callouts|callout_words|output|output_how|output_end)\}')
+# How each agent hands its script back: (the intro's line, the Output
+# section's opening, its last sentence).
+OUTPUT = {
+    'fork-sandbox': ('Your only output is one file:\n`outbox/narration.json`.',
+                     'Write `outbox/narration.json`, in your artifact outbox (not in the\nrepository):',
+                     'Write the file, check that it parses as JSON, and end your turn.'),
+    'claude': ('Your only output is your final\nmessage: the narration as JSON.',
+               'You can read the repository and run `git log`, `git show` and\n`git diff`, nothing else: '
+               'you cannot write files. Your final message is\nthe narration, one JSON object and nothing else '
+               '(a fenced `json` block\nis fine):',
+               'Check that it parses as JSON, then end your turn with it as your final\nmessage.'),
+}
 
 
 def _indent(text, by='    '):
     return '\n'.join(by + ln if ln.strip() else '' for ln in text.split('\n'))
 
 
-def brief(change, plan, patches):
+def brief(change, plan, patches, narrator='fork-sandbox'):
     """The narrator's handoff: narrator_brief.md with the change (its range
     and commit messages, trailers removed), the video's length (the
-    --duration target, when there is one), the limits, and the shot table
-    of `plan` (unvoiced; condensed, it lists only what is kept) filled in."""
+    --duration target, when there is one), the limits, the shot table of
+    `plan` (unvoiced; condensed, it lists only what is kept), and how
+    `narrator` (an agent of OUTPUT) hands its answer back filled in."""
     commits = change.commits
     if change.is_range:
         what = f'{len(commits)} commit{"s" if len(commits) != 1 else ""} {change.base}..{change.target}'
@@ -509,14 +525,16 @@ def brief(change, plan, patches):
              'max_phrases': str(most), 'max_speech_s': str(speech), 'max_words': str(max_words(plan.duration)),
              'length': f'{round(plan.duration or plan.total)} seconds',
              'shot_table': shot_table(shot_rows(plan, patches)),
-             'max_callouts': str(planmod.CALLOUT_MAX_PER_HUNK), 'callout_words': str(CALLOUT_WORDS)}
+             'max_callouts': str(planmod.CALLOUT_MAX_PER_HUNK), 'callout_words': str(CALLOUT_WORDS),
+             **dict(zip(('output', 'output_how', 'output_end'), OUTPUT[narrator]))}
     with open(BRIEF, encoding='utf-8') as f:
         template = f.read()
     return _SLOT.sub(lambda m: slots[m.group(1)], template)
 
 
 # ---- choosing a narrator ----
-NARRATORS = ('auto', 'fork-sandbox', 'heuristic')
+NARRATORS = ('auto', 'fork-sandbox', 'claude', 'heuristic')
+AGENTS = ('fork-sandbox', 'claude')
 
 
 def resolve(choice, which=shutil.which):
@@ -532,9 +550,9 @@ class Narrator:
     """The script writer for one render: `narrator(plan)` is the script of
     the unvoiced `plan` of `change` as [voice.Phrase], and `callouts` the
     cards it chose ({phrase key: [text]}; None, the heuristic's: the commit
-    sentences). fork-sandbox's run dir, when it ran, is `run_dir`; on failure
-    under `fallback`, a one-line warning goes to `log` and the heuristic
-    writes the script."""
+    sentences). `ran` is the narrator that wrote it; fork-sandbox's run
+    dir, when it ran, is `run_dir`. On an agent's failure under `fallback`,
+    a one-line warning goes to `log` and the heuristic writes the script."""
 
     def __init__(self, name, change, patches, mode='tour', series=False, verbose=0, fallback=False, log=None,
                  duration=None):
@@ -543,27 +561,33 @@ class Narrator:
         self.fallback, self.log = fallback, log if log is not None else sys.stderr
         self.run_dir = None
         self.callouts = None
+        self.ran = None
 
     def __call__(self, plan):
         from . import voice
-        self.callouts = None
+        self.callouts, self.ran = None, self.name
         if self.name == 'heuristic':
             return voice.script(plan, self.patches)
         try:
-            return self.fork_sandbox(plan)
+            return self.agent(plan)
         except NarratorError as e:
             if not self.fallback:
                 raise
-            where = f'run dir {e.run_dir}' if e.run_dir else 'no run dir'
-            said = _last_word(e.output)
-            where += f'; it said: {said}' if said else ''
-            print(f'git video: warning: fork-sandbox narrator failed ({e.reason or e}; {where}); '
+            where = []
+            if self.name == 'fork-sandbox':
+                where.append(f'run dir {e.run_dir}' if e.run_dir else 'no run dir')
+            said = _last_word(getattr(e, 'output', ''))
+            where += [f'it said: {said}'] if said else []
+            print(f'git video: warning: {self.name} narrator failed ({"; ".join([e.reason or str(e)] + where)}); '
                   f'using the heuristic narrator', file=self.log)
+            self.ran = 'heuristic'
             return voice.script(plan, self.patches)
 
-    def fork_sandbox(self, plan):
+    def agent(self, plan):
+        """The agent's script, from the cache when it has narrated this before."""
         model = os.environ.get('GIT_VIDEO_NARRATOR_MODEL') or DEFAULT_MODEL
-        key = cache_key(self.change, plan, self.patches, self.mode, self.series, self.verbose, model, self.duration)
+        key = cache_key(self.change, plan, self.patches, self.mode, self.series, self.verbose, model, self.duration,
+                        self.name)
         path = cache_path(key)
         if os.path.isfile(path):
             try:
@@ -572,7 +596,11 @@ class Narrator:
                 return phrases
             except (OSError, NarratorError):
                 pass   # a stale or broken entry: narrate again
-        (phrases, callouts), self.run_dir = run_fork_sandbox(self.change, plan, self.patches, model, key, self.log)
+        if self.name == 'claude':
+            phrases, callouts = run_claude(self.change, plan, self.patches, model, self.log)
+        else:
+            (phrases, callouts), self.run_dir = run_fork_sandbox(self.change, plan, self.patches, model, key,
+                                                                 self.log)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = f'{path}.{os.getpid()}.tmp'
         with open(tmp, 'w', encoding='utf-8') as f:
@@ -600,20 +628,22 @@ def _error(reason, run_dir=None, output=''):
 
 
 def _last_word(output):
-    """The line of fork-sandbox's `output` that best says why it stopped:
+    """The line of an agent's `output` that best says why it stopped:
     its last `Error:` line, else its last non-blank one."""
     lines = [x.strip() for x in output.splitlines() if x.strip()]
     errors = [x for x in lines if re.match(r'(\S+:\s*)?error:', x, re.I)]
     return (errors or lines or [''])[-1]
 
 
-def cache_key(change, plan, patches, mode, series, verbose, model, duration=None):
+def cache_key(change, plan, patches, mode, series, verbose, model, duration=None, narrator='fork-sandbox'):
     """The narration cache's key: the range filmed, how (the --duration
-    target too), by which model and narrator version, and the shots the
-    brief lists."""
+    target too), by which narrator, model and narrator version, and the
+    shots the brief lists."""
     shots = hashlib.sha256(shot_table(shot_rows(plan, patches)).encode()).hexdigest()
     doc = {'base': change.base, 'tip': change.target, 'mode': mode, 'series': bool(series), 'verbose': verbose,
            'model': model, 'version': VERSION, 'shots': shots, 'duration': duration}
+    if narrator != 'fork-sandbox':   # fork-sandbox's keys have no narrator, so its cached scripts stay found
+        doc['narrator'] = narrator
     return hashlib.sha256(json.dumps(doc, sort_keys=True).encode()).hexdigest()
 
 
@@ -670,3 +700,83 @@ def run_fork_sandbox(change, plan, patches, model, key, log):
         return read(text, plan, patches, log), run_dir
     except NarratorError as e:
         raise _error(f'its narration.json does not pass: {e}', run_dir) from None
+
+
+# ---- the claude narrator ----
+CLAUDE_TIMEOUT = 15 * 60   # seconds: a session that reads the code takes minutes, rarely this many
+# Read-only: the file-reading tools, and Bash only for git's history and
+# diffs. `--tools` is what the session has at all, `--allowedTools` what it
+# may run unasked (dontAsk refuses the rest), `--disallowedTools` a backstop.
+CLAUDE_TOOLS = ('Read', 'Grep', 'Glob', 'Bash')
+CLAUDE_ALLOWED = ('Read', 'Grep', 'Glob', 'Bash(git log:*)', 'Bash(git show:*)', 'Bash(git diff:*)')
+CLAUDE_DENIED = ('Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'WebFetch', 'WebSearch')
+_FENCED = re.compile(r'^```[\w-]*[ \t]*\n(.*?)^```[ \t]*$', re.S | re.M)
+
+
+def claude_command(model):
+    """The `claude` argv: headless (the brief on stdin), JSON out, read-only,
+    no settings files, MCP servers or saved session. A rule is one argument
+    each: "Bash(git log:*)" has a space in it."""
+    return ['claude', '-p', '--output-format', 'json', '--model', model, '--restricted',
+            '--permission-mode', 'dontAsk', '--strict-mcp-config', '--no-session-persistence',
+            '--tools', ','.join(CLAUDE_TOOLS), '--allowedTools', *CLAUDE_ALLOWED, '--disallowedTools', *CLAUDE_DENIED]
+
+
+def answer(stdout):
+    """The narration JSON in `claude -p --output-format json`'s `stdout`: its
+    result text, the last fenced block's when it has one, else from its
+    first brace to its last. NarratorError when there is no result."""
+    try:
+        doc = json.loads(stdout)
+    except ValueError:
+        raise _error("claude's output is not JSON", output=stdout[-4000:]) from None
+    if not isinstance(doc, dict) or not isinstance(doc.get('result'), str):
+        raise _error('claude gave no result', output=stdout[-4000:])
+    if doc.get('is_error'):
+        raise _error(f'claude failed: {_clip(doc["result"], 30)}', output=doc['result'])
+    text = doc['result'].strip()
+    blocks = _FENCED.findall(text)
+    if blocks:
+        return blocks[-1].strip()
+    if not text.startswith('{') and '{' in text:
+        return text[text.index('{'):text.rindex('}') + 1]
+    return text
+
+
+def run_claude(change, plan, patches, model, log, timeout=None):
+    """Run `claude` on the brief in a worktree of `change`'s tip, blocking,
+    and read the script its final message gives: ([voice.Phrase], callouts)
+    (see `read`). NarratorError (with `reason`) when claude cannot run,
+    exits non-zero, times out, or answers with no script that passes. The
+    worktree is removed after; nothing is written in the repository's own."""
+    timeout = CLAUDE_TIMEOUT if timeout is None else timeout
+    prompt = brief(change, plan, patches, 'claude')
+    tmp = tempfile.mkdtemp(prefix='git-video-narrate-')
+    tree = os.path.join(tmp, 'tree')
+    try:
+        add = subprocess.run(['git', '-C', change.repo, 'worktree', 'add', '--detach', tree, change.target],
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        if add.returncode != 0:
+            raise _error(f'cannot check out {change.target[:12]}', output=add.stderr)
+        print('git video: narrating with claude, a few minutes…', file=log, flush=True)
+        try:
+            r = subprocess.run(claude_command(model), input=prompt.encode(), cwd=tree, capture_output=True,
+                               timeout=timeout)
+        except OSError as e:
+            raise _error(f'cannot run claude: {e.strerror}') from None
+        except subprocess.TimeoutExpired:
+            raise _error(f'claude timed out after {timeout:g}s') from None
+    finally:
+        subprocess.run(['git', '-C', change.repo, 'worktree', 'remove', '--force', tree],
+                       stdin=subprocess.DEVNULL, capture_output=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+        subprocess.run(['git', '-C', change.repo, 'worktree', 'prune'], stdin=subprocess.DEVNULL,
+                       capture_output=True)
+    out, err = r.stdout.decode('utf-8', 'replace'), r.stderr.decode('utf-8', 'replace')
+    if r.returncode != 0:
+        raise _error(f'claude exited {r.returncode}', output=(err + out)[-4000:])
+    text = answer(out)
+    try:
+        return read(text, plan, patches, log)
+    except NarratorError as e:
+        raise _error(f'its answer does not pass: {e}') from None

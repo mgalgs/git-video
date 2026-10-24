@@ -4,8 +4,7 @@ You are writing the voice-over for a short video that walks a viewer
 through a change to this repository. The video is already planned: an
 editor pane shows each changed file, scrolls to each hunk, and sometimes
 dives into a definition. Your words play over it. Do not change or
-commit anything in this repository. Your only output is one file:
-`outbox/narration.json`.
+commit anything in this repository. {output}
 
 ## The change
 
@@ -81,8 +80,7 @@ better than noise: `"callouts": []` shows no cards at all. Leaving the
 
 ## Output
 
-Write `outbox/narration.json`, in your artifact outbox (not in the
-repository):
+{output_how}
 
 ```json
 {"phrases": [{"shot": "<shot id>", "text": "<what to say>"}],
@@ -91,4 +89,4 @@ repository):
 
 Phrases must be in shot order, with at most two per shot. The first
 phrase goes on the opening shot, and the last may go on the closing
-shot. Write the file, check that it parses as JSON, and end your turn.
+shot. {output_end}

@@ -19,12 +19,13 @@ Options:
            Spoken by Kokoro (default voice bf_isabella), with
            captions. Needs the voice extra,
            pip install 'git-video[voice]', and Kokoro's model files.
---narrator auto, fork-sandbox, heuristic
+--narrator auto, fork-sandbox, claude, heuristic
            With --voice, who writes the narration. fork-sandbox
            runs an agent session in a sandboxed clone that reads the
-           change and explains its approach; heuristic works from
-           the commit message. auto (default) uses fork-sandbox when
-           it is on PATH, else heuristic.
+           change and explains its approach; claude runs Claude Code
+           on the same brief, read-only, in a worktree of the change;
+           heuristic works from the commit message. auto (default)
+           uses fork-sandbox when it is on PATH, else heuristic.
 --duration <time>
            Target length of the whole video, cards included:
            60, 60s, 1m30s. The planner keeps the hunks that matter
@@ -260,10 +261,25 @@ can be read. `GIT_VIDEO_NARRATOR_MODEL` sets the model (default `opus`) and
 render runs no session. Under `--narrator=auto` a session that fails, or writes nothing
 usable, costs a one-line warning and the heuristic narrates instead.
 
-Either way the script is held to the same limits: about one phrase per 8 s
+The claude narrator gives the same brief to [Claude Code](https://claude.com/claude-code)
+where fork-sandbox is not there, as on a CI runner: `claude -p`, run in a
+temporary `git worktree` of the change's tip (removed after), reads the
+diff and the code and answers with the script as its final message (a
+fenced `json` block is fine), which is held to the same limits and cached
+the same way, apart from fork-sandbox's scripts. It is read-only: it may
+use Read, Grep and Glob, and Bash only for `git log`, `git show` and
+`git diff`; it runs with `--restricted`, so no settings files, and no MCP
+servers. It signs in however the `claude` command already does (in CI,
+`CLAUDE_CODE_OAUTH_TOKEN`); git-video never reads the credential.
+`GIT_VIDEO_NARRATOR_MODEL` sets its model too; `GIT_VIDEO_NARRATOR_ARGS`
+is fork-sandbox's alone. A session that fails, times out (15 minutes) or
+answers with no usable script is fatal. Every voiced render names the narrator
+that wrote its script and prints the timed script on stderr.
+
+Whoever writes it, the script is held to the same limits: about one phrase per 8 s
 of the unvoiced film plus the opening and closing, each at most 35 words,
 and speech at most 45% of the voiced film; a script over them loses phrases
-from its end (a fork-sandbox one that cannot be cut safely is rejected).
+from its end (an agent's that cannot be cut safely is rejected).
 
 Shots stretch to the voice: a card or a hunk is held until its phrases and
 a breath are done, and in develop mode a narrated hunk is typed no faster
@@ -272,7 +288,7 @@ ends. Phrases never overlap and never run into the next shot.
 
 With `--duration` the voice stays inside the target. A phrase is at most a
 third of the target in words (12 to 35), the phrase count follows the
-target's length, and the fork-sandbox brief says how long the video is and
+target's length, and an agent's brief says how long the video is and
 lists only the shots kept. A narrated shot takes its time from the
 unnarrated ones; if that is not enough to land within the target's
 tolerance, phrases go from the end of the middle, never the opening or
