@@ -14,26 +14,61 @@ Commit messages, in order:
 
 {commits}
 
-{inspect} Read the surrounding code, the callers, and anything else that
-helps you understand *why* the change is shaped the way it is.
+{inspect}
+
+## Find the story first
+
+The diff says what changed. The viewer needs to know where it sits in
+the system and why it matters there, and the diff alone cannot tell you
+that. Before you write a word, place each changed piece in the system:
+
+- **Up the call stack.** Who calls the changed code, and who calls
+  them? Follow the callers up until you reach an entry point: a command
+  the user runs, a request handler, a main loop, a scheduled job. That
+  path is how the change reaches anyone. Note what the user is doing
+  when this code runs.
+- **Down the call stack.** What does the changed code call, and what do
+  those calls rest on? Follow them down through this repository's own
+  layers to the libraries, the operating system or the hardware
+  underneath: a subprocess, a file, the network, a renderer, an encoder.
+  Few calls are more than a dozen steps from bare metal. Knowing the
+  bottom tells you what the code is really for.
+- **Beside it.** What else sits at the same level and does a similar
+  job? Does the change follow its siblings, or break from them, and why?
+- **The larger system.** What is this repository, and what is it part
+  of? For example: a command-line tool, a library that others build on,
+  a service with clients, a plugin to something bigger. Say what role
+  the changed component plays in that whole.
+
+Use your tools to read and search the code; the shot table names the
+definitions each hunk is in and uses. You do not need to trace every
+line. Trace until you can tell the story.
 
 ## What to say
 
-Narrate the way a senior engineer explains their change to a colleague
-who is watching the screen: the problem, the approach, and the reasons.
-Say what the change introduces, which pieces had to change to make room
-for it, how they now fit together, and any trade-off or non-obvious
-decision behind it. For example: "This change introduces a call graph to
-the sidebar. To feed it, the sidebar is threaded through the planner,
-which gains a way to record which definitions each shot discovers."
+Tell that story the way a senior engineer explains a change to a
+colleague who is watching the screen. Start with the system and the
+problem: what this part of the system does, and what was missing, wrong
+or slow. Then explain the approach, and why the change lands where it
+does: which layer owns the problem, what the callers above now get, and
+what it builds on below. Name any trade-off or non-obvious decision.
+End with what the system can do now that it could not do before.
 
-Do not describe what the editor is doing, and do not list files or
-functions in order ("First, film.py." "A change to draw."). The viewer
-can see that. Your words add the meaning the picture cannot show.
+For example: "When you run git video, the planner decides every shot
+before a single frame is drawn. This change gives the planner a call
+graph, so a shot can show who calls the function on screen. The sidebar
+draws it, and it is fed the same plan the film reads, so the two never
+disagree."
 
-Be sparse. Silence is good. Most shots should have no phrase at all.
-Speak when a shot shows something your explanation is about, so that
-words and picture line up.
+Every phrase should add something the picture cannot show: the reason,
+the context, the consequence. Do not describe what the editor is doing,
+and do not list files or functions in order ("First, film.py." "A
+change to draw."). The viewer can see that.
+
+Leave silence where the picture carries itself. Speak when a shot shows
+the part of the story you are telling, so that words and picture line
+up. Context from elsewhere in the system, such as a caller far up the
+stack, is said over the shot of the code it explains.
 
 A phrase goes on the shot that shows the thing it talks about. A phrase
 about how the side bar is drawn goes on the hunk that changes the
@@ -42,9 +77,9 @@ frame the whole change and are exempt. A phrase that names a definition
 or a file shown by another shot, but not by its own, is moved to the
 nearest shot that shows it when that keeps the order.
 
-Aim for an opening of one or two sentences
-that frames the whole change, a few phrases at the moments that carry
-the approach, and a short closing. The limits are hard: at most
+Aim for an opening of one or two sentences that sets the system and the
+problem, phrases at the moments that carry the story, and a closing
+that says what is now possible. The limits are hard: at most
 {max_phrases} phrases, each at most {max_words} words, and about {max_speech_s}
 seconds of speech in total (about 2.5 words per second). The finished
 video is about {length} long, narration included, and the shot table

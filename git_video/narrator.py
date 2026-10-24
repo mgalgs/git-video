@@ -492,9 +492,10 @@ _SLOT = re.compile(r'\{(range|commits|base|tip|max_phrases|max_speech_s|max_word
 CHANGES = '.git-video-changes.diff'   # the claude narrator's copy of the diff, in its worktree
 # How each agent sees the diff: fork-sandbox runs git itself, claude has no shell.
 INSPECT = {
-    'fork-sandbox': 'Inspect it yourself: `git diff {base}..{tip}` (or `git show` per commit).',
+    'fork-sandbox': 'Inspect it yourself: `git diff {base}..{tip}` (or `git show` per commit),\n'
+                    'and read the code around it.',
     'claude': f'The whole diff, with a diffstat first, is in `{CHANGES}` in your working\n'
-              'directory: read it in pieces.',
+              'directory: read it in pieces, and read the code around it.',
 }
 # How each agent hands its script back: (the intro's line, the Output
 # section's opening, its last sentence).
@@ -629,7 +630,7 @@ class Narrator:
 
 # ---- the fork-sandbox narrator ----
 DEFAULT_MODEL = 'opus'
-VERSION = 3   # of the brief and how its answer is read: part of the cache key
+VERSION = 4   # of the brief and how its answer is read: part of the cache key
 TEMPLATE_ID = 'git-video-narrate-v1'
 _RUN_DIR = re.compile(r'^\s*run dir:\s+(\S.*?)\s*$', re.M)
 # fork-sandbox refuses a handoff that does not resolve under here, or that
