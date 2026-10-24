@@ -97,14 +97,22 @@ def _shows(plan, patches, s, hi=None):
 
 def _uses(patches, row, names):
     """The identifiers a hunk row's changed lines use that name a definition
-    another row shows (`names`), at most four: what else the hunk is about."""
+    another row shows (`names`), at most four: what else the hunk is about.
+    A plain word counts only as code: called, or after a dot (`read(`,
+    `.read`), so a comment's "read" is not a use."""
     if row.key[0] not in ('hunk', 'edit'):
         return []
     ch, f, h = _hunk(patches, row.key[1], row.key[2], row.key[3])
     if f is None or h is None or f.text is None:
         return []
     words = planmod.hunk_info(ch, f, h)['words']
-    return sorted(n for n in names if n in words and n not in row.defs)[:4]
+    lines = f.text.split('\n')
+    text = '\n'.join([lines[n - 1] for a, b in h.added for n in range(a, b + 1) if n <= len(lines)]
+                     + [x for seg in h.segments for x in seg[1]])
+
+    def code(n):
+        return '_' in n or bool(re.search(rf'(?<!\w)\.{re.escape(n)}(?!\w)|(?<![\w.]){re.escape(n)}\(', text))
+    return sorted(n for n in names if n in words and n not in row.defs and code(n))[:4]
 
 
 def _clip(text, most=16):
@@ -366,14 +374,14 @@ def read(text, plan, patches, log=None):
 
 def _subjects(text, rows):
     """(definition names, file names) phrase `text` names among what `rows`
-    show, matched as callouts match identifiers (callouts.identifiers,
-    touched definitions as plain words) or by its spoken form ("draw card"
-    for draw_card)."""
+    show: by an identifier that looks like code (callouts.identifiers, with
+    no plain words: a definition named `cards` is not "cards") or by its
+    spoken form of two words or more ("draw card" for draw_card)."""
     from . import callouts as callouts_mod, voice
     names = {d for r in rows for d in r.defs}
     files = {os.path.basename(f) for r in rows for f in r.files}
     defs, paths = set(), set()
-    for ident in callouts_mod.identifiers(text, names):
+    for ident in callouts_mod.identifiers(text):
         n, p = callouts_mod._keys(ident)
         defs |= n & names
         paths |= p
@@ -440,7 +448,7 @@ def _callouts(items, rows, log):
     hunks = {r.id: r.key for r in rows if r.key[0] in ('hunk', 'edit')}
     out = {}
     for n, it in enumerate(items):
-        shot = it.get('shot') if isinstance(it, dict) else None
+        shot = it.get('shot') if isinstance(it, dict) and isinstance(it.get('shot'), str) else None
         text = ' '.join(it['text'].split()) if isinstance(it, dict) and isinstance(it.get('text'), str) else ''
         if shot not in hunks:
             _warn(log, f'callout {n + 1} dropped: {shot!r} is not a hunk shot')

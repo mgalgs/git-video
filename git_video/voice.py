@@ -106,7 +106,7 @@ def number_said(text):
 UNITS = {'s': ('second', 'seconds'), 'ms': ('millisecond', 'milliseconds'), 'min': ('minute', 'minutes'),
          'KB': ('kilobyte', 'kilobytes'), 'MB': ('megabyte', 'megabytes'), 'GB': ('gigabyte', 'gigabytes'),
          'px': ('pixel', 'pixels'), '%': ('percent', 'percent'), 'x': ('times', 'times'), '×': ('times', 'times')}
-_NUM = r'(?<![\w.:])(\d+(?:\.\d+)?)'
+_NUM = r'(?<![\w.:,])(\d+(?:\.\d+)?)(?!,\d)'
 
 
 def _clock(m):
@@ -115,6 +115,8 @@ def _clock(m):
 
 
 def _unit(m):
+    if m.group(2) == 's' and m.group(0)[-2] != ' ' and re.fullmatch(r'\d*0', m.group(1)):
+        return None   # the 1990s, 100s of shots: a decade or a plural, not seconds
     n, unit = number_said(m.group(1)), UNITS[m.group(2)]
     return n and f'{n} {unit[m.group(1) != "1"]}'
 

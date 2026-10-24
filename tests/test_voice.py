@@ -316,7 +316,9 @@ class TestScript(unittest.TestCase):
                 ('1.2.3', {'1.2.3': 'one point two point three'}),
                 ('3 steps, 60 seconds, 2 files', {}),   # Kokoro says these well
                 ('step_2x and mod_1.py', {}),
-                ('10000000.5', {})):
+                ('10000000.5', {}),
+                ('the 1990s, 100s of shots, 10 s', {'10 s': 'ten seconds'}),   # a decade, a plural
+                ('1,000 px and 12,000.5', {})):
             self.assertEqual(voice.number_forms(text), want, text)
         lex = voice.lexicon_for([voice.Phrase('With --duration 60, a 0.4 s fade at 1:1.', ('t',))])
         self.assertEqual(lex, {'--duration': 'duration', '0.4 s': 'zero point four seconds', '1:1': 'one by one'})

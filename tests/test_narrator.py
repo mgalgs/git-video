@@ -165,10 +165,11 @@ class TestCallouts(unittest.TestCase):
             {'shot': one.id, 'text': ' '},
             {'shot': one.id, 'text': ' '.join(['word'] * (narrator.CALLOUT_WORDS + 1))},
             {'shot': one.id, 'text': 'Kept.'}, {'shot': one.id, 'text': 'Kept too.'},
-            {'shot': one.id, 'text': 'One too many.'}, 'not a card']), self.tour, [self.change], log)
+            {'shot': one.id, 'text': 'One too many.'}, 'not a card',
+            {'shot': [one.id], 'text': 'A list.'}, {'shot': {}, 'text': 'A dict.'}]), self.tour, [self.change], log)
         self.assertEqual(callouts, {one.key: ['Kept.', 'Kept too.']})
         warnings = log.getvalue().splitlines()
-        self.assertEqual(len(warnings), 6)
+        self.assertEqual(len(warnings), 8)
         self.assertTrue(all(w.startswith('git video: warning: narrator callout') for w in warnings))
         self.assertIn("'s0' is not a hunk shot", warnings[0])
         self.assertIn("'s999' is not a hunk shot", warnings[1])
@@ -244,12 +245,18 @@ class TestAlign(unittest.TestCase):
                              (self.frob.id, 'Nothing named here.'))
         self.assertEqual(got, [(('title',), 0), (self.frob.key, 0), (self.frob.key, 1)])
         self.assertEqual(log, '')
+        # a plain word that is a definition's name does not move it
+        got, log = self.read(('s0', 'Both.'), (self.frob.id, 'Callers want other numbers.'))
+        self.assertEqual(got, [(('title',), 0), (self.frob.key, 0)])
+        self.assertEqual(log, '')
 
     def test_spoken_forms_count(self):
         rows = [narrator.Row('s1', ('hunk', 0, 'film.py', 0), 0, 1, '', defs=('draw_card',), files=('film.py',)),
                 narrator.Row('s2', ('hunk', 0, 'sidebar.py', 0), 1, 1, '', defs=('layout',), files=('sidebar.py',))]
         self.assertEqual(narrator._subjects('The draw card helper now waits.', rows), ({'draw_card'}, set()))
-        self.assertEqual(narrator._subjects('The layout is computed once, in sidebar.py.', rows)[0], {'layout'})
+        self.assertEqual(narrator._subjects('The layout() is computed once, in sidebar.py.', rows)[0], {'layout'})
+        # a plain word is not a definition's name: "layout" here is English
+        self.assertEqual(narrator._subjects('The layout is new.', rows), (set(), set()))
         self.assertIn('sidebar', narrator._subjects('The layout is computed once, in sidebar.py.', rows)[1])
         self.assertEqual(narrator._subjects('Nothing about code.', rows), (set(), set()))
 
