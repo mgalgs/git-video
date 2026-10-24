@@ -12,8 +12,10 @@ says so, and the next commit when there is one. Nothing narrates what the
 editor shows: long silences are expected. (`narrator` has the other one.)
 
 What is said is plain text, captioned as written. How an identifier, a
-path or a flag is said (`spoken`) goes to videobuilder's `say` as its
-`lexicon`, so `draw_card` is heard as "draw card" and captioned as itself.
+path or a flag is said (`spoken`), and a number, a unit or a ratio
+(`number_forms`), goes to videobuilder's `say` as its `lexicon`, so
+`draw_card` is heard as "draw card", "0.4 s" as "zero point four seconds",
+and each is captioned as written.
 Trailers, URLs, hashes, symbols and code are never read out.
 """
 import hashlib
@@ -89,6 +91,71 @@ def number_words(n):
         return f'{_ONES[h]} hundred' + (f' {number_words(r)}' if r else '')
     th, r = divmod(n, 1000)
     return f'{number_words(th)} thousand' + (f' {number_words(r)}' if r else '')
+
+
+def number_said(text):
+    """A written number as said: "0.4" -> "zero point four", digits after the
+    point one by one; None past what `number_words` says."""
+    whole, _, frac = text.partition('.')
+    if int(whole) >= 10 ** 6:
+        return None
+    return number_words(int(whole)) + (' point ' + ' '.join(_ONES[int(d)] for d in frac) if frac else '')
+
+
+# A number followed by a unit, as said: (singular, plural).
+UNITS = {'s': ('second', 'seconds'), 'ms': ('millisecond', 'milliseconds'), 'min': ('minute', 'minutes'),
+         'KB': ('kilobyte', 'kilobytes'), 'MB': ('megabyte', 'megabytes'), 'GB': ('gigabyte', 'gigabytes'),
+         'px': ('pixel', 'pixels'), '%': ('percent', 'percent'), 'x': ('times', 'times'), '×': ('times', 'times')}
+_NUM = r'(?<![\w.:])(\d+(?:\.\d+)?)'
+
+
+def _clock(m):
+    h, mm = int(m.group(1)), int(m.group(2))
+    return f'{number_words(h)} ' + ("o'clock" if mm == 0 else f'oh {_ONES[mm]}' if mm < 10 else number_words(mm))
+
+
+def _unit(m):
+    n, unit = number_said(m.group(1)), UNITS[m.group(2)]
+    return n and f'{n} {unit[m.group(1) != "1"]}'
+
+
+def _ratio(m):
+    a, b = number_said(m.group(1)), number_said(m.group(2))
+    return a and b and f'{a} by {b}'
+
+
+def _version(m):
+    return ' point '.join(number_said(x) or x for x in m.group(1).split('.'))
+
+
+# How numbers that Kokoro reads awkwardly are said: (pattern, said), the
+# first that matches at a place wins. An aspect ratio that reads as a time
+# (9:16) is named; any other a:b with two digits after the colon is a time.
+ASPECTS = ('9:16', '16:10', '10:16')
+NUMBER_FORMS = (
+    (r'(?<![\w.])v(\d+(?:\.\d+)*)(?![\w.]*\w)', lambda m: 'version ' + _version(m)),   # v0.1.0
+    (r'(?<![\w.])(\d+(?:\.\d+){2,})(?![\w.]*\w)', _version),                           # 1.2.3
+    (r'(?<![\w.:])(?=(?:' + '|'.join(ASPECTS) + r')(?![\w:]))(\d+):(\d+)', _ratio),
+    (r'(?<![\w.:])([01]?\d|2[0-3]):([0-5]\d)(?![\w:])', _clock),                          # 10:30, a time
+    (r'(?<![\w.:])(\d+):(\d+)(?![\w:])', _ratio),                                         # 16:9, a ratio
+    (_NUM + r' ?(' + '|'.join(re.escape(u) for u in sorted(UNITS, key=len, reverse=True)) + r')(?!\w)', _unit),
+    (_NUM.replace(r'(?:\.\d+)?', r'\.\d+') + r'(?!\w|\.\d)', lambda m: number_said(m.group(1))),   # 0.4
+)
+_NUMBER_FORMS = re.compile('|'.join(f'(?P<f{k}>{pat})' for k, (pat, _) in enumerate(NUMBER_FORMS)))
+
+
+def number_forms(text):
+    """{written: said} for the numbers in `text` that Kokoro reads badly
+    (`NUMBER_FORMS`): decimals, a number and its unit, ratios, clock times
+    and versions. For the voice only: the captions keep what is written."""
+    out = {}
+    for m in _NUMBER_FORMS.finditer(text):
+        pat, said = NUMBER_FORMS[int(m.lastgroup[1:])]
+        sub = re.fullmatch(pat, m.group(0))
+        x = said(sub) if sub else None
+        if x:
+            out[m.group(0)] = x
+    return out
 
 
 def rounded(n):
@@ -427,12 +494,12 @@ def _name(part):
 def spoken(token):
     """How an identifier, path or flag is said: `draw_card` -> "draw card",
     `kickerTitle` -> "kicker title", `git_video/film.py` -> "film dot pie",
-    `--voice` -> "dash dash voice", `vb.speech` -> "v b dot speech"."""
+    `--voice` -> "voice", `vb.speech` -> "v b dot speech"."""
     t = token.strip()
     if t.endswith('()'):
         t = t[:-2]
     if t.startswith('--') and len(t) > 2:
-        return 'dash dash ' + spoken(t[2:])
+        return spoken(t[2:])   # a flag by its name
     if '/' in t.rstrip('/'):
         parts = t.rstrip('/').split('/')
         if t.endswith('/') or '.' in parts[-1] and parts[-1].rsplit('.', 1)[-1].lower() in EXT or len(parts) > 2:
@@ -454,9 +521,12 @@ _TOKEN = re.compile(r'--[A-Za-z][\w-]*|[A-Za-z_][\w./-]*\w')
 
 def lexicon_for(phrases):
     """{word: respelling} for `say`: every identifier, path or flag in the
-    phrases whose spoken form is not how it is spelled."""
+    phrases whose spoken form is not how it is spelled, and every number
+    Kokoro would read badly (`number_forms`). It is part of the clips'
+    cache key, so a change to how something is said is a new clip."""
     out = {}
     for p in phrases:
+        out.update(number_forms(p.text))
         toks = [m.group() for m in _TOKEN.finditer(p.text)]
         idents = [t for t in toks if callouts_mod._looks_like_code(t.rstrip('.')) or t.startswith('--')
                   or (t.isupper() and len(t) > 1) or re.search(r'[a-z][A-Z]', t)]

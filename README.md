@@ -220,7 +220,11 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
 A voice explains the change while the film plays, the way its author would
 to a colleague watching the screen: what it does and why, not what the
 editor shows. It is sparse: most shots pass in silence. Identifiers are
-said as words (`draw_card` as "draw card", `film.py` as "film dot pie") and
+said as words (`draw_card` as "draw card", `film.py` as "film dot pie",
+`--duration` as "duration"), and so are numbers Kokoro reads awkwardly:
+decimals, a number with its unit ("0.4 s" as "zero point four seconds",
+"2x" as "two times"), ratios ("16:9" as "sixteen by nine"), clock times
+and versions ("v0.1.0" as "version zero point one point zero"). All are
 captioned as written; nothing reads code, trailers, URLs or hashes aloud.
 
 The heuristic narrator writes the script from the commit message: what the

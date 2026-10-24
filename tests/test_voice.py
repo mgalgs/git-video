@@ -286,12 +286,40 @@ class TestScript(unittest.TestCase):
     def test_spoken_forms(self):
         for token, said in (('draw_card', 'draw card'), ('kickerTitle', 'kicker title'),
                             ('git_video/film.py', 'film dot pie'), ('vb.speech', 'v b dot speech'),
-                            ('HUNK_SCROLL', 'hunk scroll'), ('--voice', 'dash dash voice'),
+                            ('HUNK_SCROLL', 'hunk scroll'), ('--voice', 'voice'),
                             ('README.md', 'readme dot M D'), ('_stats', 'stats'), ('main', 'main'),
                             ('frob()', 'frob'), ('URL', 'u r l'), ('view/tops', 'view or tops')):
             self.assertEqual(voice.spoken(token), said, token)
         lex = voice.lexicon_for([voice.Phrase('A new function, draw_card, in film.py; main calls frob().', ('t',))])
         self.assertEqual(lex, {'draw_card': 'draw card', 'film.py': 'film dot pie', 'frob()': 'frob'})
+
+    def test_number_forms(self):
+        for text, want in (
+                ('0.4', {'0.4': 'zero point four'}),
+                ('It took 12.05.', {'12.05': 'twelve point zero five'}),
+                ('a 0.4 s fade', {'0.4 s': 'zero point four seconds'}),
+                ('1 s', {'1 s': 'one second'}),
+                ('in 3.14s', {'3.14s': 'three point one four seconds'}),
+                ('200 ms', {'200 ms': 'two hundred milliseconds'}),
+                ('5 min', {'5 min': 'five minutes'}),
+                ('3 MB, 64 KB and 2 GB', {'3 MB': 'three megabytes', '64 KB': 'sixty-four kilobytes',
+                                          '2 GB': 'two gigabytes'}),
+                ('12px', {'12px': 'twelve pixels'}),
+                ('45%', {'45%': 'forty-five percent'}),
+                ('2x faster, 2× smaller, 1.5x', {'2x': 'two times', '2×': 'two times', '1.5x': 'one point five times'}),
+                ('16:9 and 9:16', {'16:9': 'sixteen by nine', '9:16': 'nine by sixteen'}),
+                ('1:1', {'1:1': 'one by one'}),
+                ('at 10:30', {'10:30': 'ten thirty'}),
+                ('4:05 or 9:00', {'4:05': 'four oh five', '9:00': "nine o'clock"}),
+                ('v0.1.0', {'v0.1.0': 'version zero point one point zero'}),
+                ('v2', {'v2': 'version two'}),
+                ('1.2.3', {'1.2.3': 'one point two point three'}),
+                ('3 steps, 60 seconds, 2 files', {}),   # Kokoro says these well
+                ('step_2x and mod_1.py', {}),
+                ('10000000.5', {})):
+            self.assertEqual(voice.number_forms(text), want, text)
+        lex = voice.lexicon_for([voice.Phrase('With --duration 60, a 0.4 s fade at 1:1.', ('t',))])
+        self.assertEqual(lex, {'--duration': 'duration', '0.4 s': 'zero point four seconds', '1:1': 'one by one'})
 
     def test_sentences(self):
         for subject, want in (('Count wrapped rows', 'This change counts wrapped rows.'),
@@ -339,6 +367,28 @@ class TestSynth(unittest.TestCase):
 
     def narrate(self, engine, mode='tour'):
         return voice.narrate(self.change, [self.change], 0, mode, engine, 'bf_isabella')
+
+    def test_spoken_forms_are_heard_not_captioned(self):
+        heard = []
+
+        class Engine(fixtures.FakeEngine):
+            def phonemize(self, text, lang):
+                heard.append(text)
+                return text
+
+        phrases = [voice.Phrase('A 0.4 s fade at 16:9, in v0.1.0.', ('title',))]
+        lex = voice.lexicon_for(phrases)
+        d = voice.script_dir(phrases, lex, 'bf_isabella')
+        voice.synth(phrases, lex, 'bf_isabella', Engine(), d)
+        self.assertIn('zero point four seconds', ''.join(heard))
+        self.assertIn('sixteen by nine', ''.join(heard))
+        self.assertIn('version zero point one point zero', ''.join(heard))
+        self.assertEqual(vb.speech.load(os.path.join(d, '000.wav')).track.text, phrases[0].text)
+        # how it is said is part of the clip's key: said otherwise, a new clip
+        with mock.patch.dict(voice.UNITS, {'s': ('sec', 'secs')}):
+            lex2 = voice.lexicon_for(phrases)
+        self.assertEqual(lex2['0.4 s'], 'zero point four secs')
+        self.assertNotEqual(voice.script_dir(phrases, lex2, 'bf_isabella'), d)
 
     def test_cache(self):
         e = fixtures.FakeEngine()
