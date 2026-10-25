@@ -41,11 +41,10 @@ import difflib
 import math
 from collections import namedtuple
 
+from videobuilder.capabilities.typography import text_diff_morph
+from videobuilder.capabilities.ui import code_pane
+from videobuilder.capabilities.ui.code_pane import TAB
 from videobuilder.type.typewriter import schedule
-
-from .highlight import TAB
-
-from . import editor, highlight, worddiff
 
 # Natural timings, seconds: the pace of a person typing at ease.
 PER_CHAR = 0.06           # a typed character, on average (schedule makes it uneven)
@@ -75,11 +74,11 @@ MARGIN = 3                # rows kept between point and the window's edge
 
 
 def split_lines(text):
-    """`text` as lines, tabs expanded, as highlight counts them: no line after a
+    """`text` as lines, tabs expanded, as code_pane counts them: no line after a
     final newline; no lines at all for an empty file."""
     if not text:
         return []
-    lines = text.expandtabs(highlight.TAB).split('\n')
+    lines = text.expandtabs(code_pane.TAB).split('\n')
     if text.endswith('\n'):
         lines.pop()
     return lines
@@ -155,8 +154,8 @@ def _diff_blocks(old, new):
 
 def pair_rows(old_rows, new_rows):
     """[(old row, new row)]: the lines of a replaced run that are one line
-    edited (they share at least worddiff.PAIR_SHARE of their words), in order."""
-    return worddiff.pair_rows(old_rows, new_rows)
+    edited (they share at least text_diff_morph.PAIR_SHARE of their words), in order."""
+    return text_diff_morph.pair_rows(old_rows, new_rows)
 
 
 def _clamp(x, a, b):
@@ -318,7 +317,7 @@ class _Script:
     def edit_line(self, at, old, new, j, hunk):
         """One line edited in place: the changed words killed and the new ones
         typed, left to right."""
-        ops = worddiff.line_edits(old, new)
+        ops = text_diff_morph.line_edits(old, new)
         if not ops:
             self.written[j] = self.t
             return
@@ -817,7 +816,7 @@ def _fit(top, line, lines, rows, cols, m):
         return top
 
     def wrapped(ln):
-        return editor.wrap_rows(lines[ln][1].expandtabs(TAB), cols)
+        return code_pane.wrap_rows(lines[ln][1].expandtabs(TAB), cols)
     for margin, stop in ((m, line - m), (0, line)):
         while top < stop and sum(wrapped(ln) for ln in range(top, line + 1)) + margin > rows:
             top += 1

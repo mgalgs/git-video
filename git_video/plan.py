@@ -11,9 +11,11 @@ import os
 import re
 from dataclasses import asdict, dataclass, field
 
+from videobuilder.capabilities.typography import text_diff_morph
+from videobuilder.capabilities.ui import code_pane
 from videobuilder.type.typewriter import schedule
 
-from . import callouts as callouts_mod, edits, graph as graphmod, highlight, repomap, worddiff, xref
+from . import callouts as callouts_mod, edits, graph as graphmod, repomap, xref
 from .collect import is_test
 
 VERSION = 2
@@ -164,8 +166,8 @@ def morph_segments(f, h):
     lines = f.text.split('\n')
     out = []
     for at, old, new in h.segments:
-        old = [x.expandtabs(highlight.TAB) for x in old]
-        ops = worddiff.ops(old, [x.expandtabs(highlight.TAB) for x in lines[at:at + new]])
+        old = [x.expandtabs(code_pane.TAB) for x in old]
+        ops = text_diff_morph.ops(old, [x.expandtabs(code_pane.TAB) for x in lines[at:at + new]])
         if ops is None:
             return None
         out.append({'at': at, 'old': old, 'new': new, 'ops': ops})
@@ -320,13 +322,13 @@ def callout_target(f, word, top, prefer, fallback):
         pat = re.compile(rf'(?<![\w$-]){re.escape(w)}(?![\w$-])')
         for pool in ([n for n in prefer if n in rows], rows):
             for n in pool:
-                m = pat.search(lines[n - 1].expandtabs(highlight.TAB))
+                m = pat.search(lines[n - 1].expandtabs(code_pane.TAB))
                 if m and m.end() <= PLAN_COLS:
                     return n, m.start(), len(w)
     n = min(max(1, fallback), max(1, len(lines)))
     if not prefer:
         return n, 0, 0
-    text = lines[n - 1].expandtabs(highlight.TAB) if lines else ''
+    text = lines[n - 1].expandtabs(code_pane.TAB) if lines else ''
     col = len(text) - len(text.lstrip())
     return n, min(col, PLAN_COLS - 1), max(1, min(len(text.rstrip()) - col, PLAN_COLS - col))
 

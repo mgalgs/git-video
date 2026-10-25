@@ -9,8 +9,9 @@ import unittest
 from unittest import mock
 
 import videobuilder as vb
+from videobuilder.capabilities.ui import code_pane
 
-from git_video import cli, collect, editor, edits, film, plan, sidebar
+from git_video import cli, collect, edits, film, plan, sidebar
 from tests import fixtures
 from tests.test_cli import quiet
 
@@ -104,7 +105,7 @@ class TestFilm(unittest.TestCase):
         for voice in (False, True):
             st = film.stage(SimpleNamespace(width=1920, height=1080, format='16x9'), voice=voice)
             for digits in (3, 4):   # a file of up to 9999 lines
-                lay = editor.layout(st.main, st.mono, digits=digits, minimap=True)
+                lay = code_pane.layout(st.main, st.mono, digits=digits, minimap=True)
                 self.assertGreaterEqual(lay.cols, 90, (voice, digits))
                 self.assertGreaterEqual(lay.rows, plan.PLAN_ROWS, (voice, digits))
             self.assertGreaterEqual(st.mono.size, 22)   # still easily read at 1080p
@@ -336,13 +337,13 @@ class TestFilm(unittest.TestCase):
     def washed(self, tour, n, fmt):
         """The lines' highlighter strokes drawn on frame n: [(y, alpha, progress)]."""
         strokes = []
-        real = editor.highlighter_swipe
+        real = code_pane.highlighter_swipe
 
         def record(cv, x, y, w, h, p, **kw):
             strokes.append((y, kw.get('alpha', 1.0), p))
             return real(cv, x, y, w, h, p, **kw)
 
-        with mock.patch.object(editor, 'highlighter_swipe', record):
+        with mock.patch.object(code_pane, 'highlighter_swipe', record):
             tour.film.frame(n, fmt)
         return strokes
 
@@ -356,7 +357,7 @@ class TestFilm(unittest.TestCase):
         travel = next(i for i, s in enumerate(shots) if s['kind'] == 'travel')
         pop = next(i for i, s in enumerate(shots) if s['kind'] == 'xref-pop')
         push = pop - 1
-        settled = editor.Theme().sweep_alpha * film.SETTLED
+        settled = code_pane.Theme().sweep_alpha * film.SETTLED
         for fmt in ('16x9', '9x16', '1x1'):
             frames = [starts[travel] - 2, starts[travel] - 1, starts[travel], starts[travel] + 1,   # leaving on a travel
                       starts[travel] + round(plan.TRAVEL_SHRINK * fps * 0.5),
@@ -501,13 +502,13 @@ class TestFilm(unittest.TestCase):
         for fmt in ('16x9', '9x16', '1x1'):
             cv = self.tour.film.frame(0, format=fmt)
             st = film.stage(cv)
-            self.assertGreaterEqual(film.editor.layout(st.main, st.mono).rows, plan.PLAN_ROWS, fmt)
+            self.assertGreaterEqual(code_pane.layout(st.main, st.mono).rows, plan.PLAN_ROWS, fmt)
 
     def test_planned_cols_fit_every_format(self):
         for fmt in ('16x9', '9x16', '1x1'):
             cv = self.tour.film.frame(0, format=fmt)
             st = film.stage(cv)
-            lay = film.editor.layout(st.main, st.mono, digits=6, minimap=True)
+            lay = code_pane.layout(st.main, st.mono, digits=6, minimap=True)
             self.assertGreaterEqual(int(lay.text_box.w // lay.cell_w), plan.PLAN_COLS, fmt)
 
     def test_minimap_in_every_format(self):
@@ -656,13 +657,13 @@ class TestFilm(unittest.TestCase):
         self.assertNotEqual(mid, still)
         # and is never drawn twice: no ghost copy trails it
         cv = Canvas(1920, 1080, '#000', format=FORMATS['16x9'])
-        lay = editor.layout(st.main, st.mono, minimap=True)
-        buf = editor.Buffer('a.py', [[('#fff', 'x = 1')]] * 40)
-        editor.draw(cv, lay, buf, 0.0, motion=(1.5, 0.015))
+        lay = code_pane.layout(st.main, st.mono, minimap=True)
+        buf = code_pane.Buffer('a.py', [[('#fff', 'x = 1')]] * 40)
+        code_pane.draw(cv, lay, buf, 0.0, motion=(1.5, 0.015))
         ref = Canvas(1920, 1080, '#000', format=FORMATS['16x9'])
         calls = []
-        with mock.patch.object(editor, '_draw_runs', lambda *a: calls.append(a[3])):
-            editor.draw(ref, lay, buf, 0.0, motion=(1.5, 0.015))
+        with mock.patch.object(code_pane, '_draw_runs', lambda *a: calls.append(a[3])):
+            code_pane.draw(ref, lay, buf, 0.0, motion=(1.5, 0.015))
         self.assertEqual(len(calls), len(set(calls)))
 
     def test_develop_jump_scroll_glides(self):
@@ -670,13 +671,13 @@ class TestFilm(unittest.TestCase):
         ch = collect.collect(fixtures.make_far_repo(self.tmp.name + '/fardev'), 'HEAD')
         tour = film.Tour(plan.build(ch, 0, 'develop'), ch, formats=('16x9',), log=io.StringIO())
         (i,) = [k for k, s in enumerate(tour.shots) if s['kind'] == 'edit']
-        tops, real = [], editor.draw
+        tops, real = [], code_pane.draw
 
         def record(cv, lay, buf, top, **kw):
             tops.append(top)
             return real(cv, lay, buf, top, **kw)
 
-        with mock.patch.object(editor, 'draw', record):
+        with mock.patch.object(code_pane, 'draw', record):
             for n in range(tour.shot_frames[i], tour.shot_frames[i + 1]):
                 tour.film.frame(n, '16x9')
         self.assertGreater(max(tops) - min(tops), 200)
@@ -855,7 +856,7 @@ class TestFilm(unittest.TestCase):
                     if kind in want_mark:
                         self.assertIn(want_mark[kind], marks, (name, label, fmt))
                     cursor = tour.performance(i).state_at(film.edits.source_time(t, tour.shots[i]['clock'])).cursor
-                    lay = film.editor.layout(st.main, st.mono, digits=tour.edit_texts[i][2], minimap=True)
+                    lay = code_pane.layout(st.main, st.mono, digits=tour.edit_texts[i][2], minimap=True)
                     _, top = tour.performance(i).view(film.edits.source_time(t, tour.shots[i]['clock']), lay.rows, lay.cols)
                     self.assertTrue(top <= cursor[0] < top + lay.rows, (name, label, fmt))
                     side = [b for m, b in cv.marks if m.startswith('sidebar.')]
@@ -1185,8 +1186,8 @@ class TestVoiceFilm(unittest.TestCase):
         for fmt in ('16x9', '9x16', '1x1'):
             cv = vb.film.as_format(fmt)
             st = film.stage(cv, voice=True)
-            self.assertGreaterEqual(film.editor.layout(st.main, st.mono).rows, plan.PLAN_ROWS, fmt)
-            lay = film.editor.layout(st.main, st.mono, digits=6, minimap=True)
+            self.assertGreaterEqual(code_pane.layout(st.main, st.mono).rows, plan.PLAN_ROWS, fmt)
+            lay = code_pane.layout(st.main, st.mono, digits=6, minimap=True)
             self.assertGreaterEqual(int(lay.text_box.w // lay.cell_w), plan.PLAN_COLS, fmt)
             self.assertEqual(film.stage(cv), film.stage(cv, voice=False))
             self.assertIsNone(film.stage(cv).caption)

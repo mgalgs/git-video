@@ -2,7 +2,10 @@ import bisect
 import tempfile
 import unittest
 
-from git_video import collect, editor, edits, plan, worddiff
+from videobuilder.capabilities.typography import text_diff_morph
+from videobuilder.capabilities.ui import code_pane
+
+from git_video import collect, edits, plan
 from tests import fixtures
 
 
@@ -127,7 +130,7 @@ class TestEdits(unittest.TestCase):
         for a, b in (('    return x + 1', '    return x * 2'), ('a  = 1', 'a = 1'), ('', 'new'), ('gone', ''),
                      ('f(a, b)', 'g(a, b, c)')):
             out, delta = a, 0
-            for col, dl, ins in worddiff.line_edits(a, b):
+            for col, dl, ins in text_diff_morph.line_edits(a, b):
                 c = col + delta
                 out = out[:c] + ins + out[c + dl:]
                 delta += len(ins) - dl
@@ -196,7 +199,7 @@ class TestEdits(unittest.TestCase):
                 line = state.cursor[0]
                 if prev is not None and top < prev:
                     self.assertLess(line, prev + m, (rows, cols, t, prev, top))   # only point near the top scrolls back
-                wrapped = [editor.wrap_rows(x, cols) for _, x in state.lines]
+                wrapped = [code_pane.wrap_rows(x, cols) for _, x in state.lines]
                 self.assertLessEqual(top, line, (rows, cols, t))
                 self.assertLessEqual(sum(wrapped[top:line + 1]), rows, (rows, cols, t))   # all of point's line shows
                 prev = top

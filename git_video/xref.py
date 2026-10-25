@@ -8,8 +8,9 @@ import re
 from dataclasses import dataclass, replace
 
 from pygments.token import Name, Text
+from videobuilder.capabilities.ui import code_pane
 
-from . import collect, highlight
+from . import collect
 
 # Pygments lexer name -> (pathspecs, ERE for git grep, [Python regexes with name/kind groups]).
 _PY = ('*.py', '*.pyi')
@@ -81,7 +82,7 @@ _indexes = {}
 
 
 def lang_of(path):
-    name = highlight.lexer_for(path).name
+    name = code_pane.lexer_for(path).name
     return name if name in LANGS else None
 
 
@@ -107,9 +108,9 @@ def index(repo, target, lang):
             m = p.match(text)
             if m and m.group('name') not in KEYWORDS:
                 kind = m.groupdict().get('kind') or 'function'
-                col = len(text[:m.start('name')].expandtabs(highlight.TAB))
+                col = len(text[:m.start('name')].expandtabs(code_pane.TAB))
                 defs.setdefault(m.group('name'), []).append(Definition(path, int(line), kind, col))
-                indents.setdefault(path, {})[int(line)] = _indent(text.expandtabs(highlight.TAB))
+                indents.setdefault(path, {})[int(line)] = _indent(text.expandtabs(code_pane.TAB))
                 break
     defs = _owned(defs, indents)
     _indexes[key] = defs
@@ -141,7 +142,7 @@ def _owned(defs, indents):
 
 def candidates(text, path, lines):
     """The candidate identifiers on the given 1-based `lines` of the file, in order."""
-    toks = highlight.tokens_by_line(text, path)
+    toks = code_pane.tokens_by_line(text, path)
     # Pygments' Bash lexer gives a command name (`compute_total 3`) plain Text.
     shell = lang_of(path) == 'Bash'
     out = []
@@ -184,7 +185,7 @@ def resolve(cand, defs, use_path, text=None):
     lines = text.split('\n') if text is not None else None
     qual = None
     if lines is not None and 0 < cand.line <= len(lines):
-        m = QUALIFIED.search(lines[cand.line - 1].expandtabs(highlight.TAB)[:cand.col])
+        m = QUALIFIED.search(lines[cand.line - 1].expandtabs(code_pane.TAB)[:cand.col])
         qual = m.group(1) if m else None
     here = lines[cand.line - 1] if lines is not None and 0 < cand.line <= len(lines) else ''
     if _PY_FROM.match(here) or _PY_IMPORT.match(here) or _JS_IMPORT.match(here):
@@ -254,7 +255,7 @@ def _bound(lines, cand):
                        rf'|\bfor\b[^:\n]*(?<![\w.$]){name}\b[^:\n]*\bin\b|\bas\s+{name}\b'
                        rf'|\b(?:const|let|var)\s+{name}\b')
     param = re.compile(rf'[(,]\s*\**{name}\b')
-    tab = [s.expandtabs(highlight.TAB) for s in lines]
+    tab = [s.expandtabs(code_pane.TAB) for s in lines]
     ln = min(cand.line, len(tab)) - 1
     if ln < 0:
         return False
@@ -291,8 +292,8 @@ def _reaches(lines, d, line):
         return True
     if not 0 < d.line < line <= len(lines):
         return False
-    ind = _indent(lines[d.line - 1].expandtabs(highlight.TAB))
-    return all(not s.strip() or _indent(s.expandtabs(highlight.TAB)) >= ind for s in lines[d.line:line])
+    ind = _indent(lines[d.line - 1].expandtabs(code_pane.TAB))
+    return all(not s.strip() or _indent(s.expandtabs(code_pane.TAB)) >= ind for s in lines[d.line:line])
 
 
 class _Paths(set):
@@ -412,10 +413,10 @@ def enclosures(lines, defs):
     out, open_ = [], []   # open_: [(base indent, (name, d))] still holding every line so far, by line
     for n, s in enumerate(lines, 1):
         if s.strip():
-            ind = _indent(s.expandtabs(highlight.TAB))
+            ind = _indent(s.expandtabs(code_pane.TAB))
             open_ = [o for o in open_ if ind > o[0]]
         if n in starts:
-            open_.append((_indent(s.expandtabs(highlight.TAB)), starts[n]))
+            open_.append((_indent(s.expandtabs(code_pane.TAB)), starts[n]))
         out.append(open_[-1][1] if open_ and s.strip() else None)
     return out
 

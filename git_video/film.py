@@ -32,10 +32,11 @@ from videobuilder.capabilities.principles.time_remapping import speed_ramp
 from videobuilder.capabilities.ui.scroll_velocity_skew import scroll_velocity, velocity_skew
 from videobuilder.capabilities.transitions.stacked_card_reveal import stacked_card_reveal
 from videobuilder.capabilities.ui.progress_steps_connector_fill import draw_progress_steps
+from videobuilder.capabilities.ui import code_pane
 
-from . import edits, editor, graph as graphmod, highlight, plan as P, repomap, sidebar, sounds, voice
+from . import edits, graph as graphmod, plan as P, repomap, sidebar, sounds, voice
 
-THEME = editor.Theme()
+THEME = code_pane.Theme()
 FORMATS = ('16x9', '9x16', '1x1')
 UI = 'sans-serif'
 SETTLED = 0.45  # a swept band's strength once it has settled
@@ -131,7 +132,7 @@ class View:
 
 SCRATCH_TEXT = (';; This buffer is for text that is not saved, and for Lisp evaluation.\n'
                 ';; To create a file, visit it with C-x C-f and enter text in its buffer.\n')
-SCRATCH = editor.Buffer('*scratch*', highlight.highlight_lines(SCRATCH_TEXT, 'scratch.el'), 'Lisp Interaction')
+SCRATCH = code_pane.Buffer('*scratch*', code_pane.highlight_lines(SCRATCH_TEXT, 'scratch.el'), 'Lisp Interaction')
 
 
 def fit_top(top, focus, rows, n):
@@ -145,7 +146,7 @@ def fit_top(top, focus, rows, n):
 
 
 def _mode(path):
-    name = highlight.lexer_for(path).name
+    name = code_pane.lexer_for(path).name
     return 'Text' if name == 'Text only' else name
 
 
@@ -209,15 +210,15 @@ class Tour:
                     text = ch.text(path)
                     if text is None:
                         raise ValueError(f'{path} has no text at {ch.target[:12]} to show')
-                    self.buffers[k, path, 'new'] = editor.Buffer(path, highlight.highlight_lines(text, path),
-                                                                 _mode(path))
+                    self.buffers[k, path, 'new'] = code_pane.Buffer(path, code_pane.highlight_lines(text, path),
+                                                                    _mode(path))
         self.views = self._views()
-        self.segments = {}   # hunk shot index -> its morph's editor.Segments (old lines highlighted once)
+        self.segments = {}   # hunk shot index -> its morph's code_pane.Segments (old lines highlighted once)
         for i, s in enumerate(self.shots):
             if s['kind'] == 'hunk' and s.get('morph'):
                 self.segments[i] = tuple(
-                    editor.Segment(g['at'], highlight.highlight_lines('\n'.join(g['old']) + '\n', s['path']),
-                                   g['new'], tuple(tuple(o) for o in g['ops']))
+                    code_pane.Segment(g['at'], code_pane.highlight_lines('\n'.join(g['old']) + '\n', s['path']),
+                                      g['new'], tuple(tuple(o) for o in g['ops']))
                     for g in s['morph']['segments'])
         self.graph_layouts = {}   # the call graph per side-bar box (and patch), laid out once
         self.graph_parts = {}
@@ -242,8 +243,8 @@ class Tour:
         self.minimaps = {}   # the minimap per buffer: bars and marks, computed once
         for (k, path, variant), buf in self.buffers.items():
             added, removed, ranges = self.marks.get((k, path), ((), (), ()))
-            self.minimaps[k, path, variant] = editor.Minimap(editor.minimap_bars(buf.lines), tuple(ranges),
-                                                             tuple(removed))
+            self.minimaps[k, path, variant] = code_pane.Minimap(code_pane.minimap_bars(buf.lines), tuple(ranges),
+                                                                tuple(removed))
         self.maps = {}   # the treemap per main box, laid out once
         if plan.map:
             for f in formats:
@@ -272,7 +273,7 @@ class Tour:
         return ps[k]
 
     def buffer(self, view):
-        """The editor.Buffer `view` shows (the scratch buffer for no file)."""
+        """The code_pane.Buffer `view` shows (the scratch buffer for no file)."""
         return self.buffers[view.patch, view.path, view.variant] if view.path else SCRATCH
 
     def performance(self, i):
@@ -284,8 +285,8 @@ class Tour:
             new_text = ch.text(s['path']) or ''
             old, new = edits.split_lines(old_text), edits.split_lines(new_text)
             self.performances[i] = edits.Performance(old, s['steps'])
-            self.edit_texts[i] = (highlight.highlight_lines(old_text, s['path']) if old else (),
-                                  highlight.highlight_lines(new_text, s['path']) if new else (),
+            self.edit_texts[i] = (code_pane.highlight_lines(old_text, s['path']) if old else (),
+                                  code_pane.highlight_lines(new_text, s['path']) if new else (),
                                   max(3, len(str(max(len(old), len(new)) + 1))), _mode(s['path']))
         return self.performances[i]
 
@@ -577,7 +578,7 @@ class Tour:
 
 
 def _layout(st, buf):
-    return editor.layout(st.main, st.mono, digits=max(3, len(str(len(buf.lines)))), minimap=True)
+    return code_pane.layout(st.main, st.mono, digits=max(3, len(str(len(buf.lines)))), minimap=True)
 
 
 def _stats(plan):
@@ -1197,8 +1198,8 @@ def _pane(tour, cv, st, view, top=None, wash=True, **kw):
         top = _fitted(tour, st, view)
     added, removed, tints = tour.marks.get((view.patch, view.path), ((), (), ()))
     kw.setdefault('cursor', view.cursor)
-    return editor.draw(cv, lay, buf, top, marks_added=added, marks_removed_at=removed, tints=tints,
-                       minimap=tour.minimaps.get((view.patch, view.path, view.variant)), theme=THEME, **kw)
+    return code_pane.draw(cv, lay, buf, top, marks_added=added, marks_removed_at=removed, tints=tints,
+                          minimap=tour.minimaps.get((view.patch, view.path, view.variant)), theme=THEME, **kw)
 
 
 def _fitted(tour, st, view):
@@ -1206,8 +1207,8 @@ def _fitted(tour, st, view):
     above its focus wrap it off the bottom."""
     buf = tour.buffer(view)
     lay = _layout(st, buf)
-    return editor.keep_in_view(lay, buf.lines, fit_top(view.top, view.focus, lay.rows, len(buf.lines) + view.extra),
-                               view.focus)
+    return code_pane.keep_in_view(lay, buf.lines, fit_top(view.top, view.focus, lay.rows, len(buf.lines) + view.extra),
+                                  view.focus)
 
 
 def _open(tour, cv, st, shot, t, i, before, after):
@@ -1360,7 +1361,7 @@ CALLOUT_SAMPLES = 24  # develop: the moments of a callout's life its place is ch
 
 def row_ends(geo, area):
     """Per whole row of `area`, the x the text on it reaches (area.x when the
-    row is blank), from a frame's editor.Geometry."""
+    row is blank), from a frame's code_pane.Geometry."""
     lay, lh = geo.lay, geo.lay.line_h
     count = max(0, int(area.h // lh))
     ends = [area.x] * count
@@ -1369,7 +1370,7 @@ def row_ends(geo, area):
         y = geo.y(ln)
         if y >= area.bottom:
             break
-        text = editor.line_text(geo.lines[ln])
+        text = code_pane.line_text(geo.lines[ln])
         starts = geo.starts(ln)
         for r, a in enumerate(starts):
             b = starts[r + 1] if r + 1 < len(starts) else len(text)
@@ -1430,7 +1431,7 @@ def _edit_moment(tour, st, i, t):
     band, the target: point's row from its start to point)."""
     shot = tour.shots[i]
     lay, buf, top, _, state = _edit_view(tour, st, i, edits.source_time(t, shot['clock']))
-    geo = editor.Geometry(lay, buf.lines, top)
+    geo = code_pane.Geometry(lay, buf.lines, top)
     line, col = state.cursor
     tb = lay.text_box
 
@@ -1461,7 +1462,7 @@ def develop_callout_places(tour, st, i, k):
         return tour.callout_places[key]
     c = tour.shots[i]['callouts'][k]
     tour.performance(i)   # makes edit_texts[i]
-    lay = editor.layout(st.main, st.mono, digits=tour.edit_texts[i][2], minimap=True)
+    lay = code_pane.layout(st.main, st.mono, digits=tour.edit_texts[i][2], minimap=True)
     area = _text_area(lay)
     w = callout_width(area)
     _, h, _ = _card_text(tour, st, (i, k), c, w)
@@ -1587,7 +1588,7 @@ def tour_callout_place(tour, st, i, k):
         t = c['at'] + (c['until'] - c['at']) * j / TOUR_CALLOUT_SAMPLES
         top, _, _ = _hunk_top(tour, st, shot, t, before, after)
         p = vb.clamp01(morph_progress(shot, t))
-        geo = editor.Geometry(lay, buf.lines, top, segs if p < 1 else [], p)
+        geo = code_pane.Geometry(lay, buf.lines, top, segs if p < 1 else [], p)
         e = row_ends(geo, area)
         ends = e if ends is None else [max(a, b) for a, b in zip(ends, e)]
 
@@ -1736,7 +1737,7 @@ def _callout_card(tour, cv, st, where, key, c, t, target, band, point, outline=T
     cv.mark('callout.card', *card)
     cv.mark('callout.target', *target)
     for name, b in (('callout.point', point), ('callout.hunk', band)):   # what it keeps clear of
-        m = editor._clipped(b, area)
+        m = code_pane.clipped_box(b, area)
         if m is not None:
             cv.mark(name, *m)
     return card
@@ -1764,7 +1765,7 @@ def _reveal(cv, box, a, b, p, center, r0):
 def _word_box(tour, st, view, line, col, n):
     """Where a word lands in the pane showing `view`, without drawing it."""
     buf = tour.buffer(view)
-    return editor.Geometry(_layout(st, buf), buf.lines, _fitted(tour, st, view)).box(line, col, n)
+    return code_pane.Geometry(_layout(st, buf), buf.lines, _fitted(tour, st, view)).box(line, col, n)
 
 
 def _xref_source(tour, cv, st, shot, t, before):
@@ -1888,7 +1889,7 @@ class _Runs:
             runs = self.old if origin[0] == 'old' else self.new
             if origin[1] < len(runs):
                 return runs[origin[1]]
-        return highlight.highlight_lines(text, self.path)[0] if text else ()
+        return code_pane.highlight_lines(text, self.path)[0] if text else ()
 
 
 def _changed_ranges(lines):
@@ -1912,8 +1913,8 @@ def _edit_view(tour, st, i, src):
     perf = tour.performance(i)
     old_runs, new_runs, digits, mode = tour.edit_texts[i]
     state = perf.state_at(src)
-    buf = editor.Buffer(s['path'], _Runs(state.lines, old_runs, new_runs, s['path']), mode)
-    lay = editor.layout(st.main, st.mono, digits=digits, minimap=True)
+    buf = code_pane.Buffer(s['path'], _Runs(state.lines, old_runs, new_runs, s['path']), mode)
+    lay = code_pane.layout(st.main, st.mono, digits=digits, minimap=True)
     scroll, top = perf.view(src, lay.rows, lay.cols)   # long lines wrap: the window counts their rows
     motion = None
     if scroll is not None:
@@ -1934,17 +1935,17 @@ def _edit_pane(tour, cv, st, i, src, **kw):
     s = tour.shots[i]
     lay, buf, top, motion, state = _edit_view(tour, st, i, src)
     ranges = _changed_ranges(state.lines)
-    bars = editor.minimap_bars(buf.lines[k] for k in range(len(state.lines)))
+    bars = code_pane.minimap_bars(buf.lines[k] for k in range(len(state.lines)))
     done = s['done_before'] + state.done
     kw.setdefault('echo', state.echo)
     kw.setdefault('echo_cursor', state.echo.startswith(ECHO_PROMPT))
     kw.setdefault('blink', state.since)
-    where = editor.draw(cv, lay, buf, top, cursor=state.cursor,
-                        marks_added=[n for a, b in ranges for n in range(a, b + 1)],
-                        marks_removed_at=state.removed,
-                        minimap=editor.Minimap(bars, tuple(ranges), tuple(state.removed)),
-                        region=state.region, folds=[state.fold] if state.fold else (),
-                        progress=(math.floor(done + 1e-6), s['total_lines']), motion=motion, theme=THEME, **kw)
+    where = code_pane.draw(cv, lay, buf, top, cursor=state.cursor,
+                           marks_added=[n for a, b in ranges for n in range(a, b + 1)],
+                           marks_removed_at=state.removed,
+                           minimap=code_pane.Minimap(bars, tuple(ranges), tuple(state.removed)),
+                           region=state.region, folds=[state.fold] if state.fold else (),
+                           progress=(math.floor(done + 1e-6), s['total_lines']), motion=motion, theme=THEME, **kw)
     return where, state
 
 
