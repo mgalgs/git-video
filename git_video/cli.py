@@ -75,12 +75,17 @@ def parser():
                         f'explaining the intent behind it, in a Kokoro voice '
                         f"(default {DEFAULT_VOICE}); needs the voice extra, pip install 'git-video[voice]', "
                         'and the Kokoro model files')
-    p.add_argument('--narrator', choices=('auto', 'fork-sandbox', 'claude', 'heuristic'), metavar='NARRATOR',
+    p.add_argument('--narrator', choices=('auto', 'fork-sandbox', 'claude', 'mail-seat', 'heuristic'), metavar='NARRATOR',
                    help='with --voice, who writes the narration: fork-sandbox (an agent session in a sandboxed '
                         'clone reads the change and explains its approach and reasons; see '
                         'github.com/mgalgs/fork-sandbox), claude (the same brief for Claude Code, run headless '
                         'and read-only in a worktree of the change, with the login the claude command already '
-                        'has), heuristic (from the commit message), or auto (default: fork-sandbox when the '
+                        'has), mail-seat (the same brief mailed to an agent seat over the fork-sandbox mail API, '
+                        'which replies with the script; GIT_VIDEO_NARRATOR_MAIL_URL, '
+                        'GIT_VIDEO_NARRATOR_MAIL_TOKEN_FILE, GIT_VIDEO_NARRATOR_FROM and GIT_VIDEO_NARRATOR_SEAT '
+                        'say where and to whom, GIT_VIDEO_NARRATOR_MAIL_ARGS adds send options and '
+                        'GIT_VIDEO_NARRATOR_POLL_TIMEOUT how long to wait, default 1200s; never picked by auto), '
+                        'heuristic (from the commit message), or auto (default: fork-sandbox when the '
                         'fork-sandbox command is on PATH, else claude when the claude command is on PATH and '
                         'CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY is set, else heuristic; an agent that '
                         'fails falls back to heuristic with a warning). GIT_VIDEO_NARRATOR_MODEL picks the '

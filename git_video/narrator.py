@@ -13,6 +13,7 @@ short --duration, `max_words`), and speech at most SPEECH_SHARE of the
 voiced film. How a phrase is said (spoken forms, captions) and how the
 shots stretch to it is voice's job, the same for all three.
 """
+import base64
 import hashlib
 import json
 import os
@@ -22,6 +23,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, replace
 
 from . import edits, plan as planmod
@@ -496,6 +500,8 @@ INSPECT = {
                     'and read the code around it.',
     'claude': f'The whole diff, with a diffstat first, is in `{CHANGES}` in your working\n'
               'directory: read it in pieces, and read the code around it.',
+    'mail-seat': 'Inspect it yourself: `git diff {base}..{tip}` (or `git show` per commit),\n'
+                 'and read the code around it.',
 }
 # How each agent hands its script back: (the intro's line, the Output
 # section's opening, its last sentence).
@@ -508,6 +514,10 @@ OUTPUT = {
                'you cannot run commands or write files. Your final message is\nthe narration, one JSON object and nothing else '
                '(a fenced `json` block\nis fine):',
                'Check that it parses as JSON, then end your turn with it as your final\nmessage.'),
+    'mail-seat': ('Your only output is your reply\nto this thread: the narration as JSON.',
+                  'Your reply to this thread is the narration, one JSON object and nothing\nelse '
+                  '(a fenced `json` block is fine):',
+                  'Check that it parses as JSON, then send it as your reply.'),
 }
 
 
@@ -542,8 +552,8 @@ def brief(change, plan, patches, narrator='fork-sandbox'):
 
 
 # ---- choosing a narrator ----
-NARRATORS = ('auto', 'fork-sandbox', 'claude', 'heuristic')
-AGENTS = ('fork-sandbox', 'claude')
+NARRATORS = ('auto', 'fork-sandbox', 'claude', 'mail-seat', 'heuristic')
+AGENTS = ('fork-sandbox', 'claude', 'mail-seat')
 # Having `claude` on PATH is not consent to spend: auto runs it only when
 # one of these is set, the way CI opts in.
 CLAUDE_CREDENTIALS = ('CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY')
@@ -553,7 +563,8 @@ def resolve(choice, which=shutil.which, environ=None):
     """(narrator, fall back to the heuristic on failure) for --narrator
     `choice`: auto is fork-sandbox when the command is on PATH, else claude
     when the command is on PATH and a CLAUDE_CREDENTIALS variable is set in
-    `environ` (os.environ), both falling back; else the heuristic."""
+    `environ` (os.environ), both falling back; else the heuristic. mail-seat
+    is never chosen by auto: it runs only when asked for."""
     if choice != 'auto':
         return choice, False
     environ = os.environ if environ is None else environ
@@ -603,7 +614,11 @@ class Narrator:
 
     def agent(self, plan):
         """The agent's script, from the cache when it has narrated this before."""
-        model = os.environ.get('GIT_VIDEO_NARRATOR_MODEL') or DEFAULT_MODEL
+        if self.name == 'mail-seat':   # the cluster picks the seat's model: the seat is what varies
+            conf = mail_config()
+            model = conf['seat']
+        else:
+            model = os.environ.get('GIT_VIDEO_NARRATOR_MODEL') or DEFAULT_MODEL
         key = cache_key(self.change, plan, self.patches, self.mode, self.series, self.verbose, model, self.duration,
                         self.name)
         path = cache_path(key)
@@ -616,6 +631,8 @@ class Narrator:
                 pass   # a stale or broken entry: narrate again
         if self.name == 'claude':
             phrases, callouts = run_claude(self.change, plan, self.patches, model, self.log)
+        elif self.name == 'mail-seat':
+            phrases, callouts = run_mail_seat(self.change, plan, self.patches, conf, key, self.log)
         else:
             (phrases, callouts), self.run_dir = run_fork_sandbox(self.change, plan, self.patches, model, key,
                                                                  self.log)
@@ -754,7 +771,14 @@ def answer(stdout):
         raise _error('claude gave no result', output=stdout[-4000:])
     if doc.get('is_error'):
         raise _error(f'claude failed: {_clip(doc["result"], 30)}', output=doc['result'])
-    text = doc['result'].strip()
+    return _json_in(doc['result'])
+
+
+def _json_in(text):
+    """The narration JSON in an agent's answer `text`: the last fenced block's
+    when it has one, else from its first brace to its last (the whole text
+    when they bracket nothing, for `read` to reject)."""
+    text = text.strip()
     blocks = _FENCED.findall(text)
     if blocks:
         return blocks[-1].strip()
@@ -804,3 +828,166 @@ def run_claude(change, plan, patches, model, log, timeout=None):
         return read(text, plan, patches, log)
     except NarratorError as e:
         raise _error(f'its answer does not pass: {e}') from None
+
+
+# ---- the mail-seat narrator ----
+MAIL_TIMEOUT = 1200   # seconds to wait for the seat's reply, by default: a seat run takes minutes
+MAIL_POLL = 15        # seconds between looks at the thread
+MAIL_HTTP_TIMEOUT = 60   # one request; the API kills a verb at 60 s
+MAIL_ENV = {'url': 'GIT_VIDEO_NARRATOR_MAIL_URL', 'token_file': 'GIT_VIDEO_NARRATOR_MAIL_TOKEN_FILE',
+            'from': 'GIT_VIDEO_NARRATOR_FROM', 'seat': 'GIT_VIDEO_NARRATOR_SEAT'}
+_TRANSIENT = (409, 502, 503, 504)   # the API restarting, or an idempotency key still running: try again
+
+
+def mail_config(environ=None):
+    """The mail-seat narrator's cluster specifics, from `environ` (os.environ):
+    {url, token, from, seat, extra (GIT_VIDEO_NARRATOR_MAIL_ARGS, shell-split),
+    timeout}. NarratorError naming a required variable that is unset, or a
+    token file that cannot be read or is empty."""
+    environ = os.environ if environ is None else environ
+    conf = {}
+    for k, var in MAIL_ENV.items():
+        conf[k] = environ.get(var, '').strip()
+        if not conf[k]:
+            raise _error(f'{var} is not set')
+    try:
+        with open(conf.pop('token_file'), encoding='utf-8') as f:
+            conf['token'] = f.read().rstrip()
+    except OSError as e:
+        raise _error(f'cannot read {MAIL_ENV["token_file"]}: {e.strerror}') from None
+    if not conf['token']:
+        raise _error(f'the token file in {MAIL_ENV["token_file"]} is empty')
+    conf['extra'] = shlex.split(environ.get('GIT_VIDEO_NARRATOR_MAIL_ARGS', ''))
+    raw = environ.get('GIT_VIDEO_NARRATOR_POLL_TIMEOUT', '').strip()
+    try:
+        conf['timeout'] = float(raw) if raw else MAIL_TIMEOUT
+    except ValueError:
+        raise _error(f'GIT_VIDEO_NARRATOR_POLL_TIMEOUT is not a number of seconds: {raw!r}') from None
+    return conf
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None   # the token goes to the configured URL only
+
+
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+
+
+def post(url, token, body, key=None):
+    """POST `body` (a dict) to the mail API's /v1/exec at `url` as JSON, with
+    the bearer `token` and an Idempotency-Key `key` when given: (HTTP status,
+    the response's JSON, {} when it has none). OSError when it cannot be
+    reached. The one place the narrator touches the network."""
+    headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+    if key:
+        headers['Idempotency-Key'] = key
+    req = urllib.request.Request(url.rstrip('/') + '/v1/exec', data=json.dumps(body).encode(), headers=headers,
+                                 method='POST')
+    try:
+        with _OPENER.open(req, timeout=MAIL_HTTP_TIMEOUT) as r:
+            status, raw = r.status, r.read()
+    except urllib.error.HTTPError as e:
+        status, raw = e.code, e.read()
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        doc = {}
+    return status, doc if isinstance(doc, dict) else {}
+
+
+def _b64(data):
+    return base64.b64encode(data).decode('ascii')
+
+
+def _unb64(text):
+    try:
+        return base64.b64decode(text or '').decode('utf-8', 'replace')
+    except ValueError:
+        return ''
+
+
+def mail_exec(conf, tool, argv, stdin=None, key=None, deadline=None):
+    """Run `tool` `argv` over the mail API: its stdout. A connection failure
+    or a transient status (_TRANSIENT) is retried every MAIL_POLL seconds
+    until `deadline` (time.monotonic; None: no retry), the same `key` each
+    time. NarratorError for any other status, or a verb that exits non-zero."""
+    body = {'tool': tool, 'argv': argv}
+    if stdin is not None:
+        body['stdin_b64'] = _b64(stdin.encode())
+    what = f'mail API {tool} {argv[0]}'
+    while True:
+        try:
+            status, doc = post(conf['url'], conf['token'], body, key)
+            failed = f'HTTP {status}: {doc.get("error") or "no error given"}'
+        except OSError as e:
+            status, failed = None, f'cannot reach {conf["url"]}: {getattr(e, "reason", None) or e}'
+        if status == 200:
+            break
+        if status not in (None, *_TRANSIENT) or deadline is None or time.monotonic() >= deadline:
+            raise _error(f'{what}: {failed}')
+        time.sleep(MAIL_POLL)
+    if not isinstance(doc.get('rc'), int):
+        raise _error(f'{what}: a response with no rc')
+    out, err = _unb64(doc.get('stdout_b64')), _unb64(doc.get('stderr_b64'))
+    if doc['rc'] != 0:
+        raise _error(f'{what} exited {doc["rc"]}', output=err[-4000:])
+    return out
+
+
+def kickoff(change, conf, prompt):
+    """The `mail send` argv that hands `prompt` (as stdin: --body -) to the
+    seat, checked out at `change`'s tip; GIT_VIDEO_NARRATOR_MAIL_ARGS last."""
+    subject = f'git-video narration: {change.target[:12]} {change.commits[-1].subject}'
+    return ['send', '--from', conf['from'], '--to', conf['seat'], '--subject', ' '.join(subject.split()),
+            '--body', '-', '--review-target', change.target, *conf['extra']]
+
+
+def seat_reply(inbox, thread, seat):
+    """The Message-ID of the seat's last message in `thread`, from `mail
+    inbox --all`'s lines (Message-ID, Thread-ID, To or Cc, From, Subject, tab
+    separated, in arrival order); None before it has replied. From may name
+    the seat's host (`@seat:host`)."""
+    found = None
+    for line in inbox.splitlines():
+        f = line.split('\t')
+        if len(f) >= 4 and f[1] == thread and (f[3] == seat or f[3].startswith(seat + ':')):
+            found = f[0]
+    return found
+
+
+def run_mail_seat(change, plan, patches, conf, key, log):
+    """Send the brief to the seat over the mail API (`conf`, see
+    `mail_config`), poll the thread until the seat replies, and read the
+    script its reply gives: ([voice.Phrase], callouts) (see `read`).
+    NarratorError (with `reason`) when the API refuses or cannot be reached,
+    a verb fails, no reply comes within the timeout, or the reply holds no
+    JSON or none that passes. The kickoff's Idempotency-Key comes from the
+    cache `key`, so a retry does not send it twice."""
+    deadline = time.monotonic() + conf['timeout']
+    prompt = brief(change, plan, patches, 'mail-seat')
+    out = mail_exec(conf, 'mail', kickoff(change, conf, prompt), prompt, f'git-video-narrate-{key[:40]}', deadline)
+    ids = [x for x in out.split() if re.fullmatch(r'[0-9a-f][0-9a-f-]{7,63}', x)]
+    if not ids:
+        raise _error('mail send named no thread', output=out)
+    thread = ids[-1]
+    print(f'git video: narrating with the mail seat {conf["seat"]} (thread {thread}), a few minutes…', file=log,
+          flush=True)
+    me = conf['from'].lstrip('@').split(':')[0]
+    while True:
+        mid = seat_reply(mail_exec(conf, 'mail', ['inbox', me, '--all'], deadline=deadline), thread, conf['seat'])
+        if mid:
+            break
+        if time.monotonic() >= deadline:
+            raise _error(f'no reply from {conf["seat"]} in thread {thread} after {conf["timeout"]:g}s')
+        time.sleep(MAIL_POLL)
+    message = mail_exec(conf, 'mail', ['show', mid], deadline=deadline)
+    text = _json_in(message.partition('\n\n')[2])
+    try:
+        json.loads(text)
+    except ValueError:
+        raise _error(f'the reply from {conf["seat"]} (message {mid}) holds no JSON', output=text[-4000:]) from None
+    try:
+        return read(text, plan, patches, log)
+    except NarratorError as e:
+        raise _error(f'its reply does not pass: {e}') from None
