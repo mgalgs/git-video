@@ -19,15 +19,17 @@ Options:
            Spoken by Kokoro (default voice bf_isabella), with
            captions. Needs the voice extra,
            pip install 'git-video[voice]', and Kokoro's model files.
---narrator auto, fork-sandbox, claude, heuristic
+--narrator auto, fork-sandbox, claude, mail-seat, heuristic
            With --voice, who writes the narration. fork-sandbox
            runs an agent session in a sandboxed clone that reads the
            change and explains its approach; claude runs Claude Code
            on the same brief, read-only, in a worktree of the change;
-           heuristic works from the commit message. auto (default)
-           uses fork-sandbox when it is on PATH, else claude when it
-           is on PATH and CLAUDE_CODE_OAUTH_TOKEN or
-           ANTHROPIC_API_KEY is set, else heuristic.
+           mail-seat mails the brief to an agent seat over the
+           fork-sandbox mail API and reads its reply; heuristic works
+           from the commit message. auto (default) uses fork-sandbox
+           when it is on PATH, else claude when it is on PATH and
+           CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY is set, else
+           heuristic; never mail-seat.
 --duration <time>
            Target length of the whole video, cards included:
            60, 60s, 1m30s. The planner keeps the hunks that matter
@@ -281,8 +283,31 @@ is fork-sandbox's alone. A session that fails, times out (15 minutes) or
 answers with no usable script is fatal under `--narrator=claude` and a
 warning under `--narrator=auto`, which picks claude only when
 `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is set: a `claude` on
-PATH alone is not consent to spend. Every voiced render names the narrator
-that wrote its script and prints the timed script on stderr.
+PATH alone is not consent to spend.
+
+The mail-seat narrator is for a caller with no agent of its own, such as
+a locked-down CI pod: it mails the same brief to an agent seat over the
+fork-sandbox mail API (`POST /v1/exec`, standard library only) and reads
+the script from the seat's reply in the thread (a fenced `json` block is
+fine). The kickoff is a `mail send --review-target <tip>`, so the seat
+works in a checkout of the change; git-video then polls its own inbox
+(`mail inbox --all`) for the seat's reply in that thread and reads it with
+`mail show`. Everything about the cluster comes from the environment:
+`GIT_VIDEO_NARRATOR_MAIL_URL` (the API's base URL),
+`GIT_VIDEO_NARRATOR_MAIL_TOKEN_FILE` (a file holding the bearer token),
+`GIT_VIDEO_NARRATOR_FROM` (the identity to send as, say
+`@git-video-narrate`) and `GIT_VIDEO_NARRATOR_SEAT` (the seat to address,
+say `@narrator`) are required; `GIT_VIDEO_NARRATOR_MAIL_ARGS` adds `send`
+options (shell-split, say `--budget 2`) and
+`GIT_VIDEO_NARRATOR_POLL_TIMEOUT` is how long to wait for the reply
+(default 1200 s). The cluster picks the seat's model, so
+`GIT_VIDEO_NARRATOR_MODEL` does not apply and its scripts are cached by
+the seat instead. The kickoff's `Idempotency-Key` comes from the cache
+key, so a retry after a lost response does not mail the seat twice. It
+runs only under `--narrator=mail-seat`, never under auto.
+
+Every voiced render names the narrator that wrote its script and prints
+the timed script on stderr.
 
 Whoever writes it, the script is held to the same limits: about one phrase per 8 s
 of the unvoiced film plus the opening and closing, each at most 35 words,
