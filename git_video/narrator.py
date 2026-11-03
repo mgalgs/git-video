@@ -946,16 +946,19 @@ def kickoff(change, conf, prompt):
             '--body', '-', '--review-target', f'{conf["branch"]}:{change.target}', *conf['extra']]
 
 
-def seat_reply(inbox, thread, seat):
-    """The Message-ID of the seat's last message in `thread`, from `mail
-    inbox --all`'s lines (Message-ID, Thread-ID, To or Cc, From, Subject, tab
-    separated, in arrival order); None before it has replied. From may name
-    the seat's host (`@seat:host`)."""
+def seat_reply(export, seat):
+    """(Message-ID, body) of the seat's last message in a thread, from `mail
+    export <thread> --json` (messages in thread order); None before it has
+    replied. From may name the seat's host (`@seat:host`)."""
+    try:
+        messages = json.loads(export).get('messages') or []
+    except (ValueError, AttributeError):
+        return None
     found = None
-    for line in inbox.splitlines():
-        f = line.split('\t')
-        if len(f) >= 4 and f[1] == thread and (f[3] == seat or f[3].startswith(seat + ':')):
-            found = f[0]
+    for m in messages:
+        sender = m.get('from') or ''
+        if sender == seat or sender.startswith(seat + ':'):
+            found = m.get('id'), m.get('body') or ''
     return found
 
 
@@ -976,16 +979,16 @@ def run_mail_seat(change, plan, patches, conf, key, log):
     thread = ids[-1]
     print(f'git video: narrating with the mail seat {conf["seat"]} (thread {thread}), a few minutes…', file=log,
           flush=True)
-    me = conf['from'].lstrip('@').split(':')[0]
     while True:
-        mid = seat_reply(mail_exec(conf, 'mail', ['inbox', me, '--all'], deadline=deadline), thread, conf['seat'])
-        if mid:
+        # the thread, not `mail inbox`: inbox scans the whole store and outlasts the API's HTTP limit
+        reply = seat_reply(mail_exec(conf, 'mail', ['export', thread, '--json'], deadline=deadline), conf['seat'])
+        if reply:
             break
         if time.monotonic() >= deadline:
             raise _error(f'no reply from {conf["seat"]} in thread {thread} after {conf["timeout"]:g}s')
         time.sleep(MAIL_POLL)
-    message = mail_exec(conf, 'mail', ['show', mid], deadline=deadline)
-    text = _json_in(message.partition('\n\n')[2])
+    mid, body = reply
+    text = _json_in(body)
     try:
         json.loads(text)
     except ValueError:

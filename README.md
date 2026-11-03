@@ -290,9 +290,10 @@ a locked-down CI pod: it mails the same brief to an agent seat over the
 fork-sandbox mail API (`POST /v1/exec`, standard library only) and reads
 the script from the seat's reply in the thread (a fenced `json` block is
 fine). The kickoff is a `mail send --review-target <branch>:<tip>`, so the
-seat works in a checkout of the change; git-video then polls its own inbox
-(`mail inbox --all`) for the seat's reply in that thread and reads it with
-`mail show`. Everything about the cluster comes from the environment:
+seat works in a checkout of the change; git-video then polls that thread
+(`mail export <thread> --json`) until the seat's reply appears, and reads
+the script from its body. Everything about the cluster comes from the
+environment:
 `GIT_VIDEO_NARRATOR_MAIL_URL` (the API's base URL),
 `GIT_VIDEO_NARRATOR_MAIL_TOKEN_FILE` (a file holding the bearer token),
 `GIT_VIDEO_NARRATOR_FROM` (the identity to send as, say

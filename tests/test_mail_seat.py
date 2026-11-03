@@ -1,8 +1,8 @@
 """The mail-seat narrator, against a fake mail API in place of `narrator.post`:
-it records each /v1/exec request and answers `mail send` with a thread id,
-`mail inbox` with the seat's reply once it has "replied" (after `polls`
-looks), and `mail show` with that reply, whose body is a canned answer or,
-per `mode`, prose with no JSON or JSON that does not pass."""
+it records each /v1/exec request and answers `mail send` with a thread id and
+`mail export --json` with the thread, which holds the seat's reply once it has
+"replied" (after `polls` looks), whose body is a canned answer or, per `mode`,
+prose with no JSON or JSON that does not pass."""
 import base64
 import http.server
 import io
@@ -37,18 +37,17 @@ class FakeMail:
         if verb == 'send':
             return 200, {'rc': 0, 'stdout_b64': b64(f'{THREAD}\n'),
                          'stderr_b64': b64(f'fork-sandbox mail: sent {THREAD} as a new thread\n')}
-        if verb == 'inbox':
-            lines = ['1111aaaa-0000-0000-0000-000000000000\tsomething-else\tTo\t@narrator\tAnother thread']
-            if sum(r['body']['argv'][0] == 'inbox' for r in self.requests) > self.polls:
-                lines.append(f'{REPLY}\t{THREAD}\tTo\t@narrator\tRe: git-video narration')
-            return 200, {'rc': 0, 'stdout_b64': b64(''.join(x + '\n' for x in lines)), 'stderr_b64': ''}
-        if verb == 'show':
-            text = {'prose': 'I read the change but have nothing to say about it.',
-                    'unknown': json.dumps({'phrases': [{'shot': 's999', 'text': 'Hi.'}]})}.get(
-                        self.mode, f'Here is the narration.\n\n```json\n{json.dumps(self.narration)}\n```\n')
-            message = (f'Message-ID: {REPLY}\nThread-ID: {THREAD}\nFrom: @narrator\nTo: @git-video-narrate\n'
-                       f'Subject: Re: git-video narration\nIn-Reply-To: {THREAD}\nX-Hops: 7\n\n{text}')
-            return 200, {'rc': 0, 'stdout_b64': b64(message), 'stderr_b64': ''}
+        if verb == 'export':
+            messages = [{'seq': 1, 'id': THREAD, 'from': '@git-video-narrate', 'to': ['@narrator'],
+                         'body': 'The brief.'}]
+            if sum(r['body']['argv'][0] == 'export' for r in self.requests) > self.polls:
+                text = {'prose': 'I read the change but have nothing to say about it.',
+                        'unknown': json.dumps({'phrases': [{'shot': 's999', 'text': 'Hi.'}]})}.get(
+                            self.mode, f'Here is the narration.\n\n```json\n{json.dumps(self.narration)}\n```\n')
+                messages.append({'seq': 2, 'id': REPLY, 'from': '@narrator', 'to': ['@git-video-narrate'],
+                                 'in_reply_to': THREAD, 'body': text})
+            doc = {'thread': THREAD, 'messages': messages, 'senders': {}, 'addressed': []}
+            return 200, {'rc': 0, 'stdout_b64': b64(json.dumps(doc)), 'stderr_b64': ''}
         raise AssertionError(f'unexpected verb {verb}')
 
     def verbs(self):
@@ -97,7 +96,7 @@ class TestMailSeat(unittest.TestCase):
         self.assertEqual([p.text for p in got], [x['text'] for x in self.good['phrases']])
         self.assertEqual([p.key for p in got], [('title',), self.hunk.key, ('end',)])
         self.assertEqual(w.ran, 'mail-seat')
-        self.assertEqual(fake.verbs(), ['send', 'inbox', 'inbox', 'inbox', 'show'])
+        self.assertEqual(fake.verbs(), ['send', 'export', 'export', 'export'])
         send = fake.requests[0]
         self.assertEqual((send['url'], send['token']), ('http://mail.example:8080/', 's3cret'))
         self.assertEqual(send['body']['tool'], 'mail')
@@ -113,8 +112,8 @@ class TestMailSeat(unittest.TestCase):
         self.assertRegex(send['key'], r'^[A-Za-z0-9_-]{16,128}$')
         for r in fake.requests[1:]:
             self.assertIsNone(r['key'])   # read-only verbs carry no key
-        self.assertEqual(fake.requests[1]['body'], {'tool': 'mail', 'argv': ['inbox', 'git-video-narrate', '--all']})
-        self.assertEqual(fake.requests[-1]['body'], {'tool': 'mail', 'argv': ['show', REPLY]})
+        for r in fake.requests[1:]:
+            self.assertEqual(r['body'], {'tool': 'mail', 'argv': ['export', THREAD, '--json']})
 
     def test_branch_names_the_review_target(self):
         with mock.patch.dict(os.environ, {'GIT_VIDEO_NARRATOR_BRANCH': 'feature/x'}):
@@ -171,7 +170,7 @@ class TestMailSeat(unittest.TestCase):
         fake = FakeMail(self.good, polls=10 ** 6)
         with self.assertRaisesRegex(narrator.NarratorError, f'no reply from @narrator in thread {THREAD} after 0s'):
             self.run_with(fake)
-        self.assertNotIn('show', fake.verbs())
+        self.assertEqual(set(fake.verbs()), {'send', 'export'})
 
     def test_reply_without_json(self):
         with self.assertRaisesRegex(narrator.NarratorError, r'the reply from @narrator .* holds no JSON'):
