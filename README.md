@@ -289,8 +289,8 @@ The mail-seat narrator is for a caller with no agent of its own, such as
 a locked-down CI pod: it mails the same brief to an agent seat over the
 fork-sandbox mail API (`POST /v1/exec`, standard library only) and reads
 the script from the seat's reply in the thread (a fenced `json` block is
-fine). The kickoff is a `mail send --review-target <tip>`, so the seat
-works in a checkout of the change; git-video then polls its own inbox
+fine). The kickoff is a `mail send --review-target <branch>:<tip>`, so the
+seat works in a checkout of the change; git-video then polls its own inbox
 (`mail inbox --all`) for the seat's reply in that thread and reads it with
 `mail show`. Everything about the cluster comes from the environment:
 `GIT_VIDEO_NARRATOR_MAIL_URL` (the API's base URL),
@@ -298,7 +298,10 @@ works in a checkout of the change; git-video then polls its own inbox
 `GIT_VIDEO_NARRATOR_FROM` (the identity to send as, say
 `@git-video-narrate`) and `GIT_VIDEO_NARRATOR_SEAT` (the seat to address,
 say `@narrator`) are required; `GIT_VIDEO_NARRATOR_MAIL_ARGS` adds `send`
-options (shell-split, say `--budget 2`) and
+options (shell-split, say `--budget 2`),
+`GIT_VIDEO_NARRATOR_BRANCH` names the branch the cluster fetches the tip
+from when it does not have it yet (default `git-video-narrate`; set it to
+the change's branch on the cluster's remote), and
 `GIT_VIDEO_NARRATOR_POLL_TIMEOUT` is how long to wait for the reply
 (default 1200 s). The cluster picks the seat's model, so
 `GIT_VIDEO_NARRATOR_MODEL` does not apply and its scripts are cached by

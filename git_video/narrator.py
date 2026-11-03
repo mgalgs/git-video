@@ -837,12 +837,14 @@ MAIL_HTTP_TIMEOUT = 60   # one request; the API kills a verb at 60 s
 MAIL_ENV = {'url': 'GIT_VIDEO_NARRATOR_MAIL_URL', 'token_file': 'GIT_VIDEO_NARRATOR_MAIL_TOKEN_FILE',
             'from': 'GIT_VIDEO_NARRATOR_FROM', 'seat': 'GIT_VIDEO_NARRATOR_SEAT'}
 _TRANSIENT = (409, 502, 503, 504)   # the API restarting, or an idempotency key still running: try again
+# --review-target takes <branch>:<sha>; the postmaster fetches the branch only when it lacks the sha
+MAIL_BRANCH = 'git-video-narrate'
 
 
 def mail_config(environ=None):
     """The mail-seat narrator's cluster specifics, from `environ` (os.environ):
     {url, token, from, seat, extra (GIT_VIDEO_NARRATOR_MAIL_ARGS, shell-split),
-    timeout}. NarratorError naming a required variable that is unset, or a
+    branch (GIT_VIDEO_NARRATOR_BRANCH, else MAIL_BRANCH), timeout}. NarratorError naming a required variable that is unset, or a
     token file that cannot be read or is empty."""
     environ = os.environ if environ is None else environ
     conf = {}
@@ -858,6 +860,7 @@ def mail_config(environ=None):
     if not conf['token']:
         raise _error(f'the token file in {MAIL_ENV["token_file"]} is empty')
     conf['extra'] = shlex.split(environ.get('GIT_VIDEO_NARRATOR_MAIL_ARGS', ''))
+    conf['branch'] = environ.get('GIT_VIDEO_NARRATOR_BRANCH', '').strip() or MAIL_BRANCH
     raw = environ.get('GIT_VIDEO_NARRATOR_POLL_TIMEOUT', '').strip()
     try:
         conf['timeout'] = float(raw) if raw else MAIL_TIMEOUT
@@ -940,7 +943,7 @@ def kickoff(change, conf, prompt):
     seat, checked out at `change`'s tip; GIT_VIDEO_NARRATOR_MAIL_ARGS last."""
     subject = f'git-video narration: {change.target[:12]} {change.commits[-1].subject}'
     return ['send', '--from', conf['from'], '--to', conf['seat'], '--subject', ' '.join(subject.split()),
-            '--body', '-', '--review-target', change.target, *conf['extra']]
+            '--body', '-', '--review-target', f'{conf["branch"]}:{change.target}', *conf['extra']]
 
 
 def seat_reply(inbox, thread, seat):

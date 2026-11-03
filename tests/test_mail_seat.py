@@ -75,7 +75,7 @@ class TestMailSeat(unittest.TestCase):
             'GIT_VIDEO_NARRATOR_MAIL_TOKEN_FILE': token, 'GIT_VIDEO_NARRATOR_FROM': '@git-video-narrate',
             'GIT_VIDEO_NARRATOR_SEAT': '@narrator', 'GIT_VIDEO_NARRATOR_MAIL_ARGS': '--budget 2'})
         self.env.start()
-        for var in ('GIT_VIDEO_NARRATOR_POLL_TIMEOUT', 'GIT_VIDEO_NARRATOR_MODEL'):
+        for var in ('GIT_VIDEO_NARRATOR_POLL_TIMEOUT', 'GIT_VIDEO_NARRATOR_MODEL', 'GIT_VIDEO_NARRATOR_BRANCH'):
             os.environ.pop(var, None)
         self.poll = mock.patch.object(narrator, 'MAIL_POLL', 0)
         self.poll.start()
@@ -105,7 +105,7 @@ class TestMailSeat(unittest.TestCase):
         self.assertEqual(argv[:3], ['send', '--from', '@git-video-narrate'])
         self.assertEqual(argv[argv.index('--to') + 1], '@narrator')
         self.assertEqual(argv[argv.index('--body') + 1], '-')   # the brief travels as stdin, never in argv
-        self.assertEqual(argv[argv.index('--review-target') + 1], self.change.target)
+        self.assertEqual(argv[argv.index('--review-target') + 1], f'git-video-narrate:{self.change.target}')
         self.assertEqual(argv[-2:], ['--budget', '2'])
         self.assertEqual(set(send['body']), {'tool', 'argv', 'stdin_b64'})
         self.assertEqual(base64.b64decode(send['body']['stdin_b64']).decode(),
@@ -115,6 +115,13 @@ class TestMailSeat(unittest.TestCase):
             self.assertIsNone(r['key'])   # read-only verbs carry no key
         self.assertEqual(fake.requests[1]['body'], {'tool': 'mail', 'argv': ['inbox', 'git-video-narrate', '--all']})
         self.assertEqual(fake.requests[-1]['body'], {'tool': 'mail', 'argv': ['show', REPLY]})
+
+    def test_branch_names_the_review_target(self):
+        with mock.patch.dict(os.environ, {'GIT_VIDEO_NARRATOR_BRANCH': 'feature/x'}):
+            fake = FakeMail(self.good)
+            self.run_with(fake)
+        argv = fake.requests[0]['body']['argv']
+        self.assertEqual(argv[argv.index('--review-target') + 1], f'feature/x:{self.change.target}')
 
     def test_cached_by_seat(self):
         first = FakeMail(self.good)
