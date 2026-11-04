@@ -178,6 +178,24 @@ class TestSounds(unittest.TestCase):
                 keys = [x for x in f.sounds if x.effect == 'pro_typing_key/tick' and a < x.at < b - 1]
                 self.assertEqual(keys, [])
 
+    def test_keyboard_takes(self):
+        big = sounds.BIG_KEY[0][0]
+        pack = FULL + [(k, 'key') for k in sounds.KEY_TAKES] + [(big, 'key')]
+        with self.pack('keyboard', pack):
+            f, frames = film.build(self.plan, self.change, log=io.StringIO())
+            again, _ = film.build(self.plan, self.change, log=io.StringIO())
+        self.assertEqual([(s.effect, s.at, s.gain_db) for s in f.sounds],
+                         [(s.effect, s.at, s.gain_db) for s in again.sounds])
+        heavy = {frames[i] + math.ceil(t * self.plan.fps - 1e-9) for i, s in enumerate(self.plan.shots)
+                 if s['kind'] == 'open' for t, k, _ in s['strokes'] if k in ('TAB', 'RET')}
+        keys = [s for s in f.sounds if s.effect in (*sounds.KEY_TAKES, big)]
+        self.assertNotIn('pro_typing_key/tick', {s.effect for s in f.sounds})
+        self.assertEqual({s.at for s in keys if s.effect == big}, heavy)
+        takes = [s for s in keys if s.effect != big]
+        self.assertEqual({s.effect for s in takes}, set(sounds.KEY_TAKES))
+        self.assertTrue(all(a.effect != b.effect for a, b in zip(takes, takes[1:])))
+        self.assertTrue(all(abs(s.gain_db - sounds.KEY[2]) <= sounds.KEY_VARY + 1e-9 for s in takes))
+
     def test_keystroke_frames_deterministic(self):
         a = sounds.cues(self.plan.shots, [0] * len(self.plan.shots), 30)
         b = sounds.cues(self.plan.shots, [0] * len(self.plan.shots), 30)

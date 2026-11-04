@@ -454,7 +454,7 @@ class TestFilm(unittest.TestCase):
                     continue
                 f0, f1 = tour.shot_frames[i], tour.shot_frames[i + 1]
                 want = [sounds.frame_at(f0, t, p.fps) for t in (*plan.OPEN_KEYS, *(x[0] for x in s['strokes']))]
-                self.assertEqual([n for n, name in cues if name == 'key' and f0 <= n < f1], want, s)
+                self.assertEqual([n for n, name in cues if name in ('key', 'key-big') and f0 <= n < f1], want, s)
                 self.assertLess(want[-1], f1, s)   # RET before the shot ends
                 self.assertIn(('whoosh', want[-1]), [(name, n) for n, name in cues])
                 ret = sounds.frame_at(f0, plan.open_ret(s), p.fps)

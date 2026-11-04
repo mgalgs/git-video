@@ -11,6 +11,7 @@ terminal log), so a pack without the preferred ids still plays something
 fitting, and no pack at all means a silent render with a one-line note.
 """
 import math
+import random
 import sys
 
 import videobuilder as vb
@@ -19,6 +20,11 @@ from . import edits, plan as planmod, voice
 
 # (preferred ids, fallback roles, gain dB, align)
 KEY = (('pro_typing_key/tick', 'typing_key/crisp'), ('key', 'typing'), -10.0, 'onset')
+BIG_KEY = (('fit/key.space/thock_space',), (), -10.0, 'onset')   # TAB and RET; without it, KEY's sound
+# A key is one of these takes when the pack has them (videobuilder's typing-sounds keyboard), never the same
+# take twice running, each KEY_VARY dB louder or softer at most; otherwise KEY's one sound.
+KEY_TAKES = ('fit/key/medium', 'fit/key/lubed', 'fit/key/thock')
+KEY_VARY = 1.5
 CLICK = (('pro_click/mouse', 'click/soft'), ('click',), -6.0, 'onset')
 TICK = (('pro_hover_tick/soft', 'hover_tick/detent'), ('tick',), -18.0, 'onset')
 WHOOSH = (('whoosh_fast/tight',), ('whoosh',), -14.0, 'peak')
@@ -59,8 +65,9 @@ def cues(shots, shot_frames, fps):
             lit = s.get('lit', [])
             out += [(frame_at(f0, planmod.light_start(k, len(lit)) + planmod.MAP_LIGHT_FADE / 2, fps), 'tile')
                     for k in range(min(len(lit), planmod.MAP_MAX_TICKS))]
-        elif kind == 'open':   # C-x C-f, then each key in the minibuffer, a TAB as any other
-            out += [(frame_at(f0, t, fps), 'key') for t in (*planmod.OPEN_KEYS, *(x[0] for x in s['strokes']))]
+        elif kind == 'open':   # C-x C-f, then each key in the minibuffer, TAB and RET the heavier ones
+            out += [(frame_at(f0, t, fps), 'key') for t in planmod.OPEN_KEYS]
+            out += [(frame_at(f0, t, fps), 'key-big' if k in ('TAB', 'RET') else 'key') for t, k, _ in s['strokes']]
             out.append((frame_at(f0, planmod.open_ret(s), fps), 'whoosh'))
         elif kind == 'hunk':
             if s.get('scroll') == 'far':
@@ -137,17 +144,25 @@ def sounds_for(shots, shot_frames, fps, log=None, spoken=()):
     except vb.sfx.SfxUnavailable as e:
         print(f'git video: rendering without sound: {e}', file=log or sys.stderr)
         return ()
-    table = {'key': KEY, 'click': CLICK, 'tick': TICK, 'whoosh': WHOOSH, 'whoosh-soft': WHOOSH_SOFT, 'tile': TILE,
-             'typing-run': RUN}
+    table = {'key': KEY, 'key-big': BIG_KEY, 'click': CLICK, 'tick': TICK, 'whoosh': WHOOSH,
+             'whoosh-soft': WHOOSH_SOFT, 'tile': TILE, 'typing-run': RUN}
     chosen = {name: (pick(bank, ids, roles), gain, align) for name, (ids, roles, gain, align) in table.items()}
+    if chosen['key-big'][0] is None:
+        chosen['key-big'] = chosen['key']
+    takes = [k for k in KEY_TAKES if k in bank.effects]
+    rnd, last = random.Random('git-video:keys'), None   # seeded: the same plan always sounds the same
     out = []
     for frame, name in cues(shots, shot_frames, fps):
         sid, gain, align = chosen[name]
+        if name == 'key' and takes:
+            sid = last = rnd.choice([k for k in takes if k != last] or takes)
+            gain += rnd.uniform(-KEY_VARY, KEY_VARY)
         if sid is None:
             continue
         snd = vb.sfx.sound(sid, at=frame, fps=fps, gain_db=gain, align=align)
         # quieter if any of it is heard under a phrase, not just its first frame
-        if name in ('key', 'typing-run') and any(snd.at <= b and a < snd.at + snd.frames for a, b in spoken):
+        if name in ('key', 'key-big', 'typing-run') and any(snd.at <= b and a < snd.at + snd.frames
+                                                            for a, b in spoken):
             snd = vb.sfx.sound(sid, at=frame, fps=fps, gain_db=gain + voice.TYPING_UNDER_VOICE, align=align)
         out.append(snd)
     return tuple(out)
