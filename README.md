@@ -154,9 +154,11 @@ Sounds come from videobuilder's sound-effects pack, fetched once with
   without `--series`, in 16:9, 9:16 and 1:1.
 - A map of the repository opens the tour: every file a tile sized by its
   size, grouped by top-level directory (small files folded into "N more"
-  tiles), the changed files lit by how much changed. The camera dives from
-  the map into the first file's tile, which grows into the editor, and
-  between files pulls back out and travels to the next one.
+  tiles), the changed files lit by how much changed.
+- Every file, the first included, is opened the editor's way: `C-x C-f`,
+  the path typed with Tab completion as an Emacs user would (per directory
+  the shortest unique prefix then Tab, for the file its first letter, Tab
+  when that completes anything, the rest typed), then RET. No camera move.
 - Syntax highlighting with Pygments.
 - Animated diffs: a hunk that replaces lines opens on the old text, removed
   words struck through, then morphs into the new. Words are matched only
@@ -349,10 +351,9 @@ duck under the voice and typing goes quieter still.
   scrolling there; a deleted file goes with `C-x h C-w`.
 - Files go top to bottom: a file whose change writes a definition that
   another changed file's new lines use goes first, tests last, otherwise
-  diff order. The camera pulls back to the repo map and dives into the next
-  file (or `C-x C-f` for one the map does not show).
+  diff order. Each file is opened with `C-x C-f`, as in the tour.
 - Pacing: about 60 s per 500 changed lines (added + removed), plus the
-  cards and camera moves. A change is never sped up to fit less than 15 s;
+  cards and file opens. A change is never sped up to fit less than 15 s;
   one that types out in under 15 s at natural pace plays at natural pace,
   without padding. Typing runs up to four times its
   natural pace; past that, each file after its first moments is a speed-up
@@ -404,11 +405,11 @@ selection first, then speed.
   opening card's totals still count the whole change, and the closing card
   lists them under ALSO CHANGED with their `+`/`−` counts, the most
   important first. A release leans
-  on the map: the camera dives into its few most important files.
+  on the map: the tour opens only its few most important files.
 - Only then is every shot sized, by one factor within its limits, to land
   on the target: kept hunks keep their natural read when they fit at it,
-  and the camera's dives and travels play their moves faster when they are
-  shortened. No xref dive under 30 s, at most one under 60 s.
+  and a shortened `C-x C-f` holds less after RET, typing its keys faster
+  if it must. No xref dive under 30 s, at most one under 60 s.
 - Develop types only the kept hunks, at the speed the target needs (up to
   ×256 under `--duration`); the rest of a visited file is put in at once,
   one step per run of hunks, under a `⇥ N hunks applied` marker (only the
@@ -426,8 +427,8 @@ selection first, then speed.
 A tour is built in four steps: collect the git facts, plan a list of shots,
 build a film from the plan, render it. The plan is plain JSON
 (`--plan-json` prints it): a list of shots, each with a `scene` (`card`,
-`editor` or `map`), a `kind` (`title`, `map`, `dive`, `travel`, `open`,
-`hunk`, `xref-push`, `xref-pop`, `edit`, `patch`, `end`), the `patch` it
+`editor` or `map`), a `kind` (`title`, `map`, `open`, `hunk`,
+`xref-push`, `xref-pop`, `edit`, `patch`, `end`), the `patch` it
 belongs to and a duration, beside plan-level
 facts: the repo `map` (its tiles, grouped by directory), the `commit`
 (with its `coauthors` from `Co-Authored-By:` trailers and, per commit, a
@@ -441,7 +442,10 @@ A `hunk` shot carries `focus` (its changed line span), `scroll` (`near` or
 `segments`: the old lines, how many new lines replace them and word-level
 `ops`), `callouts` (the commit sentences shown, or the narrator's cards,
 with their times and the words they point at) and `node` (its call-graph node). An `xref-push` shot
-carries its `node` and `edge`.
+carries its `node` and `edge`. An `open` shot carries its `keys` (as
+`C-x C-f s TAB a TAB RET`) and its `strokes`: each key typed after the
+`Find file: ` prompt, a Tab counting as one, with its time and what the
+minibuffer then shows, RET last.
 
 The plan also says its `mode` and lists its `patches` (one without
 `--series`): each with its `commit`, `files` and, for develop, the `lines`
