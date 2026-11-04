@@ -494,6 +494,63 @@ class TestPlan(unittest.TestCase):
 
 
 
+class TestCompletion(unittest.TestCase):
+    """C-x C-f's path typed with Tab completion, as an Emacs user would."""
+
+    def keys(self, path, names):
+        return [(k, text) for k, text in plan.completion(path, names)]
+
+    def test_worked_example(self):
+        names = ['src/booktalk/ingest/apa_xml.py', 'src/booktalk/ingest/apa_json.py', 'src/booktalk/ingest/base.py',
+                 'src/booktalk/cli.py', 'README.md', 'tests/test_ingest.py']
+        d = 'src/booktalk/ingest/'
+        self.assertEqual(self.keys(d + 'apa_xml.py', names),
+                         [('s', 's'), ('TAB', 'src/'), ('b', 'src/b'), ('TAB', 'src/booktalk/'),
+                          ('i', 'src/booktalk/i'), ('TAB', d), ('a', d + 'a'), ('TAB', d + 'apa_'),
+                          ('x', d + 'apa_x'), ('m', d + 'apa_xm'), ('l', d + 'apa_xml'), ('.', d + 'apa_xml.'),
+                          ('p', d + 'apa_xml.p'), ('y', d + 'apa_xml.py'), ('RET', d + 'apa_xml.py')])
+        s = plan.open_shot(d + 'apa_xml.py', names, 0)
+        self.assertEqual(s['keys'], 'C-x C-f s TAB b TAB i TAB a TAB xml.py RET')
+
+    def test_directory_with_no_unique_prefix_is_typed_whole(self):
+        # src is a prefix of src2: typed in full, then the slash
+        self.assertEqual(self.keys('src/a.py', ['src/a.py', 'src2/b.py']),
+                         [('s', 's'), ('r', 'sr'), ('c', 'src'), ('/', 'src/'), ('a', 'src/a'),
+                          ('TAB', 'src/a.py'), ('RET', 'src/a.py')])
+        # a longer prefix that is unique: typed up to it, then Tab
+        self.assertEqual([k for k, _ in plan.completion('lib/x.py', ['lib/x.py', 'list.py'])],
+                         ['l', 'i', 'b', 'TAB', 'x', 'TAB', 'RET'])
+
+    def test_unique_first_letter_completes_the_whole_name(self):
+        self.assertEqual(self.keys('app.py', ['app.py', 'lib.py']), [('a', 'a'), ('TAB', 'app.py'), ('RET', 'app.py')])
+
+    def test_first_letter_whose_common_prefix_adds_nothing(self):
+        # app.py and abc.py share only `a`: no Tab, the rest typed
+        self.assertEqual([k for k, _ in plan.completion('app.py', ['app.py', 'abc.py'])],
+                         ['a', 'p', 'p', '.', 'p', 'y', 'RET'])
+        # a directory sharing the letter counts too, as in Emacs
+        self.assertEqual([k for k, _ in plan.completion('app.py', ['app.py', 'apps/x.py'])],
+                         ['a', 'TAB', '.', 'p', 'y', 'RET'])
+
+    def test_deleted_file_is_a_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, sha = fixtures.make_repo(tmp)
+            ch = collect.collect(repo, sha['delete'])
+            names = plan.completion_names(ch)
+            self.assertNotIn('bin.dat', {p for p, _ in ch.tree})
+            self.assertIn('bin.dat', names)
+            self.assertLessEqual({p for p, _ in ch.tree}, names)
+            self.assertEqual(plan.completion('bin.dat', names)[-2:], [('TAB', 'bin.dat'), ('RET', 'bin.dat')])
+
+    def test_open_shot_timing(self):
+        s = plan.open_shot('src/app.py', ['src/app.py', 'src/lib.py'], 2)
+        times = [x[0] for x in s['strokes']]
+        self.assertEqual(times, sorted(times))
+        self.assertEqual(times[0], plan.OPEN_TYPE)
+        self.assertEqual(s['dur'], round(max(1.6, plan.open_ret(s) + plan.OPEN_HOLD), 3))
+        self.assertEqual((s['kind'], s['scene'], s['patch']), ('open', 'editor', 2))
+
+
 class TestDevelopPlan(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

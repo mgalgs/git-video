@@ -444,6 +444,23 @@ class TestFilm(unittest.TestCase):
         for fmt in ('16x9', '9x16', '1x1'):
             self.assertIn('editor.fold', dict(tour.film.frame(n, fmt).marks), fmt)
 
+    def test_open_keys_agree(self):
+        # one keystroke script: the plan's shot length, the film's minibuffer and the key sounds all follow it
+        for p in (self.plan, plan.build(self.change, duration=15)):
+            tour = film.Tour(p, self.change, log=io.StringIO())
+            cues = sounds.cues(p.shots, tour.shot_frames, p.fps)
+            for i, s in enumerate(p.shots):
+                if s['kind'] != 'open':
+                    continue
+                f0, f1 = tour.shot_frames[i], tour.shot_frames[i + 1]
+                want = [sounds.frame_at(f0, t, p.fps) for t in (*plan.OPEN_KEYS, *(x[0] for x in s['strokes']))]
+                self.assertEqual([n for n, name in cues if name == 'key' and f0 <= n < f1], want, s)
+                self.assertLess(want[-1], f1, s)   # RET before the shot ends
+                self.assertIn(('whoosh', want[-1]), [(name, n) for n, name in cues])
+                ret = sounds.frame_at(f0, plan.open_ret(s), p.fps)
+                self.assertNotEqual(tour.state(ret - 1)[0], s['path'])
+                self.assertEqual(tour.state(ret)[0], s['path'])
+
     def test_short_opens_play_their_keys(self):
         # a --duration plan's opens are shorter: all their keys still play, the file up after RET
         p = plan.build(self.change, duration=15)
