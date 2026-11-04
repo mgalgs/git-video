@@ -126,22 +126,16 @@ class TestRepoMap(unittest.TestCase):
             for fmt, box in self.boxes():
                 lay = repomap.layout(m, box)
                 lit = {t.key: 1.0 for t in lay.tiles if t.heat is not None}
-                smallest = min((t for t in lay.tiles if t.heat is not None), key=lambda t: t.box.w * t.box.h)
-                for focus in (None, smallest.key):
-                    cv = vb.Canvas(int(box.right + 40), int(box.bottom + 40), '#000')
-                    repomap.draw(cv, lay, lit, focus=focus)
-                    labels = [(name, b) for name, b in cv.marks if name.startswith('map.label ')]
-                    heads = [(name, b) for name, b in cv.marks if name.startswith('map.head ')]
-                    self.assertTrue(labels and heads, (n, fmt))
-                    for (na, a), (nb, b) in itertools.combinations(labels + heads, 2):
-                        self.assertFalse(a.intersects(b), (n, fmt, focus, na, nb))
-                    for name, b in labels:
-                        self.assertTrue(box.contains(b), (n, fmt, name, b))
-                        key = name.split(' ', 1)[1]
-                        if key != focus:   # a label stays inside its own cell
-                            self.assertTrue(lay.tile(key).box.contains(b), (n, fmt, name))
-                    if focus is not None:   # the dive's target is always labelled
-                        self.assertIn(f'map.label {focus}', dict(labels))
+                cv = vb.Canvas(int(box.right + 40), int(box.bottom + 40), '#000')
+                repomap.draw(cv, lay, lit)
+                labels = [(name, b) for name, b in cv.marks if name.startswith('map.label ')]
+                heads = [(name, b) for name, b in cv.marks if name.startswith('map.head ')]
+                self.assertTrue(labels and heads, (n, fmt))
+                for (na, a), (nb, b) in itertools.combinations(labels + heads, 2):
+                    self.assertFalse(a.intersects(b), (n, fmt, na, nb))
+                tiles = {t.key: t for t in lay.tiles}
+                for name, b in labels:   # a label stays inside its own cell
+                    self.assertTrue(tiles[name.split(' ', 1)[1]].box.contains(b), (n, fmt, name))
 
     def test_many_directories_fold(self):
         tree = [(f'd{i:02d}/f', 10) for i in range(30)]

@@ -2001,8 +2001,6 @@ EDITOR_KINDS = {'open': _open, 'hunk': _hunk, 'xref-push': _xref_push, 'xref-pop
 
 
 # ---- the repo map ----
-# The camera is (cx, cy, span): the map point at the box's centre and how many
-# map px the box spans across, the map laid out at rest in the box itself.
 def lit_amounts(shot, t):
     """{tile key: 0 -> 1} lit at `t` s into a `map` shot: the changed tiles
     light one after another in the plan's order."""

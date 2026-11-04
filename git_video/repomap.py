@@ -154,9 +154,6 @@ class MapLayout:
     groups: tuple
     tiles: tuple
 
-    def tile(self, key):
-        return next((t for t in self.tiles if t.key == key), None)
-
 
 def layout(m, box):
     """Where every group and tile of the plan's map `m` goes in `box` (canvas px).
@@ -193,22 +190,13 @@ def stat_parts(info):
 
 
 def draw(cv, lay, lit, *, ui='sans-serif', mono='monospace', added='#98be65', removed='#ff6c6b',
-         outline='#ecbe7b', skip=(), focus=None):
+         outline='#ecbe7b'):
     """The map as laid out by `layout`. `lit[key]` (0 -> 1) is how far each
-    changed tile has lit up (missing: 0). Tiles in `skip` are left out (the
-    tile a camera move is growing, which the caller draws itself). Labels
-    never overlap: a tile too small for its label goes without (the side bar
-    still lists the file), and `focus`, the tile the camera is about to dive
-    into, always has its label, on top of everything, the labels it would
-    cover dropped. Marks `map.group` per group, `map.tile <key>` per tile and
+    changed tile has lit up (missing: 0). Labels never overlap: a tile too
+    small for its label goes without (the side bar still lists the file).
+    Marks `map.group` per group, `map.tile <key>` per tile and
     `map.label <key>` per label drawn."""
     head = vb.Font(mono, 17, weight=700)
-    shown = [t for t in lay.tiles if t.key not in skip]
-    top = next((t for t in shown if t.key == focus), None)
-    spec = lambda t, force=False: label_spec(t, t.box, lit.get(t.key, 0.0), mono, force, lay.box)
-    cover = spec(top, True) if top is not None else None
-    if cover is not None:   # room for the ring that sets it apart
-        cover['box'] = vb.Box(cover['box'].x - 3, cover['box'].y - 3, cover['box'].w + 6, cover['box'].h + 6)
     with cv.clip(*lay.box):
         for g in lay.groups:
             cv.rect(*g.box, PANEL, radius=8)
@@ -217,19 +205,16 @@ def draw(cv, lay, lit, *, ui='sans-serif', mono='monospace', added='#98be65', re
             if g.header.h >= hh * 0.9:
                 label = ellipsize(g.label, head, g.header.w - 20)
                 hb = vb.Box(g.header.x + 10, g.header.y + (g.header.h - hh) / 2 + 1, vbtext.measure(label, head), hh)
-                if label and not (cover and hb.intersects(cover['box'])):
+                if label:
                     vbtext.draw(cv, [label], head, hb.x, hb.y, HEAD_INK)
                     cv.mark(f'map.head {g.label}', *hb)
             cv.mark('map.group', *g.box)
-        for t in shown:
-            draw_tile(cv, t, lit.get(t.key, 0.0), label_alpha=0, ui=ui, mono=mono, added=added, removed=removed,
-                      outline=outline)
-        for t in shown:
-            sp = spec(t)
-            if t is not top and sp is not None and not (cover and sp['box'].intersects(cover['box'])):
+        for t in lay.tiles:
+            draw_tile(cv, t, lit.get(t.key, 0.0), outline=outline)
+        for t in lay.tiles:
+            sp = label_spec(t, t.box, lit.get(t.key, 0.0), mono)
+            if sp is not None:
                 draw_label(cv, t, sp, 1.0, added, removed)
-        if cover is not None:
-            draw_label(cv, top, cover, 1.0, added, removed, ring=outline)
 
 
 def tile_fill(t, p):
@@ -240,12 +225,10 @@ def tile_fill(t, p):
     return tuple(255 * a + (h - 255 * a) * vb.clamp01(p) for a, h in zip(q[:3], ramp_color(t.heat, RAMP)))
 
 
-def draw_tile(cv, t, p, *, box=None, label_alpha=1.0, ui='sans-serif', mono='monospace', added='#98be65',
-              removed='#ff6c6b', outline='#ecbe7b'):
-    """One tile, lit `p` (0 -> 1), in its own box or `box` (a camera move's),
-    with its label (forced: this is a tile the camera is on) at `label_alpha`."""
-    b = box or t.box
-    if t.heat is not None and p > 0 and box is None:
+def draw_tile(cv, t, p, *, outline='#ecbe7b'):
+    """One tile, lit `p` (0 -> 1), without its label."""
+    b = t.box
+    if t.heat is not None and p > 0:
         b = b.scaled(1 + 0.06 * math.sin(math.pi * vb.clamp01(p)))
     radius = min(5.0, b.w / 4, b.h / 4)
     cv.rect(*b, tile_fill(t, p), radius=radius)
@@ -254,10 +237,6 @@ def draw_tile(cv, t, p, *, box=None, label_alpha=1.0, ui='sans-serif', mono='mon
     elif p > 0:
         cv.outline(b.x - 1, b.y - 1, b.w + 2, b.h + 2, outline, width=2.5, radius=radius + 1, alpha=vb.clamp01(p))
     cv.mark(f'map.tile {t.key}', *b)
-    if label_alpha > 0:
-        sp = label_spec(t, box or t.box, p, mono, True)
-        if sp is not None:
-            draw_label(cv, t, sp, label_alpha, added, removed)
 
 
 def _fits(s, font, b, pad=8):
@@ -270,12 +249,11 @@ def label_parts(info):
     return [('binary', 'muted')] if info.get('binary') else stat_parts(info)
 
 
-def label_spec(t, b, p, mono, force=False, within=None):
+def label_spec(t, b, p, mono):
     """Where tile `t`'s label goes in box `b` (lit `p`), or None when it does
     not fit inside the tile. A lit changed tile: `+a −d` on a dark pill, the
     file name above it when there is room; a quiet one (or one not lit yet):
-    its name. `force`: a changed tile too small still gets its numbers at the
-    smallest size, on a pill that may reach past the tile (kept `within`)."""
+    its name."""
     if t.heat is None or p <= 0:
         for size in (16, 14):
             font = vb.Font(mono, size)
@@ -294,8 +272,7 @@ def label_spec(t, b, p, mono, force=False, within=None):
         if pw <= b.w - 8 and ph <= b.h - 8:
             break
     else:
-        if not force:
-            return None
+        return None
     name = vb.Font(mono, max(13, size - 2), weight=700)
     nh = vbtext.line_height(name)
     nm = None
@@ -307,17 +284,13 @@ def label_spec(t, b, p, mono, force=False, within=None):
         box = vb.Box(b.x + 8, b.y + 8, max(pw, vbtext.measure(nm, name)), nh + 4 + ph)
     else:
         px, py = b.cx - pw / 2, b.cy - ph / 2
-        if within is not None:
-            px = min(max(px, within.x + 4), within.right - pw - 4)
-            py = min(max(py, within.y + 4), within.bottom - ph - 4)
         box = vb.Box(px, py, pw, ph)
     return {'kind': 'changed', 'parts': parts, 'stat': stat, 'pill': (px, py, pw, ph), 'name': nm,
             'name_font': name, 'box': box, 'alpha': vb.clamp01(p)}
 
 
-def draw_label(cv, t, sp, alpha, added, removed, ring=None):
-    """A label as `label_spec` placed it; `ring`, a colour, rings its pill so
-    it reads over whatever is around it."""
+def draw_label(cv, t, sp, alpha, added, removed):
+    """A label as `label_spec` placed it."""
     colors = {'added': added, 'removed': removed, 'muted': '#9aa3b2'}
     a = alpha * sp['alpha']
     if a <= 0:
@@ -330,9 +303,7 @@ def draw_label(cv, t, sp, alpha, added, removed, ring=None):
                 with cv.clip(*sp['box']):
                     vbtext.draw(cv, [sp['name']], sp['name_font'], sp['box'].x, sp['box'].y, INK)
             px, py, pw, ph = sp['pill']
-            if ring is not None:
-                cv.rect(px - 3, py - 3, pw + 6, ph + 6, ring, radius=(ph + 6) / 2)
-            cv.rect(px, py, pw, ph, INK, radius=ph / 2, alpha=1.0 if ring else 0.92)
+            cv.rect(px, py, pw, ph, INK, radius=ph / 2, alpha=0.92)
             x = px + 7
             for s, role in sp['parts']:
                 vbtext.draw(cv, [s], sp['stat'], x, py + 2, colors[role])
