@@ -199,10 +199,11 @@ class TestSeries(unittest.TestCase):
         for mode in ('tour', 'develop'):
             code, p, err = plan_json(self.repo, self.rev, '--series', '--mode', mode, '--duration', '60')
             self.assertEqual(code, 0, err)
-            self.assertEqual(len(p['patches']), 12, mode)
-            self.assertEqual(sum(1 for s in p['shots'] if s['kind'] == 'patch'), 11, mode)
+            n = len(p['patches'])   # 12 patches; at 60 s a pair may merge (an open's keys never speed up)
+            self.assertIn(n, (11, 12), mode)
+            self.assertEqual(sum(1 for s in p['shots'] if s['kind'] == 'patch'), n - 1, mode)
             body = {s['patch'] for s in p['shots'] if s['kind'] in ('hunk', 'edit')}
-            self.assertEqual(body, set(range(12)), mode)
+            self.assertEqual(body, set(range(n)), mode)
 
     def test_small_patches_merge(self):
         from git_video import narrator

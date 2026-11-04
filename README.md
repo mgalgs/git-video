@@ -408,8 +408,8 @@ selection first, then speed.
   on the map: the tour opens only its few most important files.
 - Only then is every shot sized, by one factor within its limits, to land
   on the target: kept hunks keep their natural read when they fit at it,
-  and a shortened `C-x C-f` holds less after RET, typing its keys faster
-  if it must. No xref dive under 30 s, at most one under 60 s.
+  and a shortened `C-x C-f` holds less after RET (its keys keep their
+  pace). No xref dive under 30 s, at most one under 60 s.
 - Develop types only the kept hunks, at the speed the target needs (up to
   ×256 under `--duration`); the rest of a visited file is put in at once,
   one step per run of hunks, under a `⇥ N hunks applied` marker (only the

@@ -22,7 +22,6 @@ from . import collect, edits, plan as P, xref
 LIMITS = {'title': (2.6, 6.0), 'map': (1.8, 5.0), 'end': (2.0, 6.0), 'patch': (1.8, 4.0),
           'xref-push': (3.0, P.XREF_DUR)}
 OPEN_HOLD = (0.2, 1.5)    # an open's file on screen after RET, at the least and the most
-OPEN_FAST = 0.4           # ... its minibuffer keys typed in down to this much of their time
 OPEN_MIN = 0.9            # what opening one file costs at the least, about (its keys depend on the path)
 READ_MIN = 0.8            # a hunk's read, at the least ...
 READ_STRETCH = 2.5        # ... and at the most, as a multiple of its natural read
@@ -371,10 +370,9 @@ def bounds(s, voice=None):
     if kind in LIMITS:
         lo, hi = LIMITS[kind]
         return dur if voiced else min(lo, dur), max(hi, dur)
-    if kind == 'open':   # its keys play out, faster if need be; the file is up after RET for less or more
+    if kind == 'open':   # its keys play out at their pace; the file is up after RET for less or more
         ret = P.open_ret(s)
-        lo = P.OPEN_TYPE + (ret - P.OPEN_TYPE) * OPEN_FAST + OPEN_HOLD[0]
-        return dur if voiced else min(dur, lo), max(dur, ret + OPEN_HOLD[1])
+        return dur if voiced else min(dur, ret + OPEN_HOLD[0]), max(dur, ret + OPEN_HOLD[1])
     if kind == 'hunk':
         scroll, hold, md, read = _hunk_parts(s)
         if voiced:
@@ -429,20 +427,8 @@ def resize(shots, target, voice=None):
             continue
         if x['kind'] == 'hunk' and not (voice is not None and P.shot_key(x) in voice):
             _resize_hunk(x, d)
-        if x['kind'] == 'open':
-            _resize_open(x, d)
         x['dur'] = round(d, 3)
     return f, c
-
-
-def _resize_open(s, d):
-    """Open shot `s` made `d` s long: when that leaves less than OPEN_HOLD[0]
-    after RET, its minibuffer keys typed faster (from the first on) to fit."""
-    ret = P.open_ret(s)
-    if d >= ret + OPEN_HOLD[0] - 1e-6:
-        return
-    k = (d - OPEN_HOLD[0] - P.OPEN_TYPE) / (ret - P.OPEN_TYPE)
-    s['strokes'] = [[round(P.OPEN_TYPE + (t - P.OPEN_TYPE) * k, 4), key, text] for t, key, text in s['strokes']]
 
 
 def _resize_hunk(s, d):
