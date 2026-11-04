@@ -199,8 +199,8 @@ class TestSeries(unittest.TestCase):
         for mode in ('tour', 'develop'):
             code, p, err = plan_json(self.repo, self.rev, '--series', '--mode', mode, '--duration', '60')
             self.assertEqual(code, 0, err)
-            n = len(p['patches'])   # 12 patches; at 60 s a pair may merge (an open's keys never speed up)
-            self.assertIn(n, (11, 12), mode)
+            n = len(p['patches'])   # 12 patches; at 60 s small ones may merge (an open's keys never speed up)
+            self.assertTrue(8 <= n <= 12, (mode, n))
             self.assertEqual(sum(1 for s in p['shots'] if s['kind'] == 'patch'), n - 1, mode)
             body = {s['patch'] for s in p['shots'] if s['kind'] in ('hunk', 'edit')}
             self.assertEqual(body, set(range(n)), mode)

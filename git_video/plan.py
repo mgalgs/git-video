@@ -50,6 +50,7 @@ PER_CHAR = 0.055          # mean seconds per typed character
 OPEN_KEYS = (0.08, 0.22)  # C-x, C-f
 OPEN_PROMPT = 0.35        # "Find file: " appears
 OPEN_TYPE = 0.45          # the first letter of the path
+OPEN_TAB_PAUSE = 0.2      # a beat on the typed prefix before each TAB completes it
 OPEN_RET_GAP = 0.15       # last letter -> RET
 OPEN_HOLD = 0.6           # the new buffer on screen before the next shot
 
@@ -165,7 +166,11 @@ def open_shot(path, names, patch):
     keys = completion(path, names)
     ts, span = schedule(['\t' if k == 'TAB' else k for k, _ in keys[:-1]], path, PER_CHAR)
     times = [OPEN_TYPE + t for t in ts] + [OPEN_TYPE + span + OPEN_RET_GAP]
-    strokes = [[round(t, 4), k, text] for t, (k, text) in zip(times, keys)]
+    tabs = 0
+    strokes = []
+    for t, (k, text) in zip(times, keys):
+        tabs += k == 'TAB'
+        strokes.append([round(t + tabs * OPEN_TAB_PAUSE, 4), k, text])
     return shot('editor', 'open', max(1.6, strokes[-1][0] + OPEN_HOLD), path=path, keys=_keys_label(keys),
                 strokes=strokes, patch=patch)
 

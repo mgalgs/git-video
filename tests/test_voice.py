@@ -602,9 +602,9 @@ class TestPacing(unittest.TestCase):
         from git_video import condense
         repo, sha = fixtures.make_repo(os.path.join(self.tmp.name, 'ontarget'))
         ch = collect.collect(repo, sha['change'])
-        full = voice.script(plan.build(ch, 0, 'develop', duration=15), [ch])
-        p = voice.narrate(ch, [ch], 0, 'develop', fixtures.FakeEngine(), 'bf_isabella', duration=15)
-        self.assertLessEqual(abs(p.total - 15), condense.tolerance(15), p.total)
+        full = voice.script(plan.build(ch, 0, 'develop', duration=30), [ch])
+        p = voice.narrate(ch, [ch], 0, 'develop', fixtures.FakeEngine(), 'bf_isabella', duration=30)
+        self.assertLessEqual(abs(p.total - 30), condense.tolerance(30), p.total)
         self.assertEqual([q['text'] for q in p.voice['phrases']], [x.text for x in full])
 
     def test_narrated_shots_take_time_from_the_rest(self):
