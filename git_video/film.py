@@ -374,7 +374,7 @@ class Tour:
                 tab = next((x[0] for x in s['strokes'] if x[1] == 'TAB'), None)
                 if tab is not None and 'tab' not in seen:   # the minibuffer just after its first completion
                     seen.add('tab')
-                    out.append((f0 + round((tab + 0.05) * self.fps), f'complete {s["path"]}'))
+                    out.append((f0 + math.ceil(tab * self.fps - 1e-9), f'complete {s["path"]}'))
                 out.append((f0 + round((P.open_ret(s) + 0.3) * self.fps), f'open {s["path"]}'))
             elif kind == 'hunk':
                 name = f'{s["path"]}#{s["index"] + 1}'
