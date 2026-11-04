@@ -1,7 +1,6 @@
 """The tour's sound effects: keys while the minibuffer types, a mouse click on
 each xref click, a soft tick as a hunk is reached and as a commit callout lands, a whoosh on a buffer switch,
-a softer whoosh for each camera move over the repo map and each long scroll and a low tick as each
-changed tile lights.
+a softer whoosh for each long scroll and a low tick as each changed tile lights.
 
 With --voice the effects duck under the narration (the film's silent music
 bed carries videobuilder's ducking), and the keys and typing runs heard
@@ -60,14 +59,9 @@ def cues(shots, shot_frames, fps):
             lit = s.get('lit', [])
             out += [(frame_at(f0, planmod.light_start(k, len(lit)) + planmod.MAP_LIGHT_FADE / 2, fps), 'tile')
                     for k in range(min(len(lit), planmod.MAP_MAX_TICKS))]
-        elif kind == 'dive':   # a --duration plan's shorter camera moves whoosh as early in them
-            out.append((frame_at(f0, 0.35 * planmod.camera_scale(s), fps), 'whoosh-soft'))
-        elif kind == 'travel':
-            out.append((frame_at(f0, 0.6 * planmod.camera_scale(s), fps), 'whoosh-soft'))
-        elif kind == 'open':
-            keys, letters, ret, _ = planmod.open_timing(s['path'])
-            out += [(frame_at(f0, t, fps), 'key') for t in (*keys, *letters, ret)]
-            out.append((frame_at(f0, ret, fps), 'whoosh'))
+        elif kind == 'open':   # C-x C-f, then each key in the minibuffer, a TAB as any other
+            out += [(frame_at(f0, t, fps), 'key') for t in (*planmod.OPEN_KEYS, *(x[0] for x in s['strokes']))]
+            out.append((frame_at(f0, planmod.open_ret(s), fps), 'whoosh'))
         elif kind == 'hunk':
             if s.get('scroll') == 'far':
                 out.append((frame_at(f0, 0.1, fps), 'whoosh-soft'))

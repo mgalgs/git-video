@@ -2,9 +2,8 @@
 
 The frame is a stage: `stage(cv)` names its boxes per format (the main box,
 the side bar's), and each shot's `scene` picks the draw function that plays
-in the main box (`SCENES`): the title/end `card`, the `editor`, and the
-repo `map`, whose camera moves (`dive`, `travel`) carry the tour from the
-map into a file and from file to file. `draw(n, cv)` is pure: everything
+in the main box (`SCENES`): the title/end `card`, the `editor` (which
+opens each file with `C-x C-f`), and the repo `map`. `draw(n, cv)` is pure: everything
 it shows is derived from the shot list and tables built once here (the
 treemap and the call graph per box, the morphs' highlighted old lines and
 the minimaps among them).
@@ -23,7 +22,6 @@ from videobuilder.capabilities.broadcast.cursor_path_animation import cursor_pat
 from videobuilder.capabilities.broadcast.end_card_with_subscribe_slot import end_card_slots, slot_reveal
 from videobuilder.capabilities.broadcast.lower_third_slide_in_bar import lower_third_bar
 from videobuilder.capabilities.broadcast.two_tier_kicker_and_title_stack import kicker_title_progress
-from videobuilder.capabilities.broadcast.zoom_to_location_map import fly_to
 from videobuilder.capabilities.typography.odometer_roll import draw_odometer
 from videobuilder.capabilities.ui.avatar_stack_spread import draw_avatar_stack
 from videobuilder.capabilities.ui.circular_clip_reveal import GROW, circular_reveal, reach
@@ -202,9 +200,9 @@ class Tour:
         self.develop = plan.mode == 'develop'
         for s in self.shots:
             k = s.get('patch', 0)
-            if self.develop and s['kind'] in ('edit', 'open', 'dive', 'travel'):
+            if self.develop and s['kind'] in ('edit', 'open'):
                 continue   # develop draws a performance's buffer, not a file's text
-            for path in (s.get('path'), s.get('to'), (s.get('definition') or {}).get('path')):
+            for path in (s.get('path'), (s.get('definition') or {}).get('path')):
                 if path and (k, path, 'new') not in self.buffers:
                     ch = self.patches[k]
                     text = ch.text(path)
@@ -249,7 +247,6 @@ class Tour:
         if plan.map:
             for f in formats:
                 self.map_layout(self.stage(vb.film.as_format(f)).main)
-        self.timings = {i: P.open_timing(s['path']) for i, s in enumerate(self.shots) if s['kind'] == 'open'}
         said = tuple(n.sound(at=round(p['start'] * self.fps), fps=self.fps)
                      for n, p in zip(self.narrations, self.voice['phrases'] if self.voice else ()))
         effects = sounds.sounds_for(self.shots, self.shot_frames, self.fps, log=log,
@@ -290,11 +287,6 @@ class Tour:
                                   max(3, len(str(max(len(old), len(new)) + 1))), _mode(s['path']))
         return self.performances[i]
 
-    def dive_after(self, i):
-        """The path of the tile the camera dives into after map shot i, if it does."""
-        nxt = self.shots[i + 1] if i + 1 < len(self.shots) else None
-        return nxt['path'] if nxt is not None and nxt['kind'] == 'dive' else None
-
     def map_layout(self, box):
         k = tuple(box)
         if k not in self.maps:
@@ -318,13 +310,13 @@ class Tour:
             before, kind, k = cur, s['kind'], s.get('patch', 0)
             if kind == 'map':
                 cur = View(None, 0, 0, (0, 0), cur.stack)
-            elif kind in ('open', 'dive', 'travel') and self.develop:   # into the next edit, as it starts
+            elif kind == 'open' and self.develop:   # into the next edit, as it starts
                 j = next((j for j in range(len(out) + 1, len(self.shots)) if self.shots[j]['kind'] == 'edit'), None)
-                cur = View(s.get('to', s['path']), 0, 0, (0, 0), cur.stack, patch=k, variant='old', edit=j)
+                cur = View(s['path'], 0, 0, (0, 0), cur.stack, patch=k, variant='old', edit=j)
             elif kind == 'edit':
                 cur = View(s['path'], 0, 0, (0, 0), cur.stack, patch=k, variant='new', edit=len(out), end=True)
-            elif kind in ('open', 'dive', 'travel'):
-                cur = View(s.get('to', s['path']), 0, 0, (0, 0), cur.stack, patch=k)
+            elif kind == 'open':
+                cur = View(s['path'], 0, 0, (0, 0), cur.stack, patch=k)
             elif kind == 'hunk':
                 focus = s['focus_line'] - 1
                 runs = self.buffers[k, s['path'], 'new'].lines
@@ -349,16 +341,6 @@ class Tour:
             if h is not None and cur.path == h['path'] and cur.patch == h.get('patch', 0) and cur.edit is None:
                 cur = replace(cur, wash=hunk)   # the hunk is current until the next one: its wash stays
             out.append((before, cur))
-        # A camera move into a file lands on its first hunk when that hunk has no
-        # morph to open on: the pane arrives showing the lines the hunk sweeps,
-        # rather than the file's top only to scroll away from it.
-        for i, s in enumerate(self.shots[:-1]):
-            nxt = self.shots[i + 1]
-            if (s['kind'] in ('dive', 'travel') and not self.develop and nxt['kind'] == 'hunk'
-                    and nxt['path'] == out[i][1].path and not nxt.get('morph')):
-                land = replace(out[i + 1][1], wash=None, stack=out[i][1].stack)
-                out[i] = (out[i][0], land)
-                out[i + 1] = (land, out[i + 1][1])
         return out
 
     # ---- time ----
@@ -372,30 +354,28 @@ class Tour:
         i, t = self.at(n)
         before, after = self.views[i]
         kind = self.shots[i]['kind']
-        cam = P.camera_scale(self.shots[i]) if kind in ('dive', 'travel') else 1.0
-        switch = {'open': self.timings[i][2] if kind == 'open' else 0, 'xref-push': P.XREF_SWITCH,
-                  'xref-pop': P.POP_SWITCH, 'dive': P.DIVE_SWITCH * cam, 'travel': P.TRAVEL_SWITCH * cam}.get(kind, 0)
+        switch = {'open': P.open_ret(self.shots[i]) if kind == 'open' else 0, 'xref-push': P.XREF_SWITCH,
+                  'xref-pop': P.POP_SWITCH}.get(kind, 0)
         v = after if t >= switch else before
         return v.path, v.stack
 
     def keyframes(self):
-        out, hunks, travels, seen, graphed = [], 0, 0, set(), False
+        out, hunks, seen, graphed = [], 0, set(), False
         seen_edit = {}
         for i, s in enumerate(self.shots):
             f0, kind = self.shot_frames[i], s['kind']
             if kind == 'map':
                 out.append((f0 + round((s['dur'] - 0.1) * self.fps), 'map'))
-            elif kind == 'dive':
-                out.append((f0 + round(0.65 * s['dur'] * self.fps), f'dive {s["path"]}'))
-            elif kind == 'travel' and not travels:
-                travels += 1
-                out.append((f0 + round(0.6 * s['dur'] * self.fps), f'travel {s["to"]}'))
             elif kind == 'title':
                 out.append((f0 + round(P.TITLE_STILL * self.fps), 'title'))
             elif kind == 'end':
                 out.append((f0 + round((s['dur'] - 0.6) * self.fps), 'end'))
             elif kind == 'open':
-                out.append((f0 + round((self.timings[i][2] + 0.3) * self.fps), f'open {s["path"]}'))
+                tab = next((x[0] for x in s['strokes'] if x[1] == 'TAB'), None)
+                if tab is not None and 'tab' not in seen:   # the minibuffer just after its first completion
+                    seen.add('tab')
+                    out.append((f0 + round((tab + 0.05) * self.fps), f'complete {s["path"]}'))
+                out.append((f0 + round((P.open_ret(s) + 0.3) * self.fps), f'open {s["path"]}'))
             elif kind == 'hunk':
                 name = f'{s["path"]}#{s["index"] + 1}'
                 if hunks < 12:
@@ -855,8 +835,8 @@ def _recap(plan):
         return files, [(name, path, line) for (name, path), line in written.items()]
     files, defs = [], []
     for s in plan.shots:
-        if s['kind'] in ('dive', 'travel', 'open'):
-            path = s.get('to', s.get('path'))
+        if s['kind'] == 'open':
+            path = s['path']
             if path not in files:
                 files.append(path)
         elif s['kind'] == 'xref-push':
@@ -1212,19 +1192,19 @@ def _fitted(tour, st, view):
 
 
 def _open(tour, cv, st, shot, t, i, before, after):
-    keys, letters, ret, _ = tour.timings[i]
+    strokes, ret = shot['strokes'], P.open_ret(shot)
     if t >= ret:
         _pane(tour, cv, st, after, blink=t - ret)
         return
-    if t < keys[0]:
+    if t < P.OPEN_KEYS[0]:
         echo = ''
-    elif t < keys[1]:
+    elif t < P.OPEN_KEYS[1]:
         echo = 'C-x-'
     elif t < P.OPEN_PROMPT:
         echo = 'C-x C-f-'
-    else:
-        typed = sum(1 for x in letters if x <= t)
-        echo = 'Find file: ' + shot['path'][:typed]
+    else:   # what the last key pressed left in the minibuffer: a TAB's completion at once
+        n = bisect.bisect_right([x[0] for x in strokes], t)
+        echo = 'Find file: ' + (strokes[n - 1][2] if n else '')
     _pane(tour, cv, st, before, echo=echo, echo_cursor=t >= P.OPEN_PROMPT)
 
 
@@ -2030,108 +2010,14 @@ def lit_amounts(shot, t):
     return {k: vb.clamp01((t - P.light_start(j, len(keys))) / P.MAP_LIGHT_FADE) for j, k in enumerate(keys)}
 
 
-def _wide(box):
-    return box.cx, box.cy, box.w
-
-
-def _close(box, tile):
-    """The camera framing `tile` with room around it."""
-    b = tile.box
-    return b.cx, b.cy, max(b.w * 2.2, b.h * 2.2 * box.w / max(box.h, 1), box.w * 0.25)
-
-
-def _on_screen(box, cam, b):
-    cx, cy, span = cam
-    s = box.w / span
-    return vb.Box(box.cx + (b.x - cx) * s, box.cy + (b.y - cy) * s, b.w * s, b.h * s)
-
-
-def _lerp_box(a, b, e):
-    return vb.Box(*(x + (y - x) * e for x, y in zip(a, b)))
-
-
-def _map_under(tour, cv, box, lay, cam, lit, skip=(), focus=None):
-    """The whole map seen through camera `cam` (the zoom-to-location idea, for a
-    box instead of the frame); `focus`, the tile the camera dives into next,
-    keeps its label on top."""
-    cx, cy, span = cam
-    s = box.w / span
+def draw_map(tour, cv, box, shot, t, i, st):
+    """The repo map scene: the whole map, wide, its changed tiles lighting."""
     with cv.clip(*box):
         cv.rect(*box, THEME.bg)
-        with cv.layer(dx=box.cx - cx * s, dy=box.cy - cy * s, scale=s):
-            repomap.draw(cv, lay, lit, ui=UI, mono=tour.font, added=THEME.fringe_added,
-                         removed=THEME.fringe_removed, outline=THEME.xref_box, skip=skip, focus=focus)
+        repomap.draw(cv, tour.map_layout(box), lit_amounts(shot, t), ui=UI, mono=tour.font, added=THEME.fringe_added,
+                     removed=THEME.fringe_removed, outline=THEME.xref_box)
 
 
-def _focus(tour, cv, st, box, cam, tile, view, q):
-    """`tile` grown `q` (0 -> 1) of the way from where the camera shows it to
-    the whole box, the editor showing `view` fading in inside it and filling the
-    box exactly at q = 1."""
-    if tile is None:
-        _pane(tour, cv, st, view)
-        return
-    e = vb.ease_in_out_quart(vb.clamp01(q))
-    r = _lerp_box(_on_screen(box, cam, tile.box), box, e)
-    with cv.clip(*box):
-        repomap.draw_tile(cv, tile, 1.0, box=r, label_alpha=1 - vb.clamp01(q / 0.4), ui=UI, mono=tour.font,
-                          added=THEME.fringe_added, removed=THEME.fringe_removed, outline=THEME.xref_box)
-        a = vb.clamp01((q - 0.15) / 0.35)
-        if a <= 0:
-            return
-        k = r.w / box.w
-        with cv.clip(*r), cv.layer(opacity=a, dx=r.cx - box.cx * k, dy=r.cy - box.cy * k, scale=k):
-            _pane(tour, cv, st, view)
-
-
-def draw_map(tour, cv, box, shot, t, i, st):
-    """The repo map scene: the map itself, and the camera moves into and
-    between files."""
-    before, after = tour.views[i]
-    if shot['kind'] == 'map':
-        _map(tour, cv, replace(st, main=box), tour.map_layout(box), shot, t, before, after, focus=tour.dive_after(i))
-        return
-    MAP_KINDS[shot['kind']](tour, cv, replace(st, main=box), tour.map_layout(box), shot, t, before, after)
-
-
-def _map(tour, cv, st, lay, shot, t, before, after, focus=None):
-    _map_under(tour, cv, st.main, lay, _wide(st.main), lit_amounts(shot, t), focus=focus)
-
-
-def _all_lit(lay):
-    return {x.key: 1.0 for x in lay.tiles if x.heat is not None}
-
-
-def _dive(tour, cv, st, lay, shot, t, before, after):
-    box, tile = st.main, lay.tile(shot['path'])
-    t = t / P.camera_scale(shot)   # a --duration plan's shorter dive plays the same moves faster
-    cam = _wide(box) if tile is None else fly_to(vb.ease_in_out_quart(vb.clamp01(t / P.DIVE_CAM)), _wide(box),
-                                                   _close(box, tile))
-    q = vb.clamp01((t - P.DIVE_MORPH[0]) / (P.DIVE_MORPH[1] - P.DIVE_MORPH[0]))
-    _map_under(tour, cv, box, lay, cam, _all_lit(lay), skip=(shot['path'],))
-    _focus(tour, cv, st, box, cam, tile, after, q)
-
-
-def _travel(tour, cv, st, lay, shot, t, before, after):
-    box = st.main
-    a, b = lay.tile(shot['path']), lay.tile(shot['to'])
-    t = t / P.camera_scale(shot)   # a --duration plan's shorter travel plays the same moves faster
-    if a is None or b is None:
-        _pane(tour, cv, st, after if t >= P.TRAVEL_SWITCH else before)
-        return
-    p = vb.clamp01((t - P.TRAVEL_CAM[0]) / (P.TRAVEL_CAM[1] - P.TRAVEL_CAM[0]))
-    cam = fly_to(vb.ease_in_out_quart(p), _close(box, a), _close(box, b))
-    q_from = 1 - vb.clamp01(t / P.TRAVEL_SHRINK)
-    q_to = vb.clamp01((t - P.TRAVEL_GROW[0]) / (P.TRAVEL_GROW[1] - P.TRAVEL_GROW[0]))
-    _map_under(tour, cv, box, lay, cam, _all_lit(lay), skip=(a.key, b.key))
-    if q_to > 0:
-        _focus(tour, cv, st, box, cam, a, before, 0)
-        _focus(tour, cv, st, box, cam, b, after, q_to)
-    else:
-        _focus(tour, cv, st, box, cam, b, after, 0)
-        _focus(tour, cv, st, box, cam, a, before, q_from)
-
-
-MAP_KINDS = {'map': _map, 'dive': _dive, 'travel': _travel}
 SCENES = {'card': draw_card, 'editor': draw_editor, 'map': draw_map}
 
 

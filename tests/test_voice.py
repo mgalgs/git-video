@@ -627,7 +627,7 @@ class TestPacing(unittest.TestCase):
                     self.assertLessEqual(b['dur'], a['dur'] + 1e-3, (mode, i, b['kind']))
 
     def test_voice_off_is_todays_plan(self):
-        # the shots and their lengths as the tree before --voice (cff1eeecb1) planned them
+        # the shots and their lengths as the tree before --voice (cff1eeecb1) planned them, every file entered by C-x C-f
         with open(os.path.join(os.path.dirname(__file__), 'voice_off_plans.json')) as f:
             before = json.load(f)
         for name, (plain, _) in self.plans.items():

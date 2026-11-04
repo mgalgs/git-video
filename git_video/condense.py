@@ -5,8 +5,8 @@ Selection first, then speed. Every hunk is scored for importance
 fixed costs (the cards, the map, at their floors) are kept, in story order
 (`select`); files with nothing kept are not visited, and the closing card
 lists them under "also changed". Only then is every shot sized within its
-limits so the plan lands on the target (`resize`): the cards and camera
-moves shrink first, as far as the kept content needs, so the hunks keep
+limits so the plan lands on the target (`resize`): the cards and the
+file opens shrink first, as far as the kept content needs, so the hunks keep
 their natural read when they fit at it.
 """
 import argparse
@@ -20,13 +20,16 @@ from . import collect, edits, plan as P, xref
 # A shot's (floor, ceiling) in seconds: what it may shrink to (the film's
 # fixed timings inside it still play) and grow to.
 LIMITS = {'title': (2.6, 6.0), 'map': (1.8, 5.0), 'end': (2.0, 6.0), 'patch': (1.8, 4.0),
-          'dive': (0.6, P.DIVE_DUR), 'travel': (0.8, P.TRAVEL_DUR), 'xref-push': (3.0, P.XREF_DUR)}
+          'xref-push': (3.0, P.XREF_DUR)}
+OPEN_HOLD = (0.2, 1.5)    # an open's file on screen after RET, at the least and the most
+OPEN_FAST = 0.4           # ... its minibuffer keys typed in down to this much of their time
+OPEN_MIN = 0.9            # what opening one file costs at the least, about (its keys depend on the path)
 READ_MIN = 0.8            # a hunk's read, at the least ...
 READ_STRETCH = 2.5        # ... and at the most, as a multiple of its natural read
 CALLOUT_MIN_EACH = 1.4    # a callout's least time up when its hunk is squeezed
 MORPH_MIN = (0.4, 0.8)    # MORPH_HOLD, MORPH_DUR at the least
 HUNK_MIN = P.HUNK_SCROLL + READ_MIN            # the least one hunk shot costs
-BEAT_CONTENT_MIN = LIMITS['dive'][0] + HUNK_MIN   # the least a --series beat's body costs
+BEAT_CONTENT_MIN = OPEN_MIN + HUNK_MIN   # the least a --series beat's body costs
 # Develop: what typing one hunk is budgeted at, natural seconds over
 # NATURAL_MAX, held between these (the speed-ups take the rest).
 DEV_HUNK_COST = (1.0, 6.0)
@@ -224,25 +227,24 @@ def score_hunks(change):
 
 
 # ---- selection ----
-def select(items, budget, first=P.DIVE_DUR, then=P.TRAVEL_DUR):
+def select(items, budget, enter=lambda group: 0.0):
     """The ids of the `items` (dicts with 'id', 'score', 'order' (story
     order), 'cost', 'group' (the file)) kept in `budget` seconds: the highest
     scores first (story order breaking ties), each taken while it fits with
-    its file's way in (`first` for the first file, `then` for each after);
-    the best one always. Once one does not fit, nothing under FILLER_SHARE
+    its file's way in (`enter(group)`, once per file); the best one always. Once one does not fit, nothing under FILLER_SHARE
     of its score fills the gap it leaves: that time goes to reading what is
     kept."""
     taken, groups, left, missed = set(), set(), budget, None
     for it in sorted(items, key=lambda x: (-x['score'], x['order'])):
-        enter = 0.0 if it['group'] in groups else first if not groups else then
+        way_in = 0.0 if it['group'] in groups else enter(it['group'])
         if missed is not None and it['score'] < FILLER_SHARE * missed:
             break
-        if taken and it['cost'] + enter > left + 1e-9:
+        if taken and it['cost'] + way_in > left + 1e-9:
             missed = it['score'] if missed is None else missed
             continue
         taken.add(it['id'])
         groups.add(it['group'])
-        left -= it['cost'] + enter
+        left -= it['cost'] + way_in
     return taken
 
 
@@ -287,8 +289,15 @@ def _visitable(change, mode):
     return [f.path for f in change.files if f.text is not None]
 
 
-def _enters_min(n_files):
-    return 0.0 if not n_files else LIMITS['dive'][0] + (n_files - 1) * LIMITS['travel'][0]
+def _opens(change, k):
+    """{path: its `open` shot} for patch k's files, made on first use."""
+    names, out = P.completion_names(change), {}
+
+    def made(path):
+        if path not in out:
+            out[path] = P.open_shot(path, names, k)
+        return out[path]
+    return made
 
 
 def body(change, verbose, mode, k, voice, budget, xrefs, callouts=None):
@@ -298,10 +307,10 @@ def body(change, verbose, mode, k, voice, budget, xrefs, callouts=None):
     `callouts` ({phrase key: [text]}), when given, go on what is kept."""
     scores = score_hunks(change)
     items = _tour_items(change, verbose, k, scores) if mode == 'tour' else _develop_items(change, verbose, scores)
-    ids = select(items, budget)
+    opens = _opens(change, k)
+    ids = select(items, budget, lambda path: opens(path)['dur'])
     left = budget - sum(it['cost'] for it in items if it['id'] in ids)
-    groups = {it['group'] for it in items if it['id'] in ids}
-    left -= P.DIVE_DUR + max(0, len(groups) - 1) * P.TRAVEL_DUR if groups else 0
+    left -= sum(opens(g)['dur'] for g in {it['group'] for it in items if it['id'] in ids})
     if mode == 'tour':
         fit = max(0, int(left // (P.XREF_DUR + P.POP_DUR)))
         xrefs = fit if xrefs is None else min(xrefs, fit)
@@ -310,7 +319,7 @@ def body(change, verbose, mode, k, voice, budget, xrefs, callouts=None):
     def run(keep, voice, callouts=None):
         if mode == 'tour':
             return P._tour_body(change, verbose, k, voice, keep=keep, xref_cap=xrefs, callouts=callouts), {}, {}
-        enters = P.DIVE_DUR + (len(keep) - 1) * P.TRAVEL_DUR if keep else 0.0
+        enters = sum(opens(path)['dur'] for path in keep)
         return P._develop_body(change, verbose, k, voice, keep=keep, budget=max(1.0, budget - enters), duration=True,
                                callouts=callouts)
 
@@ -321,7 +330,7 @@ def body(change, verbose, mode, k, voice, budget, xrefs, callouts=None):
         keep = _keep_of(items, ids)
         shots, fields, written = run(keep, None)
         files = list(dict.fromkeys(s['path'] for s in shots if s['kind'] == 'enter'))
-        least = sum(bounds(s)[0] for s in shots if s['kind'] != 'enter') + _enters_min(len(files))
+        least = sum(bounds(s)[0] for s in shots if s['kind'] != 'enter') + sum(bounds(opens(f))[0] for f in files)
         if least <= budget + 0.25 or len(ids) <= 1:
             break
         if mode == 'tour' and xrefs:
@@ -362,6 +371,10 @@ def bounds(s, voice=None):
     if kind in LIMITS:
         lo, hi = LIMITS[kind]
         return dur if voiced else min(lo, dur), max(hi, dur)
+    if kind == 'open':   # its keys play out, faster if need be; the file is up after RET for less or more
+        ret = P.open_ret(s)
+        lo = P.OPEN_TYPE + (ret - P.OPEN_TYPE) * OPEN_FAST + OPEN_HOLD[0]
+        return dur if voiced else min(dur, lo), max(dur, ret + OPEN_HOLD[1])
     if kind == 'hunk':
         scroll, hold, md, read = _hunk_parts(s)
         if voiced:
@@ -372,7 +385,7 @@ def bounds(s, voice=None):
     return dur, dur
 
 
-FIXED = frozenset(('title', 'map', 'end', 'patch', 'dive', 'travel'))   # the fixed costs: they shrink first
+FIXED = frozenset(('title', 'map', 'end', 'patch', 'open'))   # the fixed costs: they shrink first
 
 
 def _sized(shots, voice, fixed, content):
@@ -400,7 +413,7 @@ def _solve(total, target, lo, hi):
 def resize(shots, target, voice=None):
     """Size every shot of a plan, in place, within its bounds so the whole
     lasts `target` seconds (or as near as the bounds allow). Too long: the
-    fixed costs (cards, map, camera moves) shrink first, by one factor, and
+    fixed costs (cards, map, file opens) shrink first, by one factor, and
     only past their floors the content (hunks, dives into definitions). Too
     short: everything grows by one factor. A hunk's morph and callouts move
     with its read. Returns the (fixed, content) factors."""
@@ -416,8 +429,20 @@ def resize(shots, target, voice=None):
             continue
         if x['kind'] == 'hunk' and not (voice is not None and P.shot_key(x) in voice):
             _resize_hunk(x, d)
+        if x['kind'] == 'open':
+            _resize_open(x, d)
         x['dur'] = round(d, 3)
     return f, c
+
+
+def _resize_open(s, d):
+    """Open shot `s` made `d` s long: when that leaves less than OPEN_HOLD[0]
+    after RET, its minibuffer keys typed faster (from the first on) to fit."""
+    ret = P.open_ret(s)
+    if d >= ret + OPEN_HOLD[0] - 1e-6:
+        return
+    k = (d - OPEN_HOLD[0] - P.OPEN_TYPE) / (ret - P.OPEN_TYPE)
+    s['strokes'] = [[round(P.OPEN_TYPE + (t - P.OPEN_TYPE) * k, 4), key, text] for t, key, text in s['strokes']]
 
 
 def _resize_hunk(s, d):

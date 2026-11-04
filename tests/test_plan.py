@@ -33,7 +33,8 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(doc['target'], self.sha['change'])
         self.assertEqual(doc['repo'], 'repo')
         self.assertIn('next', doc)
-        self.assertLessEqual({'map', 'dive', 'travel'}, {s['kind'] for s in doc['shots']})
+        self.assertLessEqual({'map', 'open'}, {s['kind'] for s in doc['shots']})
+        self.assertFalse({'dive', 'travel'} & {s['kind'] for s in doc['shots']})
         self.assertEqual([g['label'] for g in doc['map']['groups']], ['repo', 'src/', 'tests/'])
 
     def test_without_duration_the_json_has_no_duration(self):
@@ -74,14 +75,11 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(p.shots[0]['kind'], 'title')
         self.assertEqual(p.shots[-1]['kind'], 'end')
         self.assertEqual(p.shots[1]['kind'], 'map')
-        visits = [(s['kind'], s.get('to', s.get('path'))) for s in p.shots
-                  if s['kind'] in ('open', 'hunk', 'dive', 'travel')]
-        # src/lib.py was opened by the xref into frob, so it is entered the editor's way
-        self.assertEqual(visits, [('dive', 'src/app.py'), ('hunk', 'src/app.py'),
+        visits = [(s['kind'], s['path']) for s in p.shots if s['kind'] in ('open', 'hunk')]
+        # every file, the first included, is entered the editor's way
+        self.assertEqual(visits, [('open', 'src/app.py'), ('hunk', 'src/app.py'),
                                   ('open', 'src/lib.py'), ('hunk', 'src/lib.py'),
-                                  ('travel', 'tests/test_app.py'), ('hunk', 'tests/test_app.py')])
-        (travel,) = kinds(p, 'travel')
-        self.assertEqual(travel['path'], 'src/lib.py')
+                                  ('open', 'tests/test_app.py'), ('hunk', 'tests/test_app.py')])
         self.assertNotIn('bin.dat', [s.get('path') for s in p.shots])
         self.assertIn('bin.dat', [f['path'] for f in p.files])
 
@@ -467,13 +465,13 @@ class TestPlan(unittest.TestCase):
     def test_every_shot_has_scene(self):
         for p in self.plans.values():
             for s in p.shots:
-                want = {'title': 'card', 'end': 'card', 'map': 'map', 'dive': 'map', 'travel': 'map'}
+                want = {'title': 'card', 'end': 'card', 'map': 'map'}
                 self.assertEqual(s['scene'], want.get(s['kind'], 'editor'))
         self.assertIn('"scene"', self.plans[0].to_json())
 
-    def test_one_file_tour_has_no_travel(self):
+    def test_one_file_tour_opens_its_file(self):
         p = plan.plan(collect.collect(self.repo, self.sha['root']))
-        self.assertEqual([s['kind'] for s in p.shots], ['title', 'map', 'dive', 'hunk', 'end'])
+        self.assertEqual([s['kind'] for s in p.shots], ['title', 'map', 'open', 'hunk', 'end'])
 
     def test_range_coauthors_union(self):
         p = plan.plan(collect.collect(self.repo, f'{self.sha["root"]}..HEAD'))
@@ -521,7 +519,7 @@ class TestDevelopPlan(unittest.TestCase):
             p = plan.build(self.budget, verbose, 'develop', duration=30)
             (e,) = p.patches
             enters = sum(s['dur'] for s in plan.build(self.budget, verbose, 'develop').shots
-                         if s['kind'] in ('dive', 'travel'))
+                         if s['kind'] == 'open')
             self.assertAlmostEqual(e['budget'], e['target'] - enters, places=2)
             self.assertAlmostEqual(plan.perf_time(p), e['budget'], delta=0.1)
             edits_ = [s for s in p.shots if s['kind'] == 'edit']
@@ -641,7 +639,7 @@ class TestDevelopPlan(unittest.TestCase):
         self.assertEqual(code, 0)
         doc = json.loads(out)
         self.assertEqual((doc['version'], doc['mode'], len(doc['patches'])), (plan.VERSION, 'develop', 1))
-        self.assertEqual(plan.VERSION, 2)
+        self.assertEqual(plan.VERSION, 3)
         edits_ = [s for s in doc['shots'] if s['kind'] == 'edit']
         self.assertTrue(edits_)
         for s in edits_:

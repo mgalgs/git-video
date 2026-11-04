@@ -87,15 +87,13 @@ class TestSounds(unittest.TestCase):
         opens = [s for s in shots if s['kind'] == 'open']
         pushes = sum(s['kind'] == 'xref-push' for s in shots)
         pops = sum(s['kind'] == 'xref-pop' for s in shots)
-        keys = sum(len(s['path']) + 3 for s in opens) + 2 * pushes + 2 * pops   # C-x, C-f, letters, RET
+        keys = sum(len(s['strokes']) + 2 for s in opens) + 2 * pushes + 2 * pops   # C-x, C-f, the minibuffer's keys
         self.assertEqual(by['pro_typing_key/tick'], keys)
         self.assertEqual(by['pro_click/mouse'], pushes)
         self.assertEqual(by['pro_hover_tick/soft'], sum(s['kind'] == 'hunk' for s in shots) +
                          sum(len(s.get('callouts') or ()) for s in shots))
         self.assertEqual(by['whoosh_fast/tight'], len(opens) + pushes + pops)
-        moves = sum(s['kind'] in ('dive', 'travel') for s in shots) + sum(s.get('scroll') == 'far' for s in shots)
-        self.assertEqual(by['whoosh_fast/sleeve'], moves)
-        self.assertGreater(moves, 0)
+        self.assertEqual(by.get('whoosh_fast/sleeve', 0), sum(s.get('scroll') == 'far' for s in shots))
         (m,) = [s for s in shots if s['kind'] == 'map']
         self.assertEqual(by['pro_hover_tick/detent'], min(len(m['lit']), plan.MAP_MAX_TICKS))
 
@@ -184,11 +182,12 @@ class TestSounds(unittest.TestCase):
         a = sounds.cues(self.plan.shots, [0] * len(self.plan.shots), 30)
         b = sounds.cues(self.plan.shots, [0] * len(self.plan.shots), 30)
         self.assertEqual(a, b)
-        keys, letters, ret, _ = plan.open_timing('src/app.py')
-        times = [*keys, *letters, ret]
+        names = {'src/app.py', 'src/lib.py', 'README.md'}
+        strokes = plan.open_shot('src/app.py', names, 0)['strokes']
+        times = [*plan.OPEN_KEYS, *(x[0] for x in strokes)]
         self.assertEqual(times, sorted(times))
-        self.assertEqual(plan.open_timing('src/app.py'), plan.open_timing('src/app.py'))
-        self.assertEqual(len(letters), len('src/app.py'))
+        self.assertEqual(strokes, plan.open_shot('src/app.py', names, 0)['strokes'])
+        self.assertEqual([x[1] for x in strokes], ['s', 'TAB', 'a', 'TAB', 'RET'])
 
 
 if __name__ == '__main__':

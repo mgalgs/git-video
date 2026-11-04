@@ -18,7 +18,7 @@ from videobuilder.type.typewriter import schedule
 from . import callouts as callouts_mod, edits, graph as graphmod, repomap, xref
 from .collect import is_test
 
-VERSION = 2
+VERSION = 3
 FPS = 30
 PLAN_ROWS = 26            # rows the planner assumes are on screen: the fewest any format shows (1x1 with --voice)
 # The film re-scrolls to keep the focus line off the window's last row
@@ -109,22 +109,6 @@ MAP_LIGHT_SPAN = 1.0      # the most the staggered starts spread over
 MAP_LIGHT_STEP = 0.12     # ... and the most between two starts
 MAP_LIGHT_FADE = 0.3      # one tile's lighting
 MAP_MAX_TICKS = 12        # tile ticks heard, at most
-DIVE_DUR = 1.0            # map -> a file's tile -> the editor
-DIVE_CAM = 0.7            # the camera flies to the tile ...
-DIVE_MORPH = (0.3, 0.95)  # ... while the tile grows into the pane (landed a frame before the cut)
-DIVE_SWITCH = 0.5         # the side bar's current file changes
-TRAVEL_DUR = 1.3          # the editor -> back out -> the next file's tile -> the editor
-TRAVEL_SHRINK = 0.4
-TRAVEL_CAM = (0.25, 1.0)
-TRAVEL_GROW = (0.85, 1.25)
-TRAVEL_SWITCH = 0.85
-
-
-def camera_scale(s):
-    """How far a dive's or travel's camera timings are compressed: its length
-    over the nominal one (--duration may shrink it), never past 1 (a longer
-    one, stretched for the voice, holds at the end)."""
-    return min(1.0, s['dur'] / (DIVE_DUR if s['kind'] == 'dive' else TRAVEL_DUR))
 
 
 def light_start(k, n):
@@ -132,12 +116,77 @@ def light_start(k, n):
     return MAP_LIGHT_START + k * min(MAP_LIGHT_STEP, MAP_LIGHT_SPAN / max(1, n))
 
 
-def open_timing(path):
-    """(key times, typed-letter times, RET time, duration) of an `open` shot."""
-    ts, span = schedule(path, path, PER_CHAR)
-    letters = [OPEN_TYPE + t for t in ts]
-    ret = OPEN_TYPE + span + OPEN_RET_GAP
-    return OPEN_KEYS, letters, ret, max(1.6, round(ret + OPEN_HOLD, 3))
+def completion_names(change):
+    """The paths `C-x C-f` completes from: the files at the target, and the
+    change's own (a deleted file is still opened)."""
+    return {p for p, _ in change.tree} | {f.path for f in change.files}
+
+
+def _entries(names, d):
+    """The names (file or directory) in directory `d` ('' or 'a/b/')."""
+    return {n[len(d):].split('/')[0] for n in names if n.startswith(d)}
+
+
+def completion(path, names):
+    """[(key, minibuffer text after it)] that type `path` in `Find file: ` the
+    way an Emacs user would: per directory the shortest prefix no sibling
+    shares then TAB (the whole name then `/` when none is unique); for the
+    file its first letter, TAB when that adds to it (the common prefix of
+    every entry starting so), the rest typed. The last key is RET."""
+    names = set(names) | {path}
+    out, d = [], ''
+    *dirs, base = path.split('/')
+
+    def typed(chars):
+        for ch in chars:
+            out.append((ch, out[-1][1] + ch if out else ch))
+    for c in dirs:
+        others = _entries(names, d) - {c}
+        n = next((n for n in range(1, len(c) + 1) if not any(e.startswith(c[:n]) for e in others)), None)
+        if n is None:
+            typed(c + '/')
+        else:
+            typed(c[:n])
+            out.append(('TAB', d + c + '/'))
+        d += c + '/'
+    typed(base[0])
+    common = os.path.commonprefix([e for e in _entries(names, d) if e.startswith(base[0])])
+    if len(common) > 1:
+        out.append(('TAB', d + common))
+    typed(base[len(common) if len(common) > 1 else 1:])
+    out.append(('RET', path))
+    return out
+
+
+def open_shot(path, names, patch):
+    """The `open` shot visiting `path` (C-x C-f, then `completion` over
+    `names`): its `strokes` ([at, key, minibuffer text], RET last) are what
+    the film shows and the sounds play, its length what the plan counts."""
+    keys = completion(path, names)
+    ts, span = schedule(['\t' if k == 'TAB' else k for k, _ in keys[:-1]], path, PER_CHAR)
+    times = [OPEN_TYPE + t for t in ts] + [OPEN_TYPE + span + OPEN_RET_GAP]
+    strokes = [[round(t, 4), k, text] for t, (k, text) in zip(times, keys)]
+    return shot('editor', 'open', max(1.6, strokes[-1][0] + OPEN_HOLD), path=path, keys=_keys_label(keys),
+                strokes=strokes, patch=patch)
+
+
+def open_ret(s):
+    """When an `open` shot's RET is pressed: its file is on screen from then."""
+    return s['strokes'][-1][0]
+
+
+def _keys_label(keys):
+    """`C-x C-f s TAB b TAB a TAB xml.py RET`: the keys, typed runs together."""
+    out, run = ['C-x C-f'], ''
+    for k, _ in keys:
+        if len(k) == 1:
+            run += k
+            continue
+        if run:
+            out.append(run)
+        out.append(k)
+        run = ''
+    return ' '.join(out)
 
 
 def hunk_read(visible_added, callouts=0):
@@ -555,29 +604,13 @@ def _stretch(s, voice, anchor):
     return s
 
 
-def _resolve_enters(shots, tiled, voice=None):
-    """Each `enter` becomes the way into its file: a dive from the map for a
-    patch's first file, a travel over the map from the file before, or `C-x
-    C-f` for a file already seen in the patch (a definition visit opened it) or
-    not on the map."""
+def _resolve_enters(shots, names, voice=None):
+    """Each `enter` becomes `C-x C-f` opening its file, completed over patch
+    k's `names[k]`."""
     out = []
-    current, opened, patch = None, set(), None   # the file on screen; files a definition visit has opened
     for s in shots:
-        if s.get('patch') != patch:
-            current, opened, patch = None, set(), s.get('patch')
         if s['kind'] == 'enter':
-            path = s['path']
-            if path in opened or path not in tiled:   # already seen (or not on the map): open it the editor's way
-                *_, dur = open_timing(path)
-                s = shot('editor', 'open', dur, path=path, keys=f'C-x C-f {path}', patch=s['patch'])
-            elif current is None:
-                s = shot('map', 'dive', DIVE_DUR, path=path, patch=s['patch'])
-            else:
-                s = shot('map', 'travel', TRAVEL_DUR, path=current, to=path, patch=s['patch'])
-            current = path
-            _stretch(s, voice, 0.0)
-        elif s['kind'] == 'xref-push':
-            opened.add(s['definition']['path'])
+            s = _stretch(open_shot(s['path'], names[s['patch']], s['patch']), voice, 0.0)
         out.append(s)
     return out
 
@@ -897,7 +930,7 @@ def build(change, verbose=0, mode='tour', patches=None, voice=None, duration=Non
             body = _tour_body(ch, verbose, k, voice, callouts=callouts)
         shots += body
     shots.append(_stretch(shot('card', 'end', END_DUR, patch=len(patches) - 1), voice, VOICE_END_AT))
-    out = _resolve_enters(shots, tiled, voice)   # one shot per shot: each patch's first_shot still holds
+    out = _resolve_enters(shots, [completion_names(ch) for ch in patches], voice)   # one shot per shot: first_shot holds
     if duration is not None:
         condense.resize(out, duration, voice)
     nxt = {'short': change.next.short, 'subject': change.next.subject} if change.next else None
@@ -939,8 +972,8 @@ def shot_key(s):
         return (kind,)
     if kind == 'patch':
         return ('patch', k)
-    if kind in ('dive', 'travel', 'open', 'enter'):
-        return ('enter', k, s.get('to', s['path']))
+    if kind in ('open', 'enter'):
+        return ('enter', k, s['path'])
     if kind == 'hunk':
         return ('hunk', k, s['path'], s['index'])
     if kind == 'xref-push':

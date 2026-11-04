@@ -1,67 +1,67 @@
 {
- "callout tour": {"total": 20.6, "shots": [
+ "callout tour": {"total": 21.2, "shots": [
   ["title", null, 3.4],
   ["map", null, 2.2],
-  ["dive", "lib.py", 1.0],
+  ["open", "lib.py", 1.6],
   ["hunk", "lib.py", 5.5],
   ["hunk", "lib.py", 5.5],
   ["end", null, 3.0]
  ]},
- "callout develop": {"total": 14.626, "shots": [
+ "callout develop": {"total": 15.226, "shots": [
   ["title", null, 3.4],
   ["map", null, 2.2],
-  ["dive", "lib.py", 1.0],
+  ["open", "lib.py", 1.6],
   ["edit", "lib.py", 5.026],
   ["end", null, 3.0]
  ]},
- "repo tour": {"total": 27.817, "shots": [
+ "repo tour": {"total": 28.58, "shots": [
   ["title", null, 3.4],
   ["map", null, 2.2],
-  ["dive", "src/app.py", 1.0],
+  ["open", "src/app.py", 1.6],
   ["hunk", "src/app.py", 2.5],
   ["xref-push", "src/app.py", 4.4],
   ["xref-pop", "src/app.py", 1.3],
-  ["open", "src/lib.py", 1.737],
+  ["open", "src/lib.py", 1.6],
   ["hunk", "src/lib.py", 4.48],
-  ["travel", "src/lib.py", 1.3],
+  ["open", "tests/test_app.py", 1.6],
   ["hunk", "tests/test_app.py", 2.5],
   ["end", null, 3.0]
  ]},
- "repo develop": {"total": 27.2, "shots": [
+ "repo develop": {"total": 28.4, "shots": [
   ["title", null, 3.4],
   ["map", null, 2.2],
-  ["dive", "src/lib.py", 1.0],
+  ["open", "src/lib.py", 1.6],
   ["edit", "src/lib.py", 2.764],
-  ["travel", "src/lib.py", 1.3],
+  ["open", "src/app.py", 1.6],
   ["edit", "src/app.py", 6.672],
-  ["travel", "src/app.py", 1.3],
+  ["open", "tests/test_app.py", 1.6],
   ["edit", "tests/test_app.py", 5.564],
   ["end", null, 3.0]
  ]},
- "budget develop": {"total": 69.6, "shots": [
+ "budget develop": {"total": 70.2, "shots": [
   ["title", null, 3.4],
   ["map", null, 2.2],
-  ["dive", "work.py", 1.0],
+  ["open", "work.py", 1.6],
   ["edit", "work.py", 60.0],
   ["end", null, 3.0]
  ]},
- "series tour": {"total": 24.2, "shots": [
+ "series tour": {"total": 25.4, "shots": [
   ["title", null, 3.4],
   ["map", null, 2.2],
-  ["dive", "lib.py", 1.0],
+  ["open", "lib.py", 1.6],
   ["hunk", "lib.py", 5.5],
   ["patch", null, 2.6],
-  ["dive", "lib.py", 1.0],
+  ["open", "lib.py", 1.6],
   ["hunk", "lib.py", 5.5],
   ["end", null, 3.0]
  ]},
- "series develop": {"total": 18.809, "shots": [
+ "series develop": {"total": 20.009, "shots": [
   ["title", null, 3.4],
   ["map", null, 2.2],
-  ["dive", "lib.py", 1.0],
+  ["open", "lib.py", 1.6],
   ["edit", "lib.py", 2.722],
   ["patch", null, 2.6],
-  ["dive", "lib.py", 1.0],
+  ["open", "lib.py", 1.6],
   ["edit", "lib.py", 2.887],
   ["end", null, 3.0]
  ]}

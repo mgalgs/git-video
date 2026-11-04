@@ -859,7 +859,7 @@ def anchors(s):
         return {('end',): planmod.VOICE_END_AT}
     if kind == 'patch':
         return {planmod.shot_key(s): planmod.VOICE_PATCH_AT}
-    if kind in ('dive', 'travel', 'open'):
+    if kind == 'open':
         return {planmod.shot_key(s): 0.0}
     if kind == 'hunk':
         return {planmod.shot_key(s): [c['at'] for c in s.get('callouts') or ()] or read_start(s)}

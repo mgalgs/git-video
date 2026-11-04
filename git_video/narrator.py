@@ -97,8 +97,8 @@ def _shows(plan, patches, s, hi=None):
         return tuple(_def_names(ch, f, h)), (s['path'],)
     if kind == 'xref-push':
         return (s['name'],), tuple(dict.fromkeys((s['path'], s['definition']['path'])))
-    if kind in ('dive', 'travel', 'enter', 'open'):
-        return (), (s.get('to', s['path']),)
+    if kind in ('enter', 'open'):
+        return (), (s['path'],)
     return (), ()
 
 
@@ -134,11 +134,7 @@ def _what(plan, patches, s, hi=None):
         return 'opening card: the repository name, the commit subject, the lines added and removed, the author'
     if kind == 'map':
         return 'map of the repository, the changed files lit'
-    if kind in ('dive', 'travel'):
-        return f'camera moves into {s.get("to", s["path"])}'
-    if kind == 'enter':
-        return f'camera moves into {s["path"]}'
-    if kind == 'open':
+    if kind in ('enter', 'open'):
         return f'opens {s["path"]}'
     if kind == 'patch':
         subject = plan.patches[k]['commit']['subject']

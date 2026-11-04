@@ -85,7 +85,7 @@ class TestSelection(unittest.TestCase):
         dev = collect.collect(fixtures.make_develop_repo(self.tmp.name), 'HEAD')
         for mode, ch in (('tour', self.big), ('develop', dev)):
             p = plan.build(ch, 0, mode, duration=15)
-            visited = {s.get('to', s['path']) for s in p.shots if s['kind'] in ('dive', 'travel', 'open', 'edit')}
+            visited = {s['path'] for s in p.shots if s['kind'] in ('open', 'edit')}
             left = set(p.patches[0]['left_out'])
             visitable = ({f.path for f in ch.files if f.text is not None} if mode == 'tour'
                          else {f.path for f in plan.order_files(ch)})

@@ -11,7 +11,7 @@ from unittest import mock
 import videobuilder as vb
 from videobuilder.capabilities.ui import code_pane
 
-from git_video import cli, collect, edits, film, plan, sidebar
+from git_video import cli, collect, condense, edits, film, plan, sidebar, sounds
 from tests import fixtures
 from tests.test_cli import quiet
 
@@ -53,7 +53,7 @@ class TestFilm(unittest.TestCase):
         code, stdout, _ = quiet(cli.main, ['-C', self.repo, self.sha['change'], '--stills', out, '--format', 'all'])
         self.assertEqual(code, 0)
         labels = [label for _, label in self.tour.film.keyframes]
-        for want in ('title', 'map', 'dive src/app.py', 'travel tests/test_app.py', 'open src/lib.py',
+        for want in ('title', 'map', 'complete src/app.py', 'open src/app.py', 'open tests/test_app.py', 'open src/lib.py',
                      'hunk src/app.py#1', 'xref frob click', 'xref frob dive', 'xref frob def', 'end'):
             self.assertIn(want, labels)
         for fmt in ('16x9', '9x16', '1x1'):
@@ -72,8 +72,8 @@ class TestFilm(unittest.TestCase):
     def test_draw_is_pure(self):
         i = next(k for k, s in enumerate(self.plan.shots) if s['kind'] == 'hunk' and s['morph'])
         s = self.plan.shots[i]
-        frames = [self.tour.shot_frames[i] + round((s['morph']['at'] + 0.6) * self.plan.fps),self.frame_of('xref-push', plan.XREF_CLICK + 0.1)[1], self.frame_of('dive', 0.5)[1],
-                  self.frame_of('travel', 0.7)[1], self.frame_of('map', 1.0)[1], self.frame_of('title', 1.5)[1]]
+        frames = [self.tour.shot_frames[i] + round((s['morph']['at'] + 0.6) * self.plan.fps),self.frame_of('xref-push', plan.XREF_CLICK + 0.1)[1], self.frame_of('open', 0.6)[1],
+                  self.frame_of('open', 1.0, 1)[1], self.frame_of('map', 1.0)[1], self.frame_of('title', 1.5)[1]]
         for n in frames:
             for fmt in ('16x9', '1x1'):
                 a = self.tour.film.frame(n, fmt).bgra()
@@ -110,30 +110,39 @@ class TestFilm(unittest.TestCase):
                 self.assertGreaterEqual(lay.rows, plan.PLAN_ROWS, (voice, digits))
             self.assertGreaterEqual(st.mono.size, 22)   # still easily read at 1080p
 
-    def test_dive_lands_on_the_pane(self):
-        i, _ = self.frame_of('dive', 0)
-        last = self.tour.shot_frames[i + 1] - 1
-        first = self.tour.shot_frames[i + 1]
-        a = dict(self.tour.film.frame(last, '16x9').marks)['editor.text']
-        b = dict(self.tour.film.frame(first, '16x9').marks)['editor.text']
-        for x, y in zip(a, b):
-            self.assertAlmostEqual(x, y, delta=1.0)
-        cv = self.tour.film.frame(self.frame_of('dive', 0.5 * plan.DIVE_DUR)[1], '16x9')
-        mid = dict(cv.marks)['editor.text']
-        st = film.stage(cv)
-        self.assertTrue(st.main.contains(mid))
-        self.assertLess(mid.w, b.w - 10)
+    def test_open_keeps_the_pane_still(self):
+        # C-x C-f: no camera move, the pane where it is from before the shot to after it
+        i, _ = self.frame_of('open', 0, 1)
+        s = self.plan.shots[i]
+        boxes = {dict(self.tour.film.frame(n, '16x9').marks)['editor.text']
+                 for n in range(self.tour.shot_frames[i] - 1, self.tour.shot_frames[i + 1] + 1)}
+        self.assertEqual(len({(round(b.x), round(b.y), round(b.w)) for b in boxes}), 1, boxes)
+        before = self.tour.state(self.tour.shot_frames[i] + round((plan.open_ret(s) - 0.05) * self.plan.fps))[0]
+        self.assertNotEqual(before, s['path'])
+        self.assertEqual(self.tour.state(self.tour.shot_frames[i] + round((plan.open_ret(s) + 0.05) * self.plan.fps))[0],
+                         s['path'])
 
-    def test_travel_leaves_and_lands_on_panes(self):
-        i, _ = self.frame_of('travel', 0)
-        before = dict(self.tour.film.frame(self.tour.shot_frames[i] - 1, '16x9').marks)['editor.text']
-        start = dict(self.tour.film.frame(self.tour.shot_frames[i], '16x9').marks)['editor.text']
-        for x, y in zip(before, start):
-            self.assertAlmostEqual(x, y, delta=1.0)
-        mid = self.tour.film.frame(self.frame_of('travel', 0.6)[1], '16x9')
-        self.assertNotIn('editor.text', dict(mid.marks))   # out on the map between the two
-        self.assertEqual(self.tour.state(self.frame_of('travel', plan.TRAVEL_SWITCH + 0.05)[1])[0],
-                         'tests/test_app.py')
+    def test_open_echo_follows_the_strokes(self):
+        # the minibuffer shows what each key left, a TAB's completion at once
+        real, seen = film._pane, []
+
+        def record(tour, cv, st, view, top=None, wash=True, **kw):
+            seen.append(kw.get('echo'))
+            return real(tour, cv, st, view, top, wash, **kw)
+
+        i = next(k for k, s in enumerate(self.plan.shots) if s['kind'] == 'open' and any(x[1] == 'TAB' for x in s['strokes']))
+        s, f0 = self.plan.shots[i], self.tour.shot_frames[i]
+        with mock.patch.object(film, '_pane', record):
+            for (at, key, text), (nxt, _, _) in zip(s['strokes'], s['strokes'][1:]):
+                n = sounds.frame_at(f0, at, self.plan.fps)   # the frame its key is heard on
+                if n == sounds.frame_at(f0, nxt, self.plan.fps):
+                    continue   # the next key lands on the same frame
+                seen.clear()
+                self.tour.film.frame(n, '16x9')
+                self.assertEqual(seen[-1], 'Find file: ' + text, (key, at))
+            seen.clear()
+            self.tour.film.frame(sounds.frame_at(f0, plan.open_ret(s), self.plan.fps), '16x9')
+            self.assertFalse(seen[-1])
 
     def test_pointer_hover_reaches_the_word(self):
         i, n = self.frame_of('xref-push', plan.XREF_CLICK)
@@ -347,20 +356,20 @@ class TestFilm(unittest.TestCase):
             tour.film.frame(n, fmt)
         return strokes
 
-    def test_wash_stays_through_travels_and_returns(self):
-        # a pure addition (swept), a dive and M-, back, then a travel on
+    def test_wash_stays_through_opens_and_returns(self):
+        # a pure addition (swept), a dive and M-, back, then C-x C-f on
         ch = collect.collect(fixtures.make_edge_repo(self.tmp.name + '/wash'), 'HEAD')
         p = plan.plan(ch)
         tour = film.Tour(p, ch, log=io.StringIO())
         shots, fps = p.shots, p.fps
         starts = tour.shot_frames
-        travel = next(i for i, s in enumerate(shots) if s['kind'] == 'travel')
         pop = next(i for i, s in enumerate(shots) if s['kind'] == 'xref-pop')
+        travel = next(i for i, s in enumerate(shots) if s['kind'] == 'open' and i > pop)
         push = pop - 1
         settled = code_pane.Theme().sweep_alpha * film.SETTLED
         for fmt in ('16x9', '9x16', '1x1'):
-            frames = [starts[travel] - 2, starts[travel] - 1, starts[travel], starts[travel] + 1,   # leaving on a travel
-                      starts[travel] + round(plan.TRAVEL_SHRINK * fps * 0.5),
+            frames = [starts[travel] - 2, starts[travel] - 1, starts[travel], starts[travel] + 1,   # typing C-x C-f
+                      starts[travel] + round(plan.OPEN_PROMPT * fps) + 1,
                       starts[push], starts[push] + 1, starts[push] + round(plan.XREF_CLICK * fps),   # off on M-.
                       starts[pop] + round(plan.POP_SWITCH * fps) + 1,   # back on M-,
                       starts[pop] + round((plan.POP_SWITCH + plan.POP_REVEAL) * fps),
@@ -435,22 +444,16 @@ class TestFilm(unittest.TestCase):
         for fmt in ('16x9', '9x16', '1x1'):
             self.assertIn('editor.fold', dict(tour.film.frame(n, fmt).marks), fmt)
 
-    def test_short_dive_and_travel_land(self):
-        # a --duration plan's camera moves are shorter: the pane still lands on their last frame
+    def test_short_opens_play_their_keys(self):
+        # a --duration plan's opens are shorter: all their keys still play, the file up after RET
         p = plan.build(self.change, duration=15)
         tour = film.Tour(p, self.change, log=io.StringIO())
-        moves = [i for i, s in enumerate(tour.shots) if s['kind'] in ('dive', 'travel')]
-        self.assertTrue(any(tour.shots[i]['dur'] < plan.DIVE_DUR for i in moves), [tour.shots[i] for i in moves])
-        for i in moves:
+        opens = [i for i, s in enumerate(tour.shots) if s['kind'] == 'open']
+        self.assertTrue(opens)
+        for i in opens:
             s = tour.shots[i]
-            last, first = tour.shot_frames[i + 1] - 1, tour.shot_frames[i + 1]
-            self.assertEqual(tour.state(last)[0], s.get('to', s['path']), s)
-            a = dict(tour.film.frame(last, '16x9').marks)['editor.text']
-            b = dict(tour.film.frame(first, '16x9').marks)['editor.text']
-            for x, y in zip(a, b):
-                self.assertAlmostEqual(x, y, delta=1.0, msg=s)
-            mid = tour.film.frame(tour.shot_frames[i] + round(0.5 * s['dur'] * tour.fps), '16x9')
-            self.assertLess(dict(mid.marks).get('editor.text', vb.Box(0, 0, 0, 0)).w, b.w - 10, s)
+            self.assertGreaterEqual(s['dur'], plan.open_ret(s) + condense.OPEN_HOLD[0] - 1e-3, s)
+            self.assertEqual(tour.state(tour.shot_frames[i + 1] - 1)[0], s['path'], s)
 
     def test_end_card_regions(self):
         delete = collect.collect(self.repo, self.sha['delete'])
